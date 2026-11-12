@@ -278,16 +278,14 @@ pub fn main(init: std.process.Init) !void {
     learning_privacy.init(flags.learning_privacy_flag, init.environ_map.get("GRAFF_LEARNING_PRIVACY"));
     var invocation_budget: run_budget_mod.RunBudget = .{ .max_model_calls = max_model_calls, .max_tool_calls = run_budget_mod.cli_max_tool_calls };
     boot.mark(init.io, "args");
-    // GRAFF_CODEX_URL: override the codex responses endpoint (localhost mocks / integration tests). Parsed BEFORE subcommand dispatch and
-    // resolveKeys — `graff models [refresh]` fetches the catalog inside runSubcommand and the initial Keys.build runs inside resolveKeys.
-    // environ_map slices are process-lifetime (resolveKeys stores them into Keys the same way), so the value is kept as-is without duping.
+    // GRAFF_CODEX_URL: codex endpoint override (localhost mocks), set BEFORE runSubcommand (`graff models [refresh]`) and resolveKeys (the
+    // initial Keys.build). environ_map slices are process-lifetime (resolveKeys stores them into Keys the same way): kept without duping.
     if (init.environ_map.get("GRAFF_CODEX_URL")) |cu| {
         if (cu.len > 0) provider_mod.g_codex_url_override = cu;
     }
     // --help / --version: handled before any subcommand dispatch, so `harness login --help` prints usage instead of starting an OAuth flow.
     if (try startup.runSubcommand(io, gpa, arena, init, flags)) return;
-    // Credential/model resolution (env vars → on-disk logins → `harness key set` store, env always wins; then --model or the last-saved model) lives
-    // in startup.zig as resolveKeys() — pure over env/disk/arena, safe to call outside main()'s own stack frame.
+    // Credentials/model (env > on-disk logins > `harness key set` store; then --model or the last-saved model): startup.zig resolveKeys().
     const resolved_keys = (try startup.resolveKeysOrRunAcpPreAuth(io, gpa, arena, init, flags)) orelse return;
     boot.mark(io, "credentials/model");
     var keys = resolved_keys.keys;
@@ -319,6 +317,8 @@ pub fn main(init: std.process.Init) !void {
     const run_trace_path = try trace.tracePath(arena, identity.run_id);
     const run_trajectory_path = try trace.trajectoryPath(arena, identity.run_id);
     try session_start.setupWorktreeAndBanner(io, gpa, arena, init.environ_map, flags, out, run_trace_path, codex_account, stale_saved_model, preferred_provider, default_provider);
+    @import("boot_prewarm.zig").startCompanion(io, gpa, init.environ_map, flags); // -p: overlap the companion handshake with the rest of boot (ADR 0337)
+    defer @import("boot_prewarm.zig").discard(io); // no-op once adopted; any return before the registry's teardown stops it
     session_start.loadScoreSigningKey(io, arena, init.environ_map);
     boot.mark(io, "banner");
     // Session trace (best-effort: a failed open just disables tracing).

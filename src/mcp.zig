@@ -118,6 +118,9 @@ pub const Registry = struct {
     first_request_join_skipped: bool = false,
     /// Background connects to report on the next root request (ADR 0230).
     connect_notices: @import("mcp_connect_notice.zig").Joined = .{},
+    /// The boot prewarm's task-local registry only: each stdio child is
+    /// published here so a discard can end the handshake (boot_prewarm.Watch).
+    spawn_watch: ?*@import("boot_prewarm.zig").Watch = null,
 
     pub fn arena(self: *Registry) Allocator {
         return self.arena_state.allocator();
@@ -283,6 +286,7 @@ pub const Registry = struct {
         errdefer mcp_stdio.stopChild(reg.io, &child);
         const in_buf = try a.alloc(u8, 64 * 1024);
         const out_buf = try a.alloc(u8, 1 << 20);
+        if (reg.spawn_watch) |w| w.publish(child.id);
         return .{ .stdio = .{
             .child = child,
             .stdin_writer = child.stdin.?.writerStreaming(reg.io, in_buf),
@@ -359,7 +363,10 @@ pub const Registry = struct {
         }
 
         var registry_owns_server = false;
-        errdefer if (!registry_owns_server) deinitServer(server, reg.io, .init(reg.io, mcp_teardown.teardown_grace)); // fresh window: not the exit path (#305)
+        errdefer if (!registry_owns_server) {
+            if (reg.spawn_watch) |w| w.forget(); // before the child is reaped
+            deinitServer(server, reg.io, .init(reg.io, mcp_teardown.teardown_grace)); // fresh window: not the exit path (#305)
+        };
         const server_index = servers.items.len;
         const tools_before = tools.items.len;
         errdefer tools.shrinkRetainingCapacity(tools_before);
@@ -400,6 +407,7 @@ pub const Registry = struct {
                         },
                         .closed => {
                             server.probe_fallback = .server_exited;
+                            if (reg.spawn_watch) |w| w.forget(); // before the child is reaped
                             mcp_stdio.stopChild(reg.io, &server.transport.stdio.child);
                             server.transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map, stdio_cwd);
                             break :stdio_listed try mcp_rpc.connectStdio(server, a, a, reg.io);

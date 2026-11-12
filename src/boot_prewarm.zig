@@ -11,13 +11,16 @@
 //! the only server that can connect and the adopted outcome fills exactly the
 //! slot `addServer` would have. Every other case keeps the serial path.
 //!
-//! One slot, touched only by the boot thread: `start` after `runSubcommand`,
-//! `take` in `connectCompanion` (await, then merge under the registry mutex,
-//! ADR 0197), `discard` (cancel, join, tear down) when it is not adopted and
-//! at registry teardown. A cwd or registry-setting mismatch discards; a quick
-//! failure falls back to the inline `addServer`, a timeout does not repeat.
-//! The worker owns copies of everything it reads: `std.process.Init` frees
-//! `environ_map` before it joins worker threads.
+//! One slot, touched only by the boot thread: `start` in `main` once
+//! credentials resolved and the banner settled the cwd (a run that exits
+//! there spawns nothing, as before), `take` in `connectCompanion` (await,
+//! then merge under the registry mutex, ADR 0197), `discard` (stop, join,
+//! tear down) when it is not adopted, on any return before the registry's
+//! teardown, and at that teardown. A cwd or registry-setting mismatch
+//! discards and the inline `addServer` runs; an attempt that ran to a result
+//! is the one attempt, its error included. The worker owns copies of
+//! everything it reads: `std.process.Init` frees `environ_map` before it
+//! joins worker threads.
 
 const std = @import("std");
 const Io = std.Io;
@@ -49,11 +52,61 @@ const Slot = struct {
     future: Io.Future(Joined),
     owned: std.heap.ArenaAllocator,
     spec: Spec,
+    watch: *Watch,
     cwd: [std.fs.max_path_bytes]u8 = undefined,
     cwd_len: usize = 0,
 };
 
 var slot: ?Slot = null;
+
+/// The worker's live child, so `discard` can end a handshake in progress by
+/// stopping the child: the read sees end of stream, the attempt fails and
+/// cleans up on its own, and `discard` joins it. The worker is never
+/// cancelled: a cancel that lands inside the bounded handshake's `Io.Select`
+/// returns before the select's read task stops, and that task outlives its
+/// frame. The worker publishes each child it spawns (`Registry.spawnStdio`)
+/// and forgets it before it reaps it, both under `lock`, so `stop` only ever
+/// signals a child nobody has waited on: its pid cannot have been reused.
+pub const Watch = struct {
+    lock: std.atomic.Mutex = .unlocked,
+    stopping: bool = false,
+    child: ?std.process.Child.Id = null,
+
+    fn acquire(w: *Watch) void {
+        while (!w.lock.tryLock()) std.atomic.spinLoopHint();
+    }
+
+    /// Worker, right after a spawn. A child spawned after `stop` is stopped at once.
+    pub fn publish(w: *Watch, id: ?std.process.Child.Id) void {
+        w.acquire();
+        defer w.lock.unlock();
+        w.child = id;
+        if (w.stopping) w.signal();
+    }
+
+    /// Worker, before it reaps the child or hands it to the consumer.
+    pub fn forget(w: *Watch) void {
+        w.acquire();
+        defer w.lock.unlock();
+        w.child = null;
+    }
+
+    /// Boot thread: end the attempt now.
+    fn stop(w: *Watch) void {
+        w.acquire();
+        defer w.lock.unlock();
+        w.stopping = true;
+        w.signal();
+    }
+
+    /// Windows has no signal here: `discard` then waits for the attempt,
+    /// which the handshake timeout bounds.
+    fn signal(w: *Watch) void {
+        const id = w.child orelse return;
+        if (@import("builtin").os.tag == .windows) return;
+        std.posix.kill(id, .KILL) catch {};
+    }
+};
 
 /// Settings that only `Registry.init` reads. With any of them set the
 /// prewarm could not match the registry, so it does not start.
@@ -69,8 +122,9 @@ pub fn wantsCompanion(flags: args.Flags, environ_map: anytype) bool {
     return true;
 }
 
-/// Called once boot knows this is a session (after `runSubcommand`). Picks
-/// the companion `connectCompanion` would try first and starts it.
+/// Called once credentials resolved and the cwd is final (after
+/// `setupWorktreeAndBanner`). Picks the companion `connectCompanion` would
+/// try first and starts it. The caller defers `discard`.
 pub fn startCompanion(io: Io, gpa: Allocator, environ_map: anytype, flags: args.Flags) void {
     if (!wantsCompanion(flags, environ_map)) return;
     if (Io.Dir.cwd().access(io, ".mcp.json", .{})) |_| return else |_| {} // project servers: not the empty registry
@@ -116,10 +170,15 @@ pub fn start(io: Io, gpa: Allocator, spec: Spec) void {
         owned.deinit();
         return;
     };
-    var s: Slot = .{ .future = undefined, .owned = owned, .spec = copy };
+    const watch = owned.allocator().create(Watch) catch {
+        owned.deinit();
+        return;
+    };
+    watch.* = .{};
+    var s: Slot = .{ .future = undefined, .owned = owned, .spec = copy, .watch = watch };
     s.cwd_len = cwdKey(io, &s.cwd);
     // Never `io.async`: run inline it would serialize the boot again.
-    s.future = io.concurrent(connectTask, .{ gpa, io, copy }) catch {
+    s.future = io.concurrent(connectTask, .{ gpa, io, copy, watch }) catch {
         s.owned.deinit();
         return;
     };
@@ -143,16 +202,17 @@ fn cwdKey(io: Io, buf: *[std.fs.max_path_bytes]u8) usize {
 
 /// The worker: `addServer`'s connect on a task-local registry (the pattern
 /// `mcp_start.attempt` uses), one attempt, no retry, no failure record.
-fn connectTask(gpa: Allocator, io: Io, spec: Spec) Joined {
+fn connectTask(gpa: Allocator, io: Io, spec: Spec, watch: *Watch) Joined {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
-    const outcome = connectInto(gpa, io, spec, &arena_state) catch |err| {
+    const outcome = connectInto(gpa, io, spec, watch, &arena_state) catch |err| {
         arena_state.deinit();
         return .{ .err = err };
     };
+    watch.forget(); // the outcome owns the child now
     return .{ .outcome = outcome };
 }
 
-fn connectInto(gpa: Allocator, io: Io, spec: Spec, arena_state: *std.heap.ArenaAllocator) !mcp_boot.StartOutcome {
+fn connectInto(gpa: Allocator, io: Io, spec: Spec, watch: *Watch, arena_state: *std.heap.ArenaAllocator) !mcp_boot.StartOutcome {
     const a = arena_state.allocator();
     var tmp: mcp.Registry = .{
         .gpa = gpa,
@@ -162,6 +222,7 @@ fn connectInto(gpa: Allocator, io: Io, spec: Spec, arena_state: *std.heap.ArenaA
         .stdio_probe = spec.stdio_probe,
         .lazy_stdio = spec.lazy_stdio,
         .show_diagnostics = spec.show_diagnostics,
+        .spawn_watch = watch,
     };
     defer tmp.arena_state.deinit();
     // Same object, same key order as `Registry.addServer`: the cache key and
@@ -177,9 +238,18 @@ fn connectInto(gpa: Allocator, io: Io, spec: Spec, arena_state: *std.heap.ArenaA
     return .{ .server = servers.items[0], .tools = tools.items, .arena_state = arena_state.* };
 }
 
-/// The consumer. Null: nothing usable for `name` (none started, or it was
-/// discarded) — connect inline as before. Otherwise the joined result: the
-/// server merged into `reg`, or the error `addServer` would have returned.
+/// `addServer(name, command, args)` for the consumer, served by the prewarm
+/// when it ran this companion: one start either way.
+pub fn connect(reg: *mcp.Registry, name: []const u8, command: []const u8, argv: []const []const u8) !void {
+    if (take(reg, name)) |joined| return joined;
+    _ = try reg.addServer(name, command, argv);
+}
+
+/// The consumer. Null: no attempt ran to a result for `name` (none started,
+/// or discarded on a mismatch) — connect inline as before.
+/// Otherwise the joined result: the server merged into `reg`, or the error
+/// that attempt ended with, which is the error `addServer` would have
+/// returned. A failed attempt is not repeated: the serial path made one.
 pub fn take(reg: *mcp.Registry, name: []const u8) ?anyerror!void {
     const s = if (slot) |*s| s else return null;
     if (!std.mem.eql(u8, s.spec.name, name)) return null;
@@ -189,7 +259,7 @@ pub fn take(reg: *mcp.Registry, name: []const u8) ?anyerror!void {
     }
     const joined = s.future.await(reg.io);
     release();
-    if (joined.err) |err| return if (repeatInline(err)) null else err;
+    if (joined.err) |err| return err;
     if (!mcp_boot.adoptStarted(reg, joined.outcome)) return error.McpServerAlreadyConnected;
     return {};
 }
@@ -202,21 +272,12 @@ fn matches(reg: *const mcp.Registry, s: *const Slot) bool {
     return n > 0 and std.mem.eql(u8, now[0..n], s.cwd[0..s.cwd_len]);
 }
 
-/// A prewarm that failed fast is retried on the boot thread, which is what
-/// the serial path did at this point. A timeout already took the full
-/// handshake budget; repeating it would double the worst case.
-fn repeatInline(err: anyerror) bool {
-    return switch (err) {
-        error.McpHandshakeTimeout, error.McpRequestTimedOut, error.Canceled => false,
-        else => true,
-    };
-}
-
-/// Cancel, join and tear down a prewarm nobody adopted. No-op when the slot
+/// Stop, join and tear down a prewarm nobody adopted. No-op when the slot
 /// is empty, so every exit path may call it.
 pub fn discard(io: Io) void {
     const s = if (slot) |*s| s else return;
-    var joined = s.future.cancel(io);
+    s.watch.stop();
+    var joined = s.future.await(io);
     release();
     if (joined.outcome.server) |server| mcp_rpc.deinitServer(server, io, .init(io, mcp_teardown.teardown_grace));
     if (joined.outcome.arena_state) |*ta| ta.deinit();
@@ -313,17 +374,104 @@ test "boot prewarm: a registry with other settings is not adopted" {
     try testing.expectEqual(@as(usize, 0), reg.tools.len);
 }
 
-test "boot prewarm: a failed prewarm falls back to the inline connect, never to a missing tool" {
+/// A scratch directory with a spawn log the fixtures append their pid to.
+const SpawnLog = struct {
+    tmp: testing.TmpDir,
+    path: []u8,
+
+    fn init() !SpawnLog {
+        var tmp = testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        const dir = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+        defer testing.allocator.free(dir);
+        return .{ .tmp = tmp, .path = try std.fmt.allocPrint(testing.allocator, "{s}/spawns", .{dir}) };
+    }
+
+    fn deinit(l: *SpawnLog) void {
+        testing.allocator.free(l.path);
+        l.tmp.cleanup();
+    }
+
+    fn pids(l: *const SpawnLog, buf: []std.posix.pid_t) []std.posix.pid_t {
+        var raw: [512]u8 = undefined;
+        const data = l.tmp.dir.readFile(testing.io, "spawns", &raw) catch return buf[0..0];
+        var n: usize = 0;
+        var it = std.mem.tokenizeAny(u8, data, " \n");
+        while (it.next()) |w| : (n += 1) {
+            if (n == buf.len) break;
+            buf[n] = std.fmt.parseInt(std.posix.pid_t, w, 10) catch return buf[0..n];
+        }
+        return buf[0..n];
+    }
+};
+
+fn processAlive(pid: std.posix.pid_t) bool {
+    std.posix.kill(pid, @fromBackingInt(@intCast(0))) catch |err| return err != error.ProcessNotFound;
+    return true;
+}
+
+/// `sh -c <script> <log>`: the script sees the log path as `$0`.
+const failing_script = "echo $$ >> \"$0\"; exit 1";
+
+test "boot prewarm: a failing companion is started exactly as often as the inline path starts it" {
     if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
-    var reg = testRegistry();
-    defer reg.deinit();
-    start(testing.io, testing.allocator, fixtureSpec("codedbpro", &.{ "-c", "exit 1" }));
-    try testing.expect(take(&reg, "codedbpro") == null); // closed fast: inline retry
+    var inline_log = try SpawnLog.init();
+    defer inline_log.deinit();
+    var warm_log = try SpawnLog.init();
+    defer warm_log.deinit();
+    var buf: [8]std.posix.pid_t = undefined;
+
+    var inline_reg = testRegistry(); // the serial path: no prewarm slot
+    defer inline_reg.deinit();
+    const inline_err = connect(&inline_reg, "codedbpro", "/bin/sh", &.{ "-c", failing_script, inline_log.path });
+    try testing.expectError(error.McpClosed, inline_err);
+    const inline_spawns = inline_log.pids(&buf).len;
+    try testing.expectEqual(@as(usize, 1), inline_spawns);
+
+    var warm_reg = testRegistry();
+    defer warm_reg.deinit();
+    const argv = [_][]const u8{ "-c", failing_script, warm_log.path };
+    start(testing.io, testing.allocator, fixtureSpec("codedbpro", &argv));
+    try testing.expect(pending());
+    // The consumer takes the attempt's error; it does not start the companion again.
+    try testing.expectError(error.McpClosed, connect(&warm_reg, "codedbpro", "/bin/sh", &argv));
     try testing.expect(!pending());
-    _ = try reg.addServer("codedbpro", "/bin/sh", &.{ "-c", fixture_script });
-    try testing.expectEqual(@as(usize, 2), reg.tools.len);
-    try testing.expect(!repeatInline(error.McpHandshakeTimeout));
-    try testing.expect(repeatInline(error.McpClosed));
+    try testing.expectEqual(inline_spawns, warm_log.pids(&buf).len);
+    try testing.expectEqual(@as(usize, 0), warm_reg.servers.len);
+}
+
+/// `main` between the prewarm start and the registry's deferred teardown:
+/// any error return runs the deferred `discard`.
+fn bootUntilRegistry(io: Io, spec: Spec, log: *const SpawnLog) !void {
+    start(io, testing.allocator, spec);
+    defer discard(io);
+    var buf: [8]std.posix.pid_t = undefined;
+    var waited: usize = 0;
+    while (log.pids(&buf).len == 0 and waited < 400) : (waited += 1) try io.sleep(.fromMilliseconds(5), .awake);
+    if (log.pids(&buf).len == 0) return error.TestExpectedSpawn;
+    return error.InjectedBootFailure; // e.g. a failed `try` before `initRegistryConsent` returns
+}
+
+test "boot prewarm: an error return before the registry exists discards promptly and leaves no child" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var log = try SpawnLog.init();
+    defer log.deinit();
+    // Stuck in its handshake: one reads its stdin and never answers, one
+    // ignores stdin altogether. Repeated: the stop races the handshake.
+    const scripts = [_][]const u8{ "echo $$ >> \"$0\"; exec cat > /dev/null", "echo $$ >> \"$0\"; exec sleep 30" };
+    for (scripts) |script| for (0..8) |_| {
+        log.tmp.dir.deleteFile(testing.io, "spawns") catch {};
+        const argv = [_][]const u8{ "-c", script, log.path };
+        const t0 = Io.Timestamp.now(testing.io, .awake);
+        try testing.expectError(error.InjectedBootFailure, bootUntilRegistry(testing.io, fixtureSpec("codedbpro", &argv), &log));
+        const ms = t0.untilNow(testing.io, .awake).toMilliseconds();
+        try testing.expect(!pending());
+        var buf: [8]std.posix.pid_t = undefined;
+        const pids = log.pids(&buf);
+        try testing.expectEqual(@as(usize, 1), pids.len);
+        try testing.expect(!processAlive(pids[0])); // stopped and reaped
+        try testing.expect(ms < 500); // the spawn wait above included; the handshake timeout is 15 s
+    };
 }
 
 test "boot prewarm: discard joins a pending handshake and tears it down" {
@@ -358,15 +506,23 @@ test "boot prewarm: early-exit and interactive invocations start nothing" {
     defer probe.deinit();
     try probe.put("GRAFF_MCP_EAGER", "1");
     try testing.expect(!wantsCompanion(oneshot, &probe));
-    // --help/--version return from runSubcommand before the hook; the hook
-    // itself sits after it in resolveKeysOrRunAcpPreAuth.
-    const src = @embedFile("startup.zig");
-    const hook = std.mem.indexOf(u8, src, "boot_prewarm.zig\").startCompanion") orelse return error.TestExpectedHook;
-    try testing.expect(hook > (std.mem.indexOf(u8, src, "pub fn resolveKeysOrRunAcpPreAuth") orelse return error.TestExpectedHook));
-    const main_src = @embedFile("main.zig");
-    const early = std.mem.indexOf(u8, main_src, "startup.runSubcommand(") orelse return error.TestExpectedHook;
-    try testing.expect(early < (std.mem.indexOf(u8, main_src, "startup.resolveKeysOrRunAcpPreAuth(") orelse return error.TestExpectedHook));
     try testing.expect(!pending());
+}
+
+test "boot prewarm: main starts it after credentials and the banner, and defers its discard" {
+    // A run that fails on credentials (`resolveKeys` exits through
+    // `std.process.fatal`, which runs no defer) or in the banner (`--add-dir`,
+    // isolation, `--experiment`) must not have spawned the companion: the
+    // serial path never did. Every return after the start runs `discard`.
+    const src = @embedFile("main.zig");
+    const keys = std.mem.indexOf(u8, src, "startup.resolveKeysOrRunAcpPreAuth(") orelse return error.TestExpectedHook;
+    const banner = std.mem.indexOf(u8, src, "session_start.setupWorktreeAndBanner(") orelse return error.TestExpectedHook;
+    const hook = std.mem.indexOf(u8, src, "@import(\"boot_prewarm.zig\").startCompanion(") orelse return error.TestExpectedHook;
+    const registry = std.mem.indexOf(u8, src, "session_start.initRegistryConsent(") orelse return error.TestExpectedHook;
+    try testing.expect(keys < banner and banner < hook and hook < registry);
+    const next_line = std.mem.indexOfScalarPos(u8, src, hook, '\n') orelse return error.TestExpectedHook;
+    try testing.expect(std.mem.startsWith(u8, std.mem.trimStart(u8, src[next_line + 1 ..], " "), "defer @import(\"boot_prewarm.zig\").discard(io);"));
+    try testing.expect(std.mem.indexOf(u8, @embedFile("startup.zig"), "startCompanion") == null);
 }
 
 test "boot prewarm: the settings opt-out is read the way loadSkillSettings reads it" {

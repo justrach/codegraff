@@ -77,20 +77,13 @@ pub fn connectCompanion(io: Io, arena: Allocator, registry: *mcp.Registry, flags
                 break;
             }
             if (speak) sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "companion: connecting {s}...", .{c.bin})));
-            if (connectNow(registry, c.server, c.bin)) |_| {
+            if (boot_prewarm.connect(registry, c.server, c.bin, &.{"--mcp"})) |_| {
                 break;
             } else |err| {
                 if (speak) sink.emit(io, dimNotice(try std.fmt.allocPrint(arena, "[mcp:{s}] auto-connect failed ({t}) — native tools only", .{ c.server, err })));
             }
         }
     }
-}
-
-/// The joined boot prewarm when it ran this companion, else `addServer` on
-/// this thread, as before.
-fn connectNow(registry: *mcp.Registry, server: []const u8, bin: []const u8) !void {
-    if (boot_prewarm.take(registry, server)) |joined| return joined;
-    _ = try registry.addServer(server, bin, &.{"--mcp"});
 }
 
 test "deferCompanion: every interactive session, not -p or --json (ADR 0230)" {

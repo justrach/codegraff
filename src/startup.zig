@@ -235,7 +235,6 @@ fn serveConfig(flags: args.Flags, environ: anytype) serve.ServeConfig {
 pub fn resolveKeysOrRunAcpPreAuth(io: Io, gpa: Allocator, arena: Allocator, init: std.process.Init, flags: args.Flags) !?ResolvedKeys {
     const worker_hint = flags.subagent_provider_flag orelse init.environ_map.get("GRAFF_SUBAGENT_PROVIDER");
     if (flags.allow_cross_provider_subagents_flag) @import("subagent_selection.zig").g_cross_provider_consent = true; // before key resolution: the startup catalog load reads it (catalog_selection.startupLoads)
-    @import("boot_prewarm.zig").startCompanion(io, gpa, init.environ_map, flags); // -p: overlap the companion handshake with the rest of boot
     const is_acp = (comptime build_options.acp) and flags.positionals.items.len > 0 and std.mem.eql(u8, flags.positionals.items[0], "acp");
     if (!is_acp) return try resolveKeys(io, gpa, arena, init.environ_map, flags.model_flag, worker_hint);
     if (try startup_keys.resolveKeysOptional(io, gpa, arena, init.environ_map, flags.model_flag, worker_hint)) |resolved| return resolved;

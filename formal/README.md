@@ -13,8 +13,9 @@ are difficult to reproduce with ordinary tests.
 - [HTTP/2 leases](http2-leases.md): exclusive ownership, idle pooling,
   cancellation, shutdown, and reuse only after stream completion.
 - [Boot prewarm](boot-prewarm.md): a one-shot's companion connect joined at
-  its one consumer, discarded on a cwd or setting mismatch, and teardown
-  ending a start's retry pause while still joining it.
+  its one consumer, discarded on a cwd or setting mismatch or on any early
+  exit with no child or worker left behind, and teardown ending a start's
+  retry pause while still joining it.
 
 Each model has a normal configuration and a deliberately broken configuration.
 The negative control must fail the intended invariant. A syntax error, timeout,

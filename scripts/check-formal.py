@@ -35,6 +35,10 @@ CASES = (
     ("BootPrewarm.tla", "BootPrewarmNoCwdKey.cfg", "NoStaleAdoption"),
     ("BootPrewarm.tla", "BootPrewarmNoTeardownJoin.cfg", "NoUseAfterTeardown"),
     ("BootPrewarm.tla", "BootPrewarmNoRetryAbort.cfg", "NoRetryAfterAbort"),
+    ("BootPrewarm.tla", "BootPrewarmEarlyStart.cfg", "ExitClean"),
+    ("BootPrewarm.tla", "BootPrewarmNoWindowDiscard.cfg", "ExitClean"),
+    ("BootPrewarm.tla", "BootPrewarmNoStop.cfg", "NoExitStall"),
+    ("BootPrewarm.tla", "BootPrewarmRetryFailed.cfg", "NoRepeatAfterResult"),
 )
 
 
