@@ -37,6 +37,7 @@ from mock_model import ScriptedModel  # noqa: E402
 
 RUN_TIMEOUT = 20.0
 LATE_WAIT = 1.0
+LATE_TRIES = 4  # a loaded machine can boot a debug build slower than LATE_WAIT
 OFFSETS = 6
 EARLY_STAMP = "[boot] acp initialize answered"
 
@@ -137,6 +138,17 @@ def check(name: str, got, want) -> None:
             f"exit {rc} vs late {ref_rc}\nearly: {out!r}\nlate:  {ref_out!r}\nstderr tail:\n{err[-2000:]}")
 
 
+def late_run(runner: Runner, chunks, gate: str):
+    """A reference written after boot: retried with a doubled wait while boot outlasted it."""
+    wait = LATE_WAIT
+    for _ in range(LATE_TRIES):
+        got = runner.run(chunks, gate, wait)
+        if EARLY_STAMP not in got[1]:
+            return got
+        wait *= 2
+    raise AssertionError(f"GRAFF_ACP_V2={gate}: the late reference was answered during boot even after {wait / 2:.0f} s")
+
+
 def main() -> None:
     if os.name != "posix":
         print("acp early initialize: POSIX only (no poll on Windows stdin; the early path is the late path there)")
@@ -154,13 +166,11 @@ def main() -> None:
         runs = 0
         where: collections.Counter = collections.Counter()
         for gate in ("0", "1"):
-            late = runner.run([init, new], gate, LATE_WAIT)
-            if EARLY_STAMP in late[1]:
-                raise AssertionError(f"GRAFF_ACP_V2={gate}: the late reference was answered during boot")
+            late = late_run(runner, [init, new], gate)
             lines = late[0].splitlines()
             if len(lines) < 2 or not lines[0].startswith(b'{"jsonrpc":"2.0","id":1,"result"') or b'"id":2,"result"' not in lines[1]:
                 raise AssertionError(f"GRAFF_ACP_V2={gate}: late reference does not answer initialize then session/new: {late[0][:400]!r}")
-            late_other = runner.run([lambda _c: NOT_INIT, init, new], gate, LATE_WAIT)
+            late_other = late_run(runner, [lambda _c: NOT_INIT, init, new], gate)
             cases = [(f"offset 0 ms", [init, new], 0.0, 0.0)]
             cases += [(f"offset {o * 1000:.1f} ms", [init, new], o, 0.0) for o in (rng.uniform(0, 0.015) for _ in range(OFFSETS))]
             cases += [
