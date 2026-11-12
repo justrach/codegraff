@@ -5,6 +5,12 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.65
+    \\  • startup: a `-p` companion that never answers held the first request for 20.1 s; the prewarm join is now a 250 ms budget (`GRAFF_MCP_COMPANION_BOOT_MS`) and the attempt merges late or stops quietly at teardown — silent companion 20,134 ms -> 268 ms, a healthy one unchanged with its tools on the first request (ADR 0339, #1896)
+    \\  • startup: a cold provider model-catalog cache no longer blocks boot — the fetch detaches and activates at the next picker beat (REPL and ACP alike); third-party first-keystroke rig 312.0 -> 57.2 ms (ADR 0340, #1896)
+    \\  • startup: REPL/ACP boot spawns zero git (in-process worktree identity, gated worktree reap), the update banner reads a cached tag instead of a blocking GET, and ACP `initialize` is answered during boot under the AcpEarlyInit Lean kernel (ADRs 0336-0338, #1896)
+    \\  • acp: output-length continuation exhaustion is explained to the client (partial work preserved; send a new message or resume) instead of surfacing as a bare `OutputLengthExceeded` internal error (#1893)
+    \\
     \\0.302.74.64
     \\  • mcp: tool schemas are deep-cloned before normalization — mutating the Value copy through shared ArrayHashMap storage corrupted the parsed tools tree, so debug builds segfaulted in mcp_cache.store right after a successful connect (#1892)
     \\
