@@ -202,35 +202,63 @@ def run_stream(argv, env, cwd, timeout, ready, stdin_data=None):
 
 # ---------------------------------------------------------------- fixtures
 
+class _HeaderLog(list):
+    """ScriptedModel.request_headers that also keeps, per handler thread, the
+    headers of the request being answered: do_POST appends them and then
+    calls next_reply on the same thread."""
+    def __init__(self):
+        super().__init__()
+        self.local = threading.local()
+
+    def append(self, item):
+        self.local.last = item
+        super().append(item)
+
+
 class Mock(ScriptedModel):
     """scripts/eval/mock_model.py, plus a perf_counter_ns stamp per POST. The
-    stamp is taken once the request body has been read (loopback, sub-ms)."""
+    stamp is taken once the request body has been read (loopback, sub-ms).
+    Each post keeps its Authorization header: the lmstudio port is fixed and
+    shared, so a sample tells its own requests (bearer = its per-sample key)
+    from a stray client's."""
     def __init__(self):
         super().__init__([])
-        self.posts = []
+        self.posts = []  # (stamp, authorization or None)
+        self.request_headers = _HeaderLog()
 
     def next_reply(self, body):
         stamp = clock()
+        auth = getattr(self.request_headers.local, "last", {}).get("authorization")
         with self._lock:
-            self.posts.append(stamp)
+            self.posts.append((stamp, auth))
         return super().next_reply(body)
 
 
-def start_mock():
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    probe.settimeout(0.3)
-    try:
-        if probe.connect_ex(("127.0.0.1", PORT)) == 0:
-            raise BenchError(f"127.0.0.1:{PORT} is busy (LM Studio or another mock?). The lmstudio "
-                             "provider is fixed to that port; stop the listener and rerun.")
-    finally:
-        probe.close()
-    mock = Mock()
-    try:
-        mock.start(PORT)
-    except OSError as exc:
-        raise BenchError(f"cannot bind 127.0.0.1:{PORT}: {exc}") from exc
-    return mock
+def start_mock(wait_s=120):
+    """Bind the mock on the fixed lmstudio port, waiting up to wait_s for
+    another listener (LM Studio, another benchmark) to let it go."""
+    deadline = time.monotonic() + wait_s
+    while True:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.settimeout(0.3)
+        try:
+            busy = probe.connect_ex(("127.0.0.1", PORT)) == 0
+        finally:
+            probe.close()
+        if not busy:
+            mock = Mock()
+            try:
+                mock.start(PORT)
+                return mock
+            except OSError as exc:
+                busy_err = exc
+        else:
+            busy_err = None
+        if time.monotonic() >= deadline:
+            raise BenchError(f"127.0.0.1:{PORT} is busy (LM Studio or another mock?) for {wait_s}s. The "
+                             f"lmstudio provider is fixed to that port; stop the listener and rerun."
+                             + (f" ({busy_err})" if busy_err else ""))
+        time.sleep(1)
 
 
 def which_in(name, path):

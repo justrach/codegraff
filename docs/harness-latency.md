@@ -109,14 +109,19 @@ The child environment is scrubbed to `TMPDIR`, `TERM`, a minimal `PATH`
 `GRAFF_NO_TELEMETRY`, `GRAFF_NO_UPDATE_CHECK`, `GRAFF_AUTO_ISOLATE=off`,
 `GRAFF_FLEET=off`, `GRAFF_NO_SMOLIFY`, `GRAFF_LEARN_AUTO=off` and `NO_COLOR`.
 `security` is a stub that answers "not found", so the Keychain is never read.
-The only network traffic is to the loopback mock on port 1234 (it must be free).
+The only network traffic is to the loopback mock on port 1234, the `lmstudio`
+provider's fixed URL (no environment override exists). The script waits up to
+120 s for the port to be free. Each sample sends its own `LMSTUDIO_API_KEY`
+token, so a POST from another client on that port is recognised by its bearer
+and the sample is retried (`env.foreign_retries` counts them).
 
 | Point | Ready when |
 |---|---|
 | `a_version`, `a_help` | `--version` / `--help` exits (n ≥ 100) |
 | `b_repl_ready` | the REPL loop is reached with stdin=/dev/null: the first `final-save` stamp. This needs `GRAFF_SHUTDOWN_DEBUG=1`, the only debug env in the timing pass |
 | `c_first_request` | `-p hi --model lmstudio`: the mock receives the first POST |
-| `d_acp_initialize` | `graff acp`: the `initialize` response line on stdout; `_nokey` is the pre-auth path |
+| `d_acp_initialize` | `graff acp`: the `initialize` response line on stdout, "handshake answered". graff can answer it during boot, before a session can be created, so it is not "ready". `_nokey` is the pre-auth path |
+| `d_acp_session_usable` | `graff acp` with `initialize` and `session/new` written at spawn: the `session/new` response, "ACP session usable". This is the time a client waits before it can prompt |
 | `floor` | `/usr/bin/true` and a compiled C hello, timed the same way |
 
 ```sh

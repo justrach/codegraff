@@ -6,9 +6,16 @@ Times four ready points from process spawn, with no network and no credentials:
   b_repl_ready         line REPL reaches its loop (stdin=/dev/null; first
                        GRAFF_SHUTDOWN_DEBUG `final-save` stamp on stderr)
   c_first_request      `-p hi --model lmstudio`: first POST at the loopback mock
-  d_acp_initialize     `graff acp`: the `initialize` response line on stdout
-                       (`_nokey` variant: no credential, pre-auth path)
+  d_acp_initialize     `graff acp`: the `initialize` response line on stdout,
+                       "handshake answered" (graff may answer it before the
+                       session exists; `_nokey` variant: no credential, pre-auth)
+  d_acp_session_usable `graff acp` with `initialize` and `session/new` written
+                       at spawn: the `session/new` response, "ACP session usable"
 plus a floor (/usr/bin/true and a compiled C hello) timed the same way.
+
+The mock sits on the lmstudio provider's fixed port 127.0.0.1:1234. Each
+sample gets its own LMSTUDIO_API_KEY token, so a POST from another client on
+that port is recognised by its bearer and the sample is retried.
 """
 from __future__ import annotations
 
@@ -35,6 +42,7 @@ from bench_startup_lib import (  # noqa: E402
 
 SCHEMA = 1
 INIT = b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n'
+FOREIGN_RETRIES = 5  # samples redone after a stray client hit the shared mock port
 BOOT_LINE = re.compile(r"^\[boot \+(\d+)ms, phase (\d+)ms\] (.+)$")
 # Safety vars are fixed; --env may not override them.
 PROTECTED = {"HOME", "PATH", "GRAFF_NO_TELEMETRY", "GRAFF_NO_UPDATE_CHECK", "GRAFF_AUTO_ISOLATE",
@@ -45,14 +53,25 @@ FORBIDDEN_GIT = ("fetch", "pull", "push", "clone", "ls-remote", "remote update",
 
 # ---------------------------------------------------------------- points
 
-def acp_ready(tag, line):
-    if tag != "out":
-        return False
-    try:
-        message = json.loads(line)
-    except ValueError:
-        return False
-    return message.get("id") == 1 and ("result" in message or "error" in message)
+def acp_response(want_id):
+    def ready(tag, line):
+        if tag != "out":
+            return False
+        try:
+            message = json.loads(line)
+        except ValueError:
+            return False
+        return isinstance(message, dict) and message.get("id") == want_id and ("result" in message or "error" in message)
+    return ready
+
+
+acp_ready = acp_response(1)
+
+
+def init_then_session(work):
+    """`initialize` and `session/new` back to back, as a client that wants a session."""
+    session = {"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {"cwd": str(work), "mcpServers": []}}
+    return INIT + json.dumps(session).encode() + b"\n"
 
 
 def repl_ready(tag, line):
@@ -68,27 +87,52 @@ POINTS = {
     "c_first_request": (["-p", "hi", "--model", "lmstudio"], "post", True, {}, None, None),
     "d_acp_initialize": (["acp", "--model", "lmstudio"], "stream", True, {}, acp_ready, INIT),
     "d_acp_initialize_nokey": (["acp"], "stream", False, {}, acp_ready, INIT),
+    "d_acp_session_usable": (["acp", "--model", "lmstudio"], "stream", True, {}, acp_response(2), init_then_session),
 }
 READY_METRIC = {"b_repl_ready": "ready_ms", "c_first_request": "request_ms",
-                "d_acp_initialize": "response_ms", "d_acp_initialize_nokey": "response_ms"}
+                "d_acp_initialize": "response_ms", "d_acp_initialize_nokey": "response_ms",
+                "d_acp_session_usable": "response_ms"}
+
+
+class ForeignRequest(BenchError):
+    pass
+
+
+def stdin_for(stdin_data, work):
+    return stdin_data(work) if callable(stdin_data) else stdin_data
 
 
 def sample(fx, mock, binary, name, template, timeout, extra=None, path=None):
+    """One timed run; redone when a stray client posted to the shared mock port."""
+    for attempt in range(FOREIGN_RETRIES + 1):
+        try:
+            return sample_once(fx, mock, binary, name, template, timeout, extra, path)
+        except ForeignRequest as exc:
+            fx.foreign_retries = getattr(fx, "foreign_retries", 0) + 1
+            if attempt == FOREIGN_RETRIES:
+                raise BenchError(f"{exc} (still after {FOREIGN_RETRIES} retries)") from exc
+
+
+def sample_once(fx, mock, binary, name, template, timeout, extra=None, path=None):
     tail_argv, kind, key, env_extra, ready, stdin_data = POINTS[name]
     dest, home, work = fx.fresh(template)
+    token = f"local-bench-{os.getpid()}-{fx.counter}"
     env = fx.env(home, key=key, extra=dict(env_extra, **(extra or {})), path=path)
+    if key:
+        env["LMSTUDIO_API_KEY"] = token
+    mine = (lambda auth: auth == f"Bearer {token}") if key else (lambda auth: auth is None)
     argv = [binary] + tail_argv
     with mock._lock:
         before = len(mock.posts)
     try:
         if kind == "stream":
-            got = run_stream(argv, env, str(work), timeout, ready, stdin_data)
+            got = run_stream(argv, env, str(work), timeout, ready, stdin_for(stdin_data, work))
             row = {READY_METRIC[name]: got["ready_ms"], "wall_ms": got["wall_ms"], "cpu_ms": got["cpu_ms"]}
             lines = got["lines"]
             if name.startswith("d_"):
-                reply = next(json.loads(l) for _, t, l in lines if t == "out" and acp_ready(t, l))
+                reply = next(json.loads(l) for _, t, l in lines if t == "out" and ready(t, l))
                 if "result" not in reply:
-                    raise BenchError(f"{name}: initialize returned an error: {reply.get('error')}")
+                    raise BenchError(f"{name}: the request returned an error: {reply.get('error')}")
         else:
             got = run_wall(argv, env, str(work), timeout, str(dest / "stderr"))
             if got["rc"] != 0:
@@ -96,7 +140,10 @@ def sample(fx, mock, binary, name, template, timeout, extra=None, path=None):
             row = {"wall_ms": got["wall_ms"], "cpu_ms": got["cpu_ms"]}
             lines = [(0, "err", l) for l in tail(dest / "stderr", 1 << 20).splitlines()]
         with mock._lock:
-            posts = mock.posts[before:]
+            seen = mock.posts[before:]
+        posts = [stamp for stamp, auth in seen if mine(auth)]
+        if len(posts) != len(seen):
+            raise ForeignRequest(f"{name}: {len(seen) - len(posts)} request(s) from another client on the mock port")
         if kind == "post":
             if not posts:
                 raise BenchError(f"{name}: the mock never received a request\n{tail(dest / 'stderr')}")
@@ -142,7 +189,7 @@ def measure(args, binary):
                 home, work = templates[n]
                 env = fx.env(home, key=key, extra=env_extra)
                 if kind == "stream":
-                    run_stream([binary] + tail_argv, env, str(work), args.timeout, ready, stdin_data)
+                    run_stream([binary] + tail_argv, env, str(work), args.timeout, ready, stdin_for(stdin_data, work))
                 else:
                     run_wall([binary] + tail_argv, env, str(work), args.timeout, str(fx.root / "warm.err"))
             for _, prog in floors:
@@ -204,7 +251,8 @@ def measure(args, binary):
         return {"floor": {k: stats(v) for k, v in floor_samples.items()}, "points": points,
                 "samples": {"floor": floor_samples, **samples}, "load": load,
                 "path_dirs": ["<bench>/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"],
-                "companions": sorted(fx.companions), "git": fx.git_version}
+                "companions": sorted(fx.companions), "git": fx.git_version,
+                "foreign_retries": getattr(fx, "foreign_retries", 0)}
     finally:
         for pid in list(LIVE):
             reap_group(pid)
@@ -284,7 +332,7 @@ def main():
                      "load1": measured["load"]},
             "env": {"hermetic": True, "git_repo": args.git_repo, "companion": args.companion,
                     "companions_found": measured["companions"], "auto_isolate": "off",
-                    "git": measured["git"],
+                    "git": measured["git"], "foreign_retries": measured["foreign_retries"],
                     "extra_env": sorted(args.extra_env), "path": measured["path_dirs"],
                     "security": "stub (exit 44, Keychain never read)",
                     "debug_env": {"b_repl_ready": "GRAFF_SHUTDOWN_DEBUG=1 (ready marker)",
