@@ -98,6 +98,47 @@ pub fn appendTools(a: Allocator, tools: *std.ArrayList(Tool), server_index: usiz
     }
 }
 
+test "appendTools normalizes schemas without changing the serializable source catalog (#1892)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const source = try std.json.parseFromSliceLeaky(Value, a,
+        \\{"tools":[
+        \\  {"name":"union","inputSchema":{"type":"object","properties":{"keep":{"oneOf":[{"type":"string"},{"type":"null"}]}},"oneOf":[{"properties":{"path":{"type":"string"}},"required":["path"]},{"properties":{"paths":{"type":"array","items":{"type":"string"}}},"required":["paths"]}]}},
+        \\  {"name":"intersection","inputSchema":{"properties":{"keep":{"type":"boolean"}},"required":["keep"],"allOf":[{"properties":{"extra":{"type":"integer"}},"required":["extra"]}]}},
+        \\  {"name":"alternative","inputSchema":{"anyOf":[{"properties":{"a":{"type":"string"}},"required":["a"]},{"properties":{"b":{"type":"string"}},"required":["b"]}]}}
+        \\],"nextCursor":"more"}
+    , .{ .allocate = .alloc_always });
+    const before = try std.json.Stringify.valueAlloc(a, source, .{});
+    const server: Server = .{ .name = "fixture", .transport = .{ .dormant = .{ .cfg = .empty } } };
+    var tools: std.ArrayList(Tool) = .empty;
+    try appendTools(a, &tools, 0, &server, source.object.get("tools").?);
+
+    // mcp_cache.store serializes this original tools/list tree after discovery.
+    // Compare every byte, not just surviving keys: nested maps and arrays must
+    // also be unchanged, including their iteration order and original oneOf.
+    const after = try std.json.Stringify.valueAlloc(a, source, .{});
+    try std.testing.expectEqualStrings(before, after);
+    try std.testing.expectEqual(@as(usize, 3), tools.items.len);
+    for (tools.items) |tool| {
+        try std.testing.expect(mcp_protocol.topLevelCombinator(tool.input_schema) == null);
+        try std.testing.expectEqualStrings("object", tool.input_schema.object.get("type").?.string);
+    }
+    const union_schema = tools.items[0].input_schema.object;
+    const properties = union_schema.get("properties").?.object;
+    const nested = properties.get("keep").?.object;
+    try std.testing.expect(nested.get("oneOf") == null);
+    try std.testing.expectEqual(@as(usize, 2), nested.get("anyOf").?.array.items.len);
+    try std.testing.expect(properties.get("path") != null);
+    try std.testing.expect(properties.get("paths") != null);
+    try std.testing.expect(union_schema.get("required") == null);
+    try std.testing.expectEqualStrings("Requires one of: path or paths.", union_schema.get("description").?.string);
+    const intersection = tools.items[1].input_schema.object;
+    try std.testing.expect(intersection.get("properties").?.object.get("extra") != null);
+    try std.testing.expectEqual(@as(usize, 2), intersection.get("required").?.array.items.len);
+    try std.testing.expectEqualStrings("Requires one of: a or b.", tools.items[2].input_schema.object.get("description").?.string);
+}
+
 /// MCP tool annotations: `readOnlyHint: true` says the tool does not modify
 /// its environment. Absent or false means it may (the spec's default).
 pub fn declaresReadOnly(t: Value) bool {

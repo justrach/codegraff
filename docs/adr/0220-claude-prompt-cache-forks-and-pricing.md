@@ -55,8 +55,19 @@ these gaps:
   that shares no prefix gets no `cache_control`. This covers Anthropic and
   Anthropic models through OpenRouter. It is sent uncached (1x) instead of
   written (1.25x).
-- **A turn-opening request keeps the TTL of the last gap inside a turn.**
-  The #1320 rule is unchanged within a turn.
+- **Separate model latency from the returning user's idle signal** (#1898).
+  The #1320 rule is unchanged within a turn, and a turn-opening request still
+  inherits the last model gap. An interactive root conversation also asks for
+  the hour when it has at least two clean human user turns and either:
+  - Its turn-opening request gap is between 5 and 55 minutes inclusive; or
+  - The previous context meter is at least 64,000 tokens, even without a
+    previous request timestamp (as can happen at an ACP turn boundary).
+
+  The idle decision is latched throughout the turn: a fast tool follow-up
+  must not downgrade its final breakpoints before the next user pause. Tool
+  results, peer wakes, and provenance-marked notifications are not human
+  turns. Subs, unattended one-shots, and isolated compaction requests do not
+  acquire this idle premium. Both REPL and ACP use this shared request policy.
 - **1-hour writes are billed at 2x** on metered seats. A price row that
   states its own write multiplier is billed as the row says.
 - **5.5-era models get graff's effort as shown**, `medium` included.
@@ -76,9 +87,23 @@ these gaps:
   suffix is also kept verbatim after compaction.
 - Sessions on Sonnet 5.5 and Fable 5.1 at graff's default now run at
   `medium`, which is lower than before.
+- The original turn-boundary rule avoided paying 2x for a cold prefix but
+  ignored the *next* pause. After observing a useful pause, retaining the hour
+  can trade the next full 1.25x rewrite for a cache read. The current rewrite
+  still costs 2x; it cannot retroactively recover an expired entry. A request
+  gap includes model runtime, so it is a conservative predictor rather than
+  an exact measurement of human idle. The 55-minute bound leaves headroom
+  under the hour; a longer observed gap alone does not justify an upgrade.
+- Returning interactive contexts above 64k anticipate a pause even when their
+  request clock is fresh. This deliberately pays the hour premium for large
+  conversations that never pause or never return. The first prompt and small
+  conversations without an observed useful gap keep the cheaper default.
+  This heuristic survives frontend request-clock resets without a global
+  cross-session idle-history cache. It does not guarantee provider-side cache
+  promotion on a read; the requested TTL, not an assumed hit, is the contract.
 - Not done yet:
-  - Keeping the cache across idle gaps and long waits, by writing the hour at
-    a turn boundary, or with `max_tokens: 0` refreshes.
+  - Exact user-idle measurements across process restarts, and proactive
+    `max_tokens: 0` refreshes.
   - Mid-session system-prompt changes (goal, recorded constraints, `/strict`,
     `/ultracode`) as mid-conversation system messages.
   - Tool changes as inline tool additions.

@@ -39,8 +39,7 @@ pub fn script(buf: []u8, target: []const u8) ![]const u8 {
 }
 
 fn foregroundAsked(value: ?[]const u8) bool {
-    const v = value orelse return false;
-    return v.len != 0 and !std.mem.eql(u8, v, "0");
+    return std.mem.eql(u8, value orelse return false, "1");
 }
 
 /// The shim directory for `home`, or null where it does not apply: not
@@ -100,7 +99,8 @@ test "#832: the background-launch shim applies on macOS only, and not when foreg
     try testing.expect(dir(&buf, .linux, "/home/u", null) == null);
     try testing.expect(dir(&buf, .macos, null, null) == null);
     try testing.expect(dir(&buf, .macos, "/Users/u", "1") == null);
-    try testing.expect(dir(&buf, .macos, "/Users/u", "0") != null);
+    for ([_][]const u8{ "", "0", "false", "true", "2", " 1" }) |value|
+        try testing.expect(dir(&buf, .macos, "/Users/u", value) != null);
 }
 
 test "#832: PATH gets the shim once, in front" {
@@ -148,6 +148,7 @@ test "#832: `open` in a tool shell launches in the background unless the command
     for ([_][2][]const u8{
         .{ "open https://example.invalid/page", "open -g https://example.invalid/page\n" },
         .{ "GRAFF_GUI_FOREGROUND=1 open -a Simulator", "open -a Simulator\n" },
+        .{ "GRAFF_GUI_FOREGROUND=false open -a Simulator", "open -g -a Simulator\n" },
     }) |case| {
         const cmd = try std.mem.concat(gpa, u8, &.{ guard, case[0] });
         defer gpa.free(cmd);

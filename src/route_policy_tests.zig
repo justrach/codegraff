@@ -373,12 +373,12 @@ test "#393: role failure policy and pinned-seat fallback" {
 
     // Explicit pin failing on ask 1 with model/invalid falls back once to base;
     // never on cancellation, budget_exhausted, ask 2+, or when already on base.
-    try std.testing.expect(retry.shouldFallbackPinnedSeat(error.ApiError, .model, 1, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base"));
-    try std.testing.expect(retry.shouldFallbackPinnedSeat(error.ApiError, .invalid, 1, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base"));
-    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.Interrupted, .model, 1, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base"));
-    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.ApiError, .cancelled, 1, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base"));
-    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.ApiError, .budget_exhausted, 1, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base"));
-    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.ApiError, .model, 2, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base"));
-    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.ApiError, .model, 1, false, "codex", "gpt-6-pinned", "codex", "gpt-6-base"));
-    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.ApiError, .model, 1, true, "codex", "gpt-6-base", "codex", "gpt-6-base"));
+    try std.testing.expect(retry.shouldFallbackPinnedSeat(error.ApiError, .model, 1, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base", null));
+    try std.testing.expect(retry.shouldFallbackPinnedSeat(error.ApiError, .invalid, 1, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base", null));
+    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.Interrupted, .model, 1, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base", null));
+    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.ApiError, .cancelled, 1, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base", null));
+    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.ApiError, .budget_exhausted, 1, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base", null));
+    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.ApiError, .model, 2, true, "codex", "gpt-6-pinned", "codex", "gpt-6-base", null));
+    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.ApiError, .model, 1, false, "codex", "gpt-6-pinned", "codex", "gpt-6-base", null));
+    try std.testing.expect(!retry.shouldFallbackPinnedSeat(error.ApiError, .model, 1, true, "codex", "gpt-6-base", "codex", "gpt-6-base", null));
 }

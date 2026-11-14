@@ -34,6 +34,10 @@ pub fn buildBody(self: *Agent, tools_in: ?[]const u8, force_tool: bool, stream: 
     try s.write(if (self.provider.kind == .interactions) @import("interactions_wire.zig").wireModel(self.provider.model, tools != null) else self.provider.model);
     switch (self.provider.kind) {
         .anthropic => {
+            // #1895: pause_turn and failed-turn replay may leave an assistant
+            // tail. Preserve it as evidence, not a forbidden prefill. Keep the
+            // continuation in history so retries share the same signed prefix.
+            try @import("history_wire.zig").ensureAnthropicUserTurn(self.messageMutationAlloc(), &self.messages);
             const is_kimi = std.mem.eql(u8, self.provider.id, "kimi");
             const is_oauth = anthropic_oauth.active(self.provider);
             const oauth_names = if (is_oauth) try anthropic_oauth.ToolNames.init(self.scratchAlloc(), tools orelse "[]") else anthropic_oauth.ToolNames{};

@@ -26,6 +26,13 @@ pub const guidance =
     \\For mixed requests, preserve every requested change and verification step.
     \\For changes, retain read-before-edit, root-cause fixes, and verification
     \\in the project's own environment. A summary alone does not finish a fix.
+    \\For a current-app change, reconcile visible source/release version or
+    \\frontend-entry-point conflicts before edits or heavy verification. Read the
+    \\manifest and packaging entry point when they disagree with the requested
+    \\application. Respect explicit historical-version work; never auto-upgrade,
+    \\switch branches, or discard changes. Resolve an ambiguous target with the
+    \\user. Tests or screenshots of a retired frontend prove only that version;
+    \\label their scope and limitations, not current-application success.
     \\When inspecting or analyzing another chat or session's trajectory, keep the
     \\investigation read-only in this session: never message, wake, steer, or
     \\recruit the inspected chat as a worker unless the user explicitly asks to.
