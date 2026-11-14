@@ -10,6 +10,14 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.66
+
+- Repair paused or interrupted request histories that end with an unintended assistant prefill, and avoid repeating unchanged invalid worker requests (#1895, #1900).
+- Keep longer prompt-cache retention for eligible returning interactive conversations, including fast tool follow-ups within the turn (#1898).
+- Reconcile current-application requests with visible source-version or frontend conflicts before edits and verification; preserve explicitly requested historical work (#1899).
+- Strengthen background-safe GUI verification guidance and require literal `GRAFF_GUI_FOREGROUND=1` for the launch-shim opt-out. These guardrails do not guarantee live desktop isolation (#832).
+- Add source-catalog serialization coverage for the previously released schema-ownership fix, and guard POSIX-only git fixture bodies so Windows tests link (#1892, #1900).
+
 ## v0.302.74.65
 
 - Improve startup responsiveness across the REPL, one-shot, and ACP paths.

@@ -5,6 +5,12 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.66
+    \\  • Repair paused request history and avoid invalid worker retries (#1895).
+    \\  • Retain longer prompt-cache TTL across returning interactive turns (#1898).
+    \\  • Reconcile application targets and strengthen background-safe GUI verification guidance (#1899, #832).
+    \\  • Add schema-ownership coverage and fix Windows test linking (#1892, #1900).
+    \\
     \\0.302.74.65
     \\  • Improve startup responsiveness across the REPL, one-shot, and ACP paths.
     \\  • Avoid blocking startup on optional companion handshakes and model-catalog refreshes.
