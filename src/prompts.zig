@@ -66,6 +66,7 @@ pub const segment_table = [_]Segment{
     .{ .name = "git_safety", .text = text.git_safety_note, .gate = .always },
     .{ .name = "work", .text = text.work_note, .gate = .always },
     .{ .name = "background", .text = text.background_note, .gate = .local_tools },
+    .{ .name = "gui_verification", .text = @import("gui_verification.zig").guidance, .gate = .always },
     .{ .name = "headsup", .text = text.headsup_note, .gate = .always },
     .{ .name = "todo_progress", .text = text.todo_progress_note, .gate = .todos },
     .{ .name = "root_cause", .text = text.root_cause_note, .gate = .always },
@@ -494,7 +495,7 @@ pub const sub_system_prompt =
     \\questions — make reasonable assumptions. Do not narrate tool calls.
     \\Your final message is returned verbatim to the orchestrator. Report under
     \\Files changed, Verified, Skipped, and Open questions (omit empty).
-++ parallel_tools_note ++ text.public_write_note ++ text.constraint_authority_note ++ text.claim_ownership_note;
+++ parallel_tools_note ++ text.public_write_note ++ text.constraint_authority_note ++ text.claim_ownership_note ++ @import("gui_verification.zig").guidance;
 
 pub const compact_instruction = @import("compact_handoff_note.zig").compact_instruction;
 

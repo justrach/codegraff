@@ -195,7 +195,14 @@ pub fn shouldFallbackPinnedSeat(
     current_model: []const u8,
     base_id: []const u8,
     base_model: []const u8,
+    detail: ?[]const u8,
 ) bool {
+    // #1895: a rejected conversation is not an unavailable pinned seat.
+    // Switching models without changing that history just buys another 400.
+    if (detail) |msg| {
+        if (util.indexOfIgnoreCase(msg, "assistant message prefill") != null or
+            util.indexOfIgnoreCase(msg, "conversation must end with a user message") != null) return false;
+    }
     if (!eligibleError(err) or !has_pin or attempts_done != 1) return false;
     if (kind != .model and kind != .invalid) return false;
     return !std.mem.eql(u8, current_id, base_id) or !std.mem.eql(u8, current_model, base_model);
@@ -328,6 +335,24 @@ test "pastDeadline: no run deadline never blocks a retry; a passed one always do
     try std.testing.expect(!pastDeadline(999, 1_000));
     try std.testing.expect(pastDeadline(1_000, 1_000));
     try std.testing.expect(pastDeadline(1_001, 1_000));
+}
+
+test "#1895 assistant prefill rejection never earns a worker retry or seat fallback" {
+    const detail = "invalid_request_error: This model does not support assistant message prefill. The conversation must end with a user message.";
+    const kind = subagent_run.classifyFailure(error.ApiError, detail);
+    try std.testing.expectEqual(FailKind.invalid, kind);
+    // Gateways can omit invalid_request_error; the history defect is still
+    // structural, not an unknown failure deserving three unchanged asks.
+    const generic = "api error: This model does not support assistant message prefill. The conversation must end with a user message.";
+    const generic_kind = subagent_run.classifyFailure(error.ApiError, generic);
+    try std.testing.expectEqual(FailKind.invalid, generic_kind);
+    try std.testing.expect(!shouldRetry(error.ApiError, generic_kind, generic, 1));
+    try std.testing.expect(!shouldRetry(error.ApiError, kind, detail, 1));
+    try std.testing.expect(!shouldFallbackPinnedSeat(error.ApiError, kind, 1, true, "fixture", "pinned", "fixture", "base", detail));
+    const report = subagent_run.subagentFailure(std.testing.allocator, "worker", error.ApiError, detail, 1);
+    defer std.testing.allocator.free(report.text);
+    try std.testing.expect(!subagent_run.failureAllowsRetry(report.text));
+    try std.testing.expect(std.mem.indexOf(u8, report.text, "1 attempt") != null);
 }
 
 test "attemptsWord: the count in the failure text reads like English" {

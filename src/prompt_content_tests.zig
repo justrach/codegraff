@@ -62,6 +62,18 @@ test "root prompt permits explicit external targets without weakening confinemen
     try std.testing.expect(std.mem.indexOf(u8, prompts.main_system_prompt, "Never extend") != null);
 }
 
+test "#1899: full and lean prompts reconcile application targets without forcing upgrades" {
+    const text = @import("prompt_text.zig");
+    for ([_][]const u8{ prompts.main_system_prompt, text.lean_intro_note }) |p| {
+        for ([_][]const u8{
+            "frontend-entry-point conflicts before edits or heavy verification",
+            "manifest and packaging entry point",
+            "Respect explicit historical-version work; never auto-upgrade",
+            "label their scope and limitations, not current-application success",
+        }) |clause| try std.testing.expect(std.mem.indexOf(u8, p, clause) != null);
+    }
+}
+
 test "#1812: root prompt and read_file schema distinguish image inspection from show_image presentation" {
     try std.testing.expect(std.mem.indexOf(u8, prompts.main_system_prompt, "collapsed tool group") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompts.main_system_prompt, "call show_image before referring") != null);

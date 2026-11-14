@@ -122,7 +122,7 @@ pub fn classifyFailure(err: anyerror, detail: ?[]const u8) FailKind {
     if (containsAnyCI(msg, &.{ "api key", "unauthorized", "expired", "authentication", "invalid_api_key", "401", "sign-in was rejected" })) return .auth;
     // "unavailable" must stay qualified: bare, it swallows every 5xx above.
     if (containsAnyCI(msg, &.{ "does not exist", "not found", "no such model", "decommission", "no longer", "model_not_found", "model unavailable", "model is unavailable", "404" })) return .model;
-    if (containsAnyCI(msg, &.{ "context length", "context window", "invalid", "unsupported", "not supported", "must be", "too long", "400", "parameter", "max_tokens", "bad request", "cyber_policy", "cybersecurity", "policy_violation", "content_policy", "request_rejected", "compaction state was rejected" })) return .invalid;
+    if (containsAnyCI(msg, &.{ "context length", "context window", "invalid", "unsupported", "not supported", "must be", "too long", "400", "parameter", "max_tokens", "bad request", "cyber_policy", "cybersecurity", "policy_violation", "content_policy", "request_rejected", "compaction state was rejected", "assistant message prefill", "conversation must end with a user message" })) return .invalid;
     return .unknown;
 }
 
@@ -449,7 +449,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
             const r = agent.runTurn();
             const err = if (r) |_| break :ask r else |e| e;
             const fail_kind = classifyFailure(err, agent.last_api_error);
-            if (agent.tools_used.count() == 0 and subagent_retry.shouldFallbackPinnedSeat(err, fail_kind, attempts, pin != null, agent.provider.id, agent.provider.model, base_provider.id, base_provider.model)) {
+            if (agent.tools_used.count() == 0 and subagent_retry.shouldFallbackPinnedSeat(err, fail_kind, attempts, pin != null, agent.provider.id, agent.provider.model, base_provider.id, base_provider.model, agent.last_api_error)) {
                 subagent_retry.traceSeatFallback(ctx.tracer, sub_id, agent.provider.model, base_provider.model, fail_kind, agent.last_api_error);
                 agent.provider = base_provider;
                 if (activity) |*recorder| recorder.setModel(agent.provider.id, agent.provider.model);

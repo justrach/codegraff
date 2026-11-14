@@ -42,6 +42,17 @@ pub fn prepare(a: std.mem.Allocator, kind: Kind, history: *std.json.Array) void 
     }
 }
 
+/// A replay after pause_turn or a failed turn can end on an assistant reply.
+/// That is conversation evidence, not an intentional assistant prefill. Keep
+/// it and explicitly ask to continue before sending to Messages backends.
+/// Run after prepare(), so dangling tool calls get their results first.
+pub fn ensureAnthropicUserTurn(a: std.mem.Allocator, history: *std.json.Array) !void {
+    if (history.items.len == 0) return;
+    const last = history.items[history.items.len - 1];
+    if (last != .object or !std.mem.eql(u8, strField(last.object, "role"), "assistant")) return;
+    try history.append(try messages.userNote(a, .anthropic, "Continue the current task from where you stopped; do not repeat completed work."));
+}
+
 fn strField(obj: std.json.ObjectMap, key: []const u8) []const u8 {
     const v = obj.get(key) orelse return "";
     return if (v == .string) v.string else "";

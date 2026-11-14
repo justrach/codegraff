@@ -30,6 +30,64 @@ fn claudeAgent(arena: std.mem.Allocator, model: []const u8) !Agent {
     };
 }
 
+test "#1895 fresh and resumed workers never serialize an accidental assistant prefill" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    // Both frontend paths and workers use this same request boundary. A fresh
+    // worker has a real user task; a pause before its first tool leaves only
+    // an assistant reply at the next boundary.
+    for (0..3) |route| {
+        for ([_]bool{ false, true }) |sub| {
+            var agent = try claudeAgent(a, "claude-sonnet-5-5");
+            agent.sub = sub;
+            if (route == 1) agent.provider.source = .login;
+            if (route == 2) agent.provider.id = "codegraff";
+            const first = try agent.buildBody(null, false, false, false);
+            defer std.testing.allocator.free(first);
+            try std.testing.expectEqual(@as(usize, 1), agent.messages.items.len);
+            const reply = try std.json.parseFromSliceLeaky(Value, a,
+                \\{"stop_reason":"pause_turn","content":[{"type":"thinking","thinking":"working","signature":"signed"},{"type":"text","text":"Partial progress"}]}
+            , .{});
+            try std.testing.expectEqual(@as(?[]const u8, null), try agent.stepAnthropic(reply.object));
+            const assistant = try std.json.Stringify.valueAlloc(a, agent.messages.items[1], .{});
+            const body = try agent.buildBody(null, false, false, false);
+            defer std.testing.allocator.free(body);
+            const wire = try std.json.parseFromSliceLeaky(Value, a, body, .{});
+            const turns = wire.object.get("messages").?.array.items;
+            try std.testing.expectEqualStrings("user", turns[turns.len - 1].object.get("role").?.string);
+            try std.testing.expectEqualStrings(assistant, try std.json.Stringify.valueAlloc(a, agent.messages.items[1], .{}));
+            try std.testing.expectEqual(@as(usize, 3), agent.messages.items.len);
+            // Retries must keep the same signed prefix and not grow another note.
+            const retry_body = try agent.buildBody(null, false, false, false);
+            defer std.testing.allocator.free(retry_body);
+            try std.testing.expectEqualStrings(body, retry_body);
+        }
+    }
+}
+
+test "#1895 tool receipts stay terminal user turns without redundant continuation" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var agent = try claudeAgent(a, "claude-sonnet-5-5");
+    agent.messages = (try std.json.parseFromSliceLeaky(Value, a,
+        \\[{"role":"user","content":"read the fixture"},{"role":"assistant","content":[{"type":"tool_use","id":"read","name":"read_file","input":{"path":"fixture"}}]}]
+    , .{})).array;
+    // Request preparation restores an interrupted tool receipt before the
+    // continuation guard runs; it must never substitute a user text note.
+    @import("history_wire.zig").prepare(a, .anthropic, &agent.messages);
+    const body = try agent.buildBody(null, false, false, false);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqual(@as(usize, 3), agent.messages.items.len);
+    const wire = try std.json.parseFromSliceLeaky(Value, a, body, .{});
+    const turns = wire.object.get("messages").?.array.items;
+    const result = turns[2].object.get("content").?.array.items[0];
+    try std.testing.expectEqualStrings("tool_result", result.object.get("type").?.string);
+    try std.testing.expectEqualStrings("read", result.object.get("tool_use_id").?.string);
+    try std.testing.expectEqualStrings(@import("history_wire.zig").tool_interrupted_readonly, result.object.get("content").?.string);
+}
+
 const bash_tools = "[{\"name\":\"bash\",\"description\":\"\",\"input_schema\":{\"type\":\"object\"}}]";
 
 fn has(body: []const u8, needle: []const u8) bool {
