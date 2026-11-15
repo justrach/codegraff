@@ -298,8 +298,9 @@ fn hasActionVerb(text: []const u8) bool {
 
 fn hasMultiStepCue(text: []const u8) bool {
     const cues = [_][]const u8{
-        "across ",  "all ",    "refactor",   "architect", "implement",
-        "pipeline", "feature", "end-to-end", "and then",  "multiple",
+        "across ",  "all ",    "refactor",   "architect",
+        "pipeline", "feature", "end-to-end", "and then",
+        "multiple",
     };
     for (cues) |c| if (containsFold(text, c)) return true;
     var dots: usize = 0;
@@ -314,8 +315,22 @@ fn hasMultiStepCue(text: []const u8) bool {
     return false;
 }
 
+pub fn stripHarnessNotes(text: []const u8) []const u8 {
+    var cut = text.len;
+    const markers = [_][]const u8{
+        "\n\n[standing state (",
+        "\n\n[harness note:",
+        "\n\n[pace:",
+        "\n\nAttached images (",
+    };
+    for (markers) |m| {
+        if (std.mem.indexOf(u8, text, m)) |idx| cut = @min(cut, idx);
+    }
+    return text[0..cut];
+}
+
 pub fn shouldPlanAuto(root: *const Agent, user_text: []const u8) bool {
-    const trimmed = std.mem.trim(u8, user_text, " \t\r\n");
+    const trimmed = std.mem.trim(u8, stripHarnessNotes(user_text), " \t\r\n");
     if (trimmed.len == 0) return false;
     if (task_intent.classify(trimmed) == .informational and !hasActionVerb(trimmed)) return false;
     const task_class = shapes.classOf(trimmed);

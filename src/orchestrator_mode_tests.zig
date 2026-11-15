@@ -22,6 +22,7 @@ const acp_orch = @import("acp_orchestrator.zig");
 const acp_models = @import("acp_models_rpc.zig");
 const LiveTurn = @import("acp_live_turn.zig").LiveTurn;
 const proto = @import("acp_protocol.zig");
+const session_wake = @import("session_wake.zig");
 const testAgentFor = @import("agent_request_body_responses.zig").testAgentFor;
 
 const SavedState = struct {
@@ -169,6 +170,9 @@ test "shouldPlanAuto skips Q&A and trivial edits, triggers on multi-file tasks, 
     try std.testing.expect(!orchestrator.shouldPlanAuto(&root, ""));
     try std.testing.expect(!orchestrator.shouldPlanAuto(&root, "What does DEFAULT_POLICY contain?"));
     try std.testing.expect(!orchestrator.shouldPlanAuto(&root, "Fix off-by-one in app/pagination.py"));
+    try std.testing.expect(!orchestrator.shouldPlanAuto(&root, "Now implement the change"));
+    try std.testing.expect(!orchestrator.shouldPlanAuto(&root, "Fix typo\n\n[standing state (harness-kept, survives context rewrites): refactor pipeline across multiple files]"));
+    try std.testing.expect(orchestrator.shouldPlanAuto(&root, "Implement a token-bucket rate limiter with per-route burst overrides and unit tests"));
 
     const multi = "Refactor sched/scheduler.py across sched/dag.py and sched/runner.py and update tests";
     try std.testing.expect(orchestrator.shouldPlanAuto(&root, multi));
@@ -321,6 +325,21 @@ test "orchestrator_turn drives direct answer, KV-identical handoff, replan cap, 
     try std.testing.expect(!orchestrator.handoff_active);
     try std.testing.expect(!main_mod.plan_mode);
     try std.testing.expectEqualStrings("gpt-6-astra", root.provider.model);
+
+    // 5. Active non-standing /goal loop runs single-phase even when orchestrator is on.
+    MockScript.reset(.direct);
+    root.goal = .{ .objective = "wait for build", .status = .active, .standing = false };
+    try std.testing.expectEqualStrings("direct answer", try orchestrator_turn.run(&root, &keys, arena, null, &MockScript.runPhase));
+    root.goal = null;
+    try std.testing.expectEqual(@as(usize, 1), MockScript.calls);
+    try std.testing.expect(!MockScript.plan_flags[0]);
+
+    // 6. Reactive notice wake runs single-phase even when orchestrator is on.
+    MockScript.reset(.direct);
+    try root.messages.append(try session_wake.message(arena, "background job finished across all modules"));
+    try std.testing.expectEqualStrings("direct answer", try orchestrator_turn.run(&root, &keys, arena, null, &MockScript.runPhase));
+    try std.testing.expectEqual(@as(usize, 1), MockScript.calls);
+    try std.testing.expect(!MockScript.plan_flags[0]);
 }
 
 test "ACP orchestrator configOption and graff/models metadata match seat capability" {

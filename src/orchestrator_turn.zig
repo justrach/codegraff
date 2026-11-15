@@ -44,9 +44,55 @@ fn switchSeatInPlace(root: *Agent, arena: Allocator, target: Provider, saved_fal
     root.fallback_active = saved_fallback_active;
 }
 
+fn isOrchestratorNotice(item: std.json.Value) bool {
+    if (item != .object) return false;
+    const content = item.object.get("content") orelse return false;
+    const text: []const u8 = switch (content) {
+        .string => |s| s,
+        .array => |arr| blk: {
+            for (arr.items) |blk_val| {
+                if (blk_val != .object) continue;
+                const tx = blk_val.object.get("text") orelse continue;
+                if (tx == .string) break :blk tx.string;
+            }
+            return false;
+        },
+        else => return false,
+    };
+    return std.mem.startsWith(u8, text, "[orchestrator mode ") or
+        std.mem.startsWith(u8, text, "[plan review]");
+}
+
+fn isWakeOrSteerOrigin(item: std.json.Value) bool {
+    if (item != .object) return false;
+    const v = item.object.get(session_wake.origin_key) orelse return false;
+    return v == .string and (std.mem.eql(u8, v.string, "notification") or
+        std.mem.eql(u8, v.string, session_wake.steer_origin));
+}
+
+fn activeAutonomousGoal(root: *const Agent) bool {
+    const g = root.goal orelse return false;
+    return g.status == .active and !g.standing;
+}
+
+fn isAutonomousOrNoticeTurn(items: []const std.json.Value, raw_user_text: []const u8) bool {
+    if (std.mem.indexOf(u8, raw_user_text, "[harness note: this is an autonomous run.") != null or
+        std.mem.indexOf(u8, raw_user_text, "[pace:") != null) return true;
+    var i = items.len;
+    while (i > 0) {
+        i -= 1;
+        // Skip orchestrator's own internal phase/review directives left in history.
+        if (isOrchestratorNotice(items[i])) continue;
+        if (isWakeOrSteerOrigin(items[i])) return true;
+        if (messages.userPromptText(items[i]) != null) return false;
+    }
+    return false;
+}
+
 pub fn run(root: *Agent, keys: *Keys, arena: Allocator, out: ?*Io.Writer, singlePhase: SinglePhaseFn) anyerror![]const u8 {
     if (root.fallback_blocked or root.sub or main_mod.plan_mode or root.text_only or
-        root.output_schema != null or root.review_mode or orchestrator.g_mode == .off)
+        root.output_schema != null or root.review_mode or orchestrator.g_mode == .off or
+        activeAutonomousGoal(root))
     {
         return singlePhase(root, keys, arena, out);
     }
@@ -54,7 +100,11 @@ pub fn run(root: *Agent, keys: *Keys, arena: Allocator, out: ?*Io.Writer, single
     const exec_provider = orchestrator.resolveExecutor(root.provider, root.reasoning) orelse {
         return singlePhase(root, keys, arena, out);
     };
-    const user_text = messages.latestUserText(root.messages.items);
+    const raw_user_text = messages.latestUserText(root.messages.items);
+    if (isAutonomousOrNoticeTurn(root.messages.items, raw_user_text)) {
+        return singlePhase(root, keys, arena, out);
+    }
+    const user_text = std.mem.trim(u8, orchestrator.stripHarnessNotes(raw_user_text), " \t\r\n");
     if (orchestrator.g_mode == .auto and !orchestrator.shouldPlanAuto(root, user_text)) {
         return singlePhase(root, keys, arena, out);
     }
