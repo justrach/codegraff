@@ -5,6 +5,12 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.67
+    \\  • Add opt-in runtime extensions (`graff extensions`, `plugins enable|disable`) and worker-inherited `policies` across REPL and ACP (ADR 0343).
+    \\  • Add opt-in post-write `formatters` with verified-byte restore and multicall symlink preservation.
+    \\  • Add read-only `lsp` queries and `graff lsp` CLI (`status`, `setup`, diagnostics, hover, definition, references, symbols) with folded root schemas, `~/.graff/lsp/settings.json` defaults, and optional POSIX warm reuse (ADR 0344).
+    \\  • Accept `provider/model` qualifiers on `--subagent-model` across REPL and ACP.
+    \\
     \\0.302.74.66
     \\  • Repair paused request history and avoid invalid worker retries (#1895).
     \\  • Retain longer prompt-cache TTL across returning interactive turns (#1898).

@@ -10,6 +10,13 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.67
+
+- Add opt-in trusted runtime extensions (`runtime_plugins`, `graff extensions`, `graff plugins enable|disable`) and hard policy statements (`policies`) inherited across workers and enforced across REPL and ACP (ADR 0343).
+- Add opt-in post-write formatters (`formatters` in `.harness/settings.json`) with verified-byte restore on failure or timeout and symlink `argv[0]` preservation for multicall toolchains.
+- Add read-only `lsp` queries and `graff lsp` CLI (`status`, `setup`, `diagnostics`, `hover`, `definition`, `references`, `document_symbols`) with folded root tool schemas, user-level `~/.graff/lsp/settings.json` (`GRAFF_LSP_CONFIG`) defaults under workspace overrides and `"lsp": false` opt-out, optional POSIX `warm_ttl_ms` session reuse, and JS/TS/JSX/TSX, Zig, Rust, Python, and C/C++ server interoperability (ADR 0344).
+- Accept `provider/model` qualifiers on `--subagent-model` across REPL and ACP worker dispatch.
+
 ## v0.302.74.66
 
 - Repair paused or interrupted request histories that end with an unintended assistant prefill, and avoid repeating unchanged invalid worker requests (#1895, #1900).
