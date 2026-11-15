@@ -77,6 +77,7 @@ pub const commands = [_]Item{
     .{ .name = "/peek", .usage = "/peek <session>", .desc = "see what a live co-resident session is doing right now (its transcript tail)" },
     .{ .name = "/routes", .usage = "/routes [<set>|add <set> <frontier|mid|small> <provider/model>]", .desc = "your own priced model lanes across providers — view the set and which seat wins each lane now" },
     .{ .name = "/plan", .desc = "toggle plan mode: read-only explore + propose; writes/edits denied" },
+    .{ .name = "/orchestrator", .usage = "/orchestrator [off|auto|on|status]", .desc = "same-chat planner -> executor baton handoff mode (off|auto|on; persists)" },
     .{ .name = "/ultracode", .desc = "toggle persistent workflow mode; bare opens an on/off picker, or /ultracode on|off" },
     .{ .name = "/fallback", .usage = "/fallback [allow|remove|off]", .desc = "opt-in cross-provider fallback for this workspace (same-provider rollout stays on)" },
     .{ .name = "/key", .usage = "/key [provider secret]", .desc = "show API-key status; /key <provider> <secret> adds one live (+ Keychain)" },

@@ -15,7 +15,7 @@ const LiveTurn = @import("acp_live_turn.zig").LiveTurn;
 pub fn same(before: []const engine.ConfigOption, after: []const engine.ConfigOption) bool {
     if (before.len != after.len) return false;
     for (before, after) |a, b| {
-        if (!std.mem.eql(u8, a.currentValue, b.currentValue) or a.options.len != b.options.len) return false;
+        if (!std.mem.eql(u8, a.id, b.id) or !std.mem.eql(u8, a.currentValue, b.currentValue) or a.options.len != b.options.len) return false;
         for (a.options, b.options) |av, bv| if (!std.mem.eql(u8, av.value, bv.value)) return false;
     }
     return true;

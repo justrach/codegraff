@@ -294,6 +294,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     }
     if (try @import("commands_effort.zig").handle(root, arena, line, out)) return true;
     if (try @import("compact_at.zig").handle(root, line, out)) return true;
+    if (try @import("commands_orchestrator.zig").handle(root, arena, line, out)) return true;
     if (std.mem.startsWith(u8, line, "/keepcontext")) {
         const arg = std.mem.trim(u8, line["/keepcontext".len..], " \t");
         if (std.mem.eql(u8, arg, "on")) {

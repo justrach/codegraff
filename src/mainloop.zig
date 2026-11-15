@@ -257,6 +257,10 @@ pub fn run(ctx: *Ctx) !void {
                 ctx.root.emit(.{ .type = "ultracode", .ok = true, .on = on });
                 continue;
             }
+            if (std.mem.eql(u8, rtype, "set_orchestrator")) {
+                @import("commands_orchestrator.zig").handleJson(ctx.root, ctx.arena, parsed.object);
+                continue;
+            }
             if (std.mem.eql(u8, rtype, "score")) {
                 mainloop_score.handle(ctx.root, parsed.object);
                 continue;

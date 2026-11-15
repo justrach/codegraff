@@ -200,6 +200,15 @@ pub fn parse(init: std.process.Init) !Flags {
                     @import("rlm.zig").setFromCli(true); // ADR 0022: default RLM; last flag wins vs --old
                 } else if (std.mem.eql(u8, arg, "--old") or std.mem.eql(u8, arg, "--no-rlm")) {
                     @import("rlm.zig").setFromCli(false); // structured-only catalog (also GRAFF_OLD=1 / GRAFF_RLM=0)
+                } else if (std.mem.eql(u8, arg, "--orchestrator")) {
+                    @import("orchestrator_mode.zig").setFromCli(.on);
+                } else if (std.mem.eql(u8, arg, "--no-orchestrator")) {
+                    @import("orchestrator_mode.zig").setFromCli(.off);
+                } else if (std.mem.startsWith(u8, arg, "--orchestrator=")) {
+                    const val = arg["--orchestrator=".len..];
+                    const mode = @import("orchestrator_mode.zig").Mode.parse(val) orelse
+                        std.process.fatal("--orchestrator needs off, auto, or on, got '{s}'", .{val});
+                    @import("orchestrator_mode.zig").setFromCli(mode);
                 } else if (std.mem.eql(u8, arg, "--no-autocommit")) {
                     main_mod.g_worktree_autocommit = false;
                 } else if (std.mem.eql(u8, arg, "--schema")) {

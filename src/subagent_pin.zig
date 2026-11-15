@@ -357,7 +357,7 @@ fn rungScoreFor(sid: []const u8, tier: Tier, hard: bool) ?struct { model: []cons
 /// The login is still standing consent for an *exact* model pin. Metered
 /// cross-provider routing keeps the explicit --subagent-provider bar.
 /// When several subs serve the rung, the bench sheet's score picks.
-fn subscriptionRung(tier: Tier, effort: ?Effort, base: Provider) ?Resolved {
+pub fn subscriptionRung(tier: Tier, effort: ?Effort, base: Provider) ?Resolved {
     if (deepseekFamily(base)) return null;
     // MiMo's explicit budget policy is independent of the older benchmark
     // snapshot. Keep Pro/Flash workers local instead of selecting Luna merely

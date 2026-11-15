@@ -33,9 +33,6 @@ const playbook_glue = @import("playbook_glue.zig");
 const command_catalog = @import("command_catalog.zig");
 const vision = @import("vision.zig");
 const vision_queue = @import("vision_queue.zig");
-const pricing = @import("pricing.zig");
-const billing = @import("billing.zig");
-const models_rank = @import("models_rank");
 pub const protocol_version = proto.protocol_version;
 pub const err_method_not_found = proto.err_method_not_found;
 pub const err_internal = proto.err_internal;
@@ -117,67 +114,7 @@ fn userMessage(arena: Allocator, root: *agent_mod.Agent, text: []const u8) !Valu
 /// ACP client can offer only the models this install can actually reach.
 /// Rows come back in election order (plan, then local, credits, api).
 pub fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request) anyerror!bool {
-    const live: *LiveTurn = @ptrCast(@alignCast(ctx));
-    if (try @import("acp_agents.zig").handle(arena, live.root.io, live.root.home, w, req)) return true;
-    if (try @import("acp_changes.zig").handle(arena, live.root.io, w, req)) return true;
-    if (try @import("acp_session_fork.zig").handle(live, arena, w, req)) return true;
-    if (try @import("acp_mcp_app.zig").handle(arena, w, req, live.root)) return true;
-    if (try @import("acp_accounts.zig").handle(arena, live.root.io, live.root.gpa, live.root.home, live.keys, live.root.provider.id, w, req)) return true;
-    if (!std.mem.eql(u8, req.method, "graff/models")) return false;
-    if (req.id == null) return true;
-    const keys = live.keys;
-    const root = live.root;
-    // Hydrate deferred local metadata without network refresh or MCP startup.
-    @import("acp_model_option.zig").hydrate(live);
-    const er = @import("effort_route.zig");
-    if (@import("gateway_picker_catalog.zig").requested(req.params)) @import("gateway_picker_catalog.zig").refresh(root.io, root.arena, root.home, keys.*);
-    const catalog = pricing.models();
-    const Row = struct {
-        name: []const u8,
-        provider: []const u8,
-        maker: ?[]const u8, // who made it, for a logo; the provider is only the route
-        context: u64,
-        authenticated: bool,
-        cost: []const u8,
-        separateQuota: bool = false,
-        current: bool,
-        effortLevels: []const []const u8,
-        fastSupported: bool,
-    };
-    const ranked = try arena.alloc(models_rank.Scored, catalog.len);
-    for (catalog, 0..) |m, i| ranked[i] = .{
-        .idx = i,
-        .score = models_rank.electionRank(
-            keys.get(m.provider) != null,
-            billing.costFor(m.provider, keys.source(m.provider)),
-        ),
-    };
-    @import("stable_sort.zig").sort(models_rank.Scored, ranked, {}, models_rank.scoredLess);
-    const rows = try arena.alloc(Row, catalog.len);
-    for (ranked, rows) |r, *row| {
-        const m = catalog[r.idx];
-        const spec = provider_mod.specFor(m.provider);
-        const supports_effort = spec != null and @import("schema.zig").providerTakesEffort(spec.?.kind, m.provider, m.name);
-        row.* = .{
-            .name = m.name,
-            .provider = m.provider,
-            .maker = @import("model_maker.zig").of(m.provider, m.name),
-            .context = pricing.contextFor(m.provider, m.name),
-            .authenticated = keys.get(m.provider) != null,
-            .cost = billing.costFor(m.provider, keys.source(m.provider)).badge(),
-            .separateQuota = billing.quotaPoolFor(m.provider, m.name, keys.source(m.provider)) == .separate,
-            .current = std.mem.eql(u8, m.name, root.provider.model) and std.mem.eql(u8, m.provider, root.provider.id),
-            .effortLevels = if (supports_effort) er.levels(m.provider, m.name) else &.{},
-            .fastSupported = std.mem.eql(u8, m.provider, "codex"),
-        };
-    }
-    const levels: []const []const u8 = if (!root.effortApplies()) &.{} else er.levels(root.provider.id, root.provider.model);
-    try proto.writeResult(w, req.id, .{
-        .models = rows,
-        .commands = proto.slashCommands(),
-        .current = .{ .model = root.provider.model, .provider = root.provider.id, .effort = er.normalize(root.provider.id, root.provider.model, @tagName(root.reasoning)), .fast = root.fast, .effortLevels = levels, .fastSupported = std.mem.eql(u8, root.provider.id, "codex") },
-    });
-    return true;
+    return @import("acp_models_rpc.zig").liveModels(ctx, arena, w, req);
 }
 
 pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u8) !void {

@@ -24,6 +24,8 @@ pub fn configure(d: *engine.Dispatch, live: *LiveTurn) void {
     d.set_config = @import("acp_config.zig").set;
     d.model_config = @import("acp_model_option.zig").option;
     d.set_model = @import("acp_model_option.zig").set;
+    d.orchestrator_config = @import("acp_orchestrator.zig").option;
+    d.set_orchestrator = @import("acp_orchestrator.zig").set;
     d.durable_session_id = if (session.validSessionName(live.root.session_name)) live.root.session_name else null;
     d.durable_name = durableName;
     live.dispatch = d;

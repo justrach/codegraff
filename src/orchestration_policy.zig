@@ -52,6 +52,10 @@ pub const Rung = enum {
     /// ones, so a verifier-less failure goes straight to R3, where the
     /// judges ARE the feedback.
     R0d,
+    /// Same-conversation baton handoff: root model plans read-only on
+    /// Phase 1, calls `exit_plan_mode`, and hands execution off in-place to
+    /// the cheaper executor rung on Phase 2 without tearing down KV prefix.
+    baton,
     /// One scout: a single sweep + synthesize, to keep the parent's context
     /// clean rather than to parallelize.
     R1,
@@ -75,6 +79,7 @@ pub const Rung = enum {
         return switch (self) {
             .R0 => 0,
             .R0d => 1,
+            .baton => 1,
             .R1 => 2,
             .R2 => 3,
             .R3 => 4,

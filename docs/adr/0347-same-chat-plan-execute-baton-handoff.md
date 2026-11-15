@@ -1,0 +1,19 @@
+# 0347. Same-Chat Plan-Execute Baton Handoff (Orchestrator Mode)
+
+Status: accepted 2026-11-16
+
+## Context
+
+Users working on frontier seats (`codex/gpt-6-astra`, `claude-opus-5-5`, `claude-fable-5-2`, `gemini-4-argon`) spend expensive frontier quota or metered budget on mechanical multi-step file edits and test-fix loops that a same-provider mid/flash model (`gpt-6-sol`, `claude-sonnet-5-5`, `gemini-3.8-flash`) can execute accurately once a strong architecture plan exists. Existing subagent spawning (`subagent`) opens a fresh child context without the parent's KV-cached read prefix and is gated on explicit delegation prompts, while existing plan mode (`/plan`) stops after planning without handing execution off automatically.
+
+## Decision
+
+1. **Same-conversation KV-cache-preserving baton handoff:** `orchestrator_turn.run` executes one turn in up to two phases inside the same `Agent` history without mutating the root system prompt (`sys_normal`). Phase 1 runs read-only (`plan_mode = true`) on the user's selected planner seat; when the model calls `exit_plan_mode(plan)` alone, Phase 2 switches the active seat in-place (`applyProviderInner(..., false)`) to `orchestrator_mode.resolveExecutor(...)` while preserving `fallback_active`, `subagent_provider`, and an identical serialized root tool schema prefix (`toolsJson()`). Phase 2 may escalate back via `enter_plan_mode(reason)` up to `max_replans = 2` times per turn (`[plan review]`). A `defer` unconditionally restores phase, plan mode, planner seat, and tool cache even on error or cancellation.
+2. **Strictly same-provider, same-wire seat resolution:** `orchestrator_mode.resolveExecutor` descends exactly one affordable rung on the same provider and same wire protocol (`Provider.kind`), preventing cross-vendor transcript shape mismatches or signed thinking-block failures. Bottom-rung models, single-seat providers (`xai`, `kimi`), custom routers, subagents, structured-output turns, and explicit `/plan` or `/review` turns bypass automatically.
+3. **Three modes (`off` | `auto` | `on`) defaulting to `auto`:** Paired 7-task × 3-mode trials showed `auto` preserves 100% pass rate, eliminates handoff latency on Q&A and 1-line edits, cuts frontier planner calls by 67%–75% on multi-file work, and sustains 95%–97% prompt-cache read hits across Phase 1 -> Phase 2. `.auto` consults `orchestration_policy` (`.baton` rung alongside `.R0`) so local outcome history can still lock or relax `.baton` per task cell.
+4. **Full REPL + ACP parity:** Mode overrides follow `CLI (--orchestrator / --no-orchestrator) > env (GRAFF_ORCHESTRATOR) > .harness/settings.json ("orchestrator") > compiled default (auto)` via atomic writes (`credential_store.replaceFile`), exposed identically through REPL `/orchestrator`, `--json` `set_orchestrator`, ACP `configOptions` (`id: "orchestrator"`, `category: "mode"`), `session/set_config_option`, and `graff/models` (`orchestratorSupported`, `executorModel`, `current.orchestrator`).
+
+## Consequences
+
+- Every frontier multi-step turn automatically plans read-only on the user's chosen frontier seat and hands execution off to the same-provider executor seat with high KV-cache reuse and bounded replanning.
+- Because `exit_plan_mode` and `enter_plan_mode` append via `orchestrator_mode.maybeAppendSpecs` only while `handoff_active == true` (and in identical order across both phases), non-orchestrator tool catalogs and prompt caches stay untouched.

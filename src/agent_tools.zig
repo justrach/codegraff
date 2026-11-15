@@ -74,6 +74,7 @@ pub fn runTools(self: *Agent, calls: []const ToolCall) ![]ExecResult {
     }
     const results = try self.historyAlloc().alloc(ExecResult, calls.len);
     if (try @import("turn_handoff.zig").rejectMixedBatch(self, calls, results)) return results;
+    if (try @import("orchestrator_mode.zig").rejectMixedBatch(self, calls, results)) return results;
     const eval_index = eval_control.evalCallIndex(calls);
     // ADR 0256: only a batch that completes needs the model family.
     const writes_complete = eval_control.completionIndex(calls) != null and @import("gemini_turns.zig").family(self.provider.model);
@@ -290,7 +291,7 @@ const ClockSleepMs = struct { ms: i64, clamped: bool };
 /// `input` must be `{"ms": <non-negative integer>}` — anything else
 /// (missing, negative, non-integer, wrong shape) is a normal rejection,
 /// never a crash. A value over the 12h cap clamps instead of rejecting.
-fn parseClockSleepMs(input: Value) error{InvalidMs}!ClockSleepMs {
+pub fn parseClockSleepMs(input: Value) error{InvalidMs}!ClockSleepMs {
     if (input != .object) return error.InvalidMs;
     const raw = input.object.get("ms") orelse return error.InvalidMs;
     if (raw != .integer or raw.integer < 0) return error.InvalidMs;
@@ -298,12 +299,12 @@ fn parseClockSleepMs(input: Value) error{InvalidMs}!ClockSleepMs {
     return .{ .ms = raw.integer, .clamped = false };
 }
 
-fn clockSleepSuccessText(arena: std.mem.Allocator, ms: i64, clamped: bool) ![]const u8 {
+pub fn clockSleepSuccessText(arena: std.mem.Allocator, ms: i64, clamped: bool) ![]const u8 {
     if (clamped) return std.fmt.allocPrint(arena, "clock_sleep: requested ms exceeded the 12h cap, clamped to {d} ms; slept {d} ms", .{ clock_sleep_max_ms, ms });
     return std.fmt.allocPrint(arena, "slept {d} ms", .{ms});
 }
 
-fn clockSleepInterruptedText(arena: std.mem.Allocator, elapsed_ms: i64) ![]const u8 {
+pub fn clockSleepInterruptedText(arena: std.mem.Allocator, elapsed_ms: i64) ![]const u8 {
     return std.fmt.allocPrint(arena, "sleep interrupted after {d} ms by user input", .{elapsed_ms});
 }
 
@@ -324,6 +325,7 @@ pub fn handleMeta(self: *Agent, call: ToolCall) !ExecResult {
         return schedule.handleTool(self, call);
     }
     if (std.mem.eql(u8, call.name, "yield_turn")) return @import("turn_handoff.zig").handle(self, call);
+    if (@import("orchestrator_mode.zig").isMetaTool(call.name)) return @import("orchestrator_mode.zig").handleMeta(self, call);
     if (std.mem.eql(u8, call.name, "attempt_completion")) {
         if (!self.review_mode and self.eval_cmd != null and (!self.eval_verified or self.eval_repair_pending)) {
             const message = if (self.eval_repair_pending)
@@ -436,153 +438,6 @@ pub fn sayToolResult(self: *Agent, call: ToolCall, r: ExecResult) void {
     const sink = engine_sink.forAgent(self);
     sink.emit(self.io, .{ .tool_result = ev });
     sink.emit(self.io, .{ .tool_call_finished = ev });
-}
-
-test "parseClockSleepMs: valid ms passes through, missing/negative/non-integer reject, over-cap clamps (#225)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-
-    const valid = std.json.parseFromSliceLeaky(Value, a, "{\"ms\":200}", .{}) catch unreachable;
-    const parsed = try parseClockSleepMs(valid);
-    try std.testing.expectEqual(@as(i64, 200), parsed.ms);
-    try std.testing.expect(!parsed.clamped);
-
-    const zero = std.json.parseFromSliceLeaky(Value, a, "{\"ms\":0}", .{}) catch unreachable;
-    try std.testing.expectEqual(@as(i64, 0), (try parseClockSleepMs(zero)).ms);
-
-    const missing = std.json.parseFromSliceLeaky(Value, a, "{}", .{}) catch unreachable;
-    try std.testing.expectError(error.InvalidMs, parseClockSleepMs(missing));
-
-    const negative = std.json.parseFromSliceLeaky(Value, a, "{\"ms\":-1}", .{}) catch unreachable;
-    try std.testing.expectError(error.InvalidMs, parseClockSleepMs(negative));
-
-    const string_ms = std.json.parseFromSliceLeaky(Value, a, "{\"ms\":\"soon\"}", .{}) catch unreachable;
-    try std.testing.expectError(error.InvalidMs, parseClockSleepMs(string_ms));
-
-    const float_ms = std.json.parseFromSliceLeaky(Value, a, "{\"ms\":200.5}", .{}) catch unreachable;
-    try std.testing.expectError(error.InvalidMs, parseClockSleepMs(float_ms));
-
-    const over_cap = std.json.parseFromSliceLeaky(Value, a, "{\"ms\":99999999999}", .{}) catch unreachable;
-    const clamped = try parseClockSleepMs(over_cap);
-    try std.testing.expectEqual(clock_sleep_max_ms, clamped.ms);
-    try std.testing.expect(clamped.clamped);
-}
-
-test "clockSleepSuccessText/clockSleepInterruptedText: exact result strings (#225 acceptance)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    try std.testing.expectEqualStrings("slept 200 ms", try clockSleepSuccessText(a, 200, false));
-    try std.testing.expectEqualStrings(
-        "clock_sleep: requested ms exceeded the 12h cap, clamped to 43200000 ms; slept 43200000 ms",
-        try clockSleepSuccessText(a, clock_sleep_max_ms, true),
-    );
-    try std.testing.expectEqualStrings("sleep interrupted after 150 ms by user input", try clockSleepInterruptedText(a, 150));
-}
-
-test "handleMeta clock_sleep: ms=0 completes for real end-to-end, bad ms rejects without touching Io" {
-    // clock_sleep is a folded native: handleMeta refuses it until loaded. Mark it loaded rather than toggling fold.enabled: `enabled` is shared mutable state the parallel test runner races on (native_fold.zig's own tests flip it), while g_loaded is append-only and safe (the refusal is covered in native_fold.zig).
-    @import("native_fold.zig").markLoaded("clock_sleep");
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    var agent: Agent = .{
-        .gpa = a,
-        .arena = a,
-        // ms=0 never reaches sleepInterruptible's self.io.sleep() call (its
-        // while loop is skipped at left=0), and the ms-error paths below
-        // return before sleepInterruptible is even called — undefined Io is
-        // safe for exactly these cases (a real Io backend has no unit-test
-        // seam in this codebase; see agent_argstream.zig's own `.io =
-        // undefined` test for the established precedent).
-        .io = undefined,
-        .client = undefined,
-        .provider = undefined,
-        .messages = undefined,
-        .sub = false,
-        .label = "test",
-        .out = null,
-    };
-    const zero_call: ToolCall = .{ .id = "1", .name = "clock_sleep", .input = std.json.parseFromSliceLeaky(Value, a, "{\"ms\":0}", .{}) catch unreachable };
-    const zero_result = try handleMeta(&agent, zero_call);
-    try std.testing.expectEqualStrings("slept 0 ms", zero_result.text);
-    try std.testing.expect(!zero_result.is_error);
-
-    inline for (.{ "{}", "{\"ms\":-1}", "{\"ms\":\"soon\"}", "{\"ms\":200.5}" }) |bad_json| {
-        const bad_call: ToolCall = .{ .id = "1", .name = "clock_sleep", .input = std.json.parseFromSliceLeaky(Value, a, bad_json, .{}) catch unreachable };
-        const bad_result = try handleMeta(&agent, bad_call);
-        try std.testing.expect(bad_result.is_error);
-        try std.testing.expectEqualStrings("clock_sleep: ms must be a non-negative integer", bad_result.text);
-    }
-}
-
-test "clock_sleep counts against --max-tool-calls and --dedupe-tool-calls like any other call (#225 rails, no bypass)" {
-    const saved_max = main_mod.max_tool_calls;
-    const saved_dedupe = main_mod.dedupe_tool_calls;
-    defer {
-        main_mod.max_tool_calls = saved_max;
-        main_mod.dedupe_tool_calls = saved_dedupe;
-    }
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    var agent: Agent = .{
-        .gpa = a,
-        .arena = a,
-        .io = std.testing.io, // hard policy performs a real settings read before dispatch
-        .client = undefined,
-        .provider = undefined,
-        .messages = undefined,
-        .sub = false,
-        .label = "test",
-        .out = null,
-    };
-    const call: ToolCall = .{ .id = "1", .name = "clock_sleep", .input = std.json.parseFromSliceLeaky(Value, a, "{\"ms\":0}", .{}) catch unreachable };
-
-    main_mod.max_tool_calls = 1;
-    main_mod.dedupe_tool_calls = false;
-    try std.testing.expect((try rejectToolCall(&agent, call)) == null); // 1st call clears the budget gate
-    const budget_denied = try rejectToolCall(&agent, call);
-    try std.testing.expect(budget_denied != null);
-    try std.testing.expect(budget_denied.?.is_error);
-    try std.testing.expect(std.mem.indexOf(u8, budget_denied.?.text, "budget") != null);
-
-    agent.tool_calls_this_turn = 0;
-    main_mod.max_tool_calls = null;
-    main_mod.dedupe_tool_calls = true;
-    try std.testing.expect((try rejectToolCall(&agent, call)) == null); // 1st identical call clears the dedupe gate
-    const dupe_denied = try rejectToolCall(&agent, call);
-    try std.testing.expect(dupe_denied != null);
-    try std.testing.expect(dupe_denied.?.is_error);
-    try std.testing.expect(std.mem.indexOf(u8, dupe_denied.?.text, "duplicate") != null);
-}
-
-test "rejectToolCall: truncated arguments are a local error, not an executed call (#752)" {
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    var agent: Agent = .{
-        .gpa = a,
-        .arena = a,
-        .io = std.testing.io,
-        .client = undefined,
-        .provider = undefined,
-        .messages = undefined,
-        .sub = false,
-        .label = "test",
-        .out = null,
-    };
-    const call: ToolCall = .{
-        .id = "c1",
-        .name = "bash",
-        .input = .{ .object = .empty },
-        .args_ok = false,
-    };
-    const denied = (try rejectToolCall(&agent, call)).?;
-    try std.testing.expect(denied.is_error);
-    try std.testing.expectEqualStrings(tool_call_args.invalid_exec_message, denied.text);
-    try std.testing.expectEqual(@as(u64, 0), agent.tool_calls_this_turn);
 }
 
 test {

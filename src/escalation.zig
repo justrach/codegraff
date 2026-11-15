@@ -211,7 +211,7 @@ pub fn downsizeWidth(phases: []const Value, cap: u64, remaining: u64) usize {
 pub fn verdictFor(rung: Rung, o: Observables, phases: []const Value) Verdict {
     const l = pb.Ledger.init(o.cap);
     switch (rung) {
-        .R0 => return .{ .solo = solo_advice },
+        .R0, .baton => return .{ .solo = solo_advice },
         .R0d => return .{ .solo = deep_retry_advice },
         // One scout, one synthesis: cap every phase at a single task.
         .R1 => return .{ .downsize = 1 },

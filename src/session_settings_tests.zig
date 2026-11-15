@@ -69,6 +69,7 @@ const knobs = [_]Knob{
     .{ .name = "GRAFF_JOB_IDLE_WARN_MINS", .value = "3" },
     .{ .name = "GRAFF_JOB_IDLE_STOP_MINS", .value = "0" },
     .{ .name = "GRAFF_HEARTBEAT_SECS", .value = "600" },
+    .{ .name = "GRAFF_ORCHESTRATOR", .value = "auto" },
 };
 
 /// A stand-in for the process environment that records which names were asked
@@ -126,6 +127,9 @@ const Saved = struct {
     compact_mix: bool,
     clef_compact: bool,
     clef_archive: bool,
+    orch_mode: @import("orchestrator_mode.zig").Mode,
+    orch_cli: bool,
+    orch_env: bool,
 
     fn capture() Saved {
         return .{
@@ -162,6 +166,9 @@ const Saved = struct {
             .compact_mix = @import("compact_mix.zig").g_enabled,
             .clef_compact = @import("agent_clef_compact.zig").g_enabled,
             .clef_archive = @import("agent_clef_archive.zig").g_enabled,
+            .orch_mode = @import("orchestrator_mode.zig").g_mode,
+            .orch_cli = @import("orchestrator_mode.zig").cli_set,
+            .orch_env = @import("orchestrator_mode.zig").env_set,
         };
     }
 
@@ -200,6 +207,9 @@ const Saved = struct {
         @import("compact_mix.zig").g_enabled = s.compact_mix;
         @import("agent_clef_compact.zig").g_enabled = s.clef_compact;
         @import("agent_clef_archive.zig").g_enabled = s.clef_archive;
+        @import("orchestrator_mode.zig").g_mode = s.orch_mode;
+        @import("orchestrator_mode.zig").cli_set = s.orch_cli;
+        @import("orchestrator_mode.zig").env_set = s.orch_env;
     }
 };
 
