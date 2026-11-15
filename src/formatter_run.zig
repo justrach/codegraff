@@ -86,6 +86,17 @@ fn projectDir(io: Io, arena: Allocator, f: registry.Formatter, root: []const u8,
     return null;
 }
 
+/// Anchor a PATH lookup to the current working directory so child-cwd spawns do
+/// not reinterpret relative PATH entries, while preserving the leaf filename for
+/// multicall symlinks such as `rustfmt -> rustup`.
+fn resolvePathExecutable(io: Io, arena: Allocator, found: []const u8) ?[]const u8 {
+    const st = Io.Dir.cwd().statFile(io, found, .{}) catch return null;
+    if (st.kind != .file) return null;
+    const dir = std.fs.path.dirname(found) orelse ".";
+    const canonical_dir = Io.Dir.cwd().realPathFileAlloc(io, dir, arena) catch return null;
+    return std.fs.path.join(arena, &.{ canonical_dir, std.fs.path.basename(found) }) catch null;
+}
+
 /// One formatter per mutation: custom entries in settings order first, then
 /// enabled built-ins in stable registry order. Missing built-ins are skipped.
 pub fn select(reg: registry.Registry, io: Io, arena: Allocator, root: []const u8, file: []const u8) ?Selection {
@@ -101,8 +112,7 @@ pub fn select(reg: registry.Registry, io: Io, arena: Allocator, root: []const u8
             } else if (!f.custom) {
                 var buf: [std.fs.max_path_bytes]u8 = undefined;
                 const found = @import("path_lookup.zig").resolve(io, reg.path_env, executable, &buf) orelse continue;
-                // Avoid making a relative PATH entry relative to the child's cwd.
-                executable = Io.Dir.cwd().realPathFileAlloc(io, found, arena) catch continue;
+                executable = resolvePathExecutable(io, arena, found) orelse continue;
             }
             return .{ .formatter = f, .cwd = cwd, .executable = executable };
         }

@@ -295,3 +295,53 @@ test "formatter registry refuses formatter-created escaping links without touchi
     try std.testing.expect(std.mem.indexOf(u8, text, "final bytes unknown") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "verified edit kept") == null);
 }
+
+test "formatter built-in PATH lookup preserves multicall symlink basename and skips dangling links" {
+    if (comptime !supported) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try rootOf(tmp, a);
+    try tmp.dir.createDirPath(io, "pkg/src");
+    try tmp.dir.createDirPath(io, "bin");
+    try tmp.dir.createDirPath(io, "broken");
+    try tmp.dir.writeFile(io, .{ .sub_path = "pkg/Cargo.toml", .data = "[package]\nname = \"pkg\"\nversion = \"0.1.0\"\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "pkg/src/lib.rs", .data = "pub fn x() {}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "pkg/main.go", .data = "package main\nfunc   x() {}\n" });
+    const shim =
+        \\#!/bin/sh
+        \\if [ "$(basename "$0")" != "gofmt" ]; then exit 2; fi
+        \\for last; do :; done
+        \\printf 'formatted:%s\n' "$(basename "$last")" > "$last"
+        \\
+    ;
+    try tmp.dir.writeFile(io, .{ .sub_path = "multicall", .data = shim });
+    const mc = try tmp.dir.openFile(io, "multicall", .{ .mode = .read_write });
+    defer mc.close(io);
+    if (Io.File.Permissions.has_executable_bit) try mc.setPermissions(io, .fromMode(0o755));
+    try tmp.dir.symLink(io, "../multicall", "bin/rustfmt", .{});
+    try tmp.dir.symLink(io, "../multicall", "bin/gofmt", .{});
+    try tmp.dir.symLink(io, "../nonexistent", "broken/rustfmt", .{});
+
+    const bin_dir = try std.fs.path.join(a, &.{ root, "bin" });
+    const broken_dir = try std.fs.path.join(a, &.{ root, "broken" });
+    const rs_target = try std.fs.path.join(a, &.{ root, "pkg/src/lib.rs" });
+    const go_target = try std.fs.path.join(a, &.{ root, "pkg/main.go" });
+
+    const broken_reg = try f.parse(a, .{ .bool = true }, broken_dir);
+    try std.testing.expect(run.select(broken_reg, io, a, root, rs_target) == null);
+
+    const reg = try f.parse(a, .{ .bool = true }, bin_dir);
+    const rs_sel = run.select(reg, io, a, root, rs_target) orelse return error.TestExpectedSelection;
+    try std.testing.expectEqualStrings("rustfmt", rs_sel.formatter.name);
+    try std.testing.expectEqualStrings("rustfmt", std.fs.path.basename(rs_sel.executable));
+    try std.testing.expect(std.mem.endsWith(u8, rs_sel.cwd, "/pkg"));
+
+    var res = try run.run(reg, std.testing.allocator, io, root, "pkg/main.go", go_target);
+    defer res.deinit(std.testing.allocator);
+    try std.testing.expectEqual(.formatted, res.status);
+    try expectBytes(tmp, "pkg/main.go", "formatted:main.go\n");
+}

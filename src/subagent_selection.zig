@@ -103,6 +103,41 @@ fn defaultLadderProvider(keys: provider_mod.Keys, root: provider_mod.Provider) ?
 /// `source=session-default` instead of conflating the two.
 pub var g_default_from_ladder: bool = false;
 
+const WorkerQuery = struct {
+    provider: []const u8,
+    model: []const u8,
+    explicit_provider: bool,
+};
+
+fn splitWorkerQuery(
+    root: provider_mod.Provider,
+    provider_query: ?[]const u8,
+    model_query: []const u8,
+) Error!WorkerQuery {
+    const raw_model = std.mem.trim(u8, model_query, " \t\r\n");
+    if (provider_query) |raw_p| {
+        return .{
+            .provider = std.mem.trim(u8, raw_p, " \t\r\n"),
+            .model = raw_model,
+            .explicit_provider = true,
+        };
+    }
+    // Keep bare or vendor-prefixed IDs that already belong to the root
+    // provider (such as OpenRouter's `anthropic/claude-sonnet-4.6`) local.
+    if (modelForProvider(root.id, raw_model) != null) {
+        return .{ .provider = root.id, .model = raw_model, .explicit_provider = false };
+    }
+    if (std.mem.indexOfScalar(u8, raw_model, '/')) |slash| {
+        const prefix = std.mem.trim(u8, raw_model[0..slash], " \t\r\n");
+        if (provider_mod.specFor(prefix)) |spec| {
+            const rest = std.mem.trim(u8, raw_model[slash + 1 ..], " \t\r\n");
+            if (rest.len == 0) return error.UnknownModel;
+            return .{ .provider = spec.id, .model = rest, .explicit_provider = true };
+        }
+    }
+    return .{ .provider = root.id, .model = raw_model, .explicit_provider = false };
+}
+
 pub fn subagentProvider(
     keys: provider_mod.Keys,
     root: provider_mod.Provider,
@@ -110,28 +145,24 @@ pub fn subagentProvider(
     model_query: []const u8,
     allow_cross_provider: bool,
 ) Error!provider_mod.Provider {
-    const requested_provider = if (provider_query) |raw|
-        std.mem.trim(u8, raw, " \t\r\n")
-    else
-        root.id;
-    if (!knownProvider(requested_provider)) return error.UnknownProvider;
-    if (!std.mem.eql(u8, requested_provider, root.id) and !allow_cross_provider)
+    const q = try splitWorkerQuery(root, provider_query, model_query);
+    if (!knownProvider(q.provider)) return error.UnknownProvider;
+    if (!std.mem.eql(u8, q.provider, root.id) and !allow_cross_provider)
         return error.CrossProviderConsentRequired;
 
-    const requested_model = std.mem.trim(u8, model_query, " \t\r\n");
-    const model = modelForProvider(requested_provider, requested_model) orelse explicit: {
+    const model = modelForProvider(q.provider, q.model) orelse explicit: {
         // Same rule as `--model <provider>/<model>`: a login-served router
         // (the codegraff gateway) serves what its live catalog lists, which
         // the baked table does not carry, so an explicitly named worker
         // provider takes the exact model name the way the root model does.
-        if (provider_query != null) if (provider_mod.specFor(requested_provider)) |spec| {
-            if (catalog_selection.acceptsExplicitModel(spec, requested_model)) break :explicit requested_model;
+        if (q.explicit_provider) if (provider_mod.specFor(q.provider)) |spec| {
+            if (catalog_selection.acceptsExplicitModel(spec, q.model)) break :explicit q.model;
         };
-        if (pricing.resolveModelName(keys, requested_model) != null)
+        if (pricing.resolveModelName(keys, q.model) != null)
             return error.ModelNotOnProvider;
         return error.UnknownModel;
     };
-    return keys.providerById(requested_provider, model) catch error.MissingKey;
+    return keys.providerById(q.provider, model) catch error.MissingKey;
 }
 
 /// The session consented (--allow-cross-provider-subagents) to workers on
@@ -161,12 +192,16 @@ pub fn resolveSubagentProvider(
     if (requested_model.len == 0)
         std.process.fatal("--subagent-model/GRAFF_SUBAGENT_MODEL cannot be empty", .{});
     const provider_arg: ?[]const u8 = if (requested_provider.len == 0) null else requested_provider;
+    const split = splitWorkerQuery(root, provider_arg, requested_model) catch |err| switch (err) {
+        error.UnknownModel => std.process.fatal("unknown subagent model '{s}' — run `graff models refresh` or see /models", .{requested_model}),
+        else => unreachable,
+    };
     return subagentProvider(keys, root, provider_arg, requested_model, allow_cross_provider) catch |err| switch (err) {
         error.UnknownModel => std.process.fatal("unknown subagent model '{s}' — run `graff models refresh` or see /models", .{requested_model}),
-        error.UnknownProvider => std.process.fatal("unknown subagent provider '{s}' — run `graff models` to list providers", .{requested_provider}),
-        error.ModelNotOnProvider => std.process.fatal("subagent model '{s}' is not available through provider '{s}'", .{ requested_model, if (provider_arg) |id| id else root.id }),
-        error.CrossProviderConsentRequired => std.process.fatal("subagent provider '{s}' differs from root provider '{s}' — add --allow-cross-provider-subagents to confirm prompts and code may be sent to both providers", .{ requested_provider, root.id }),
-        error.MissingKey => std.process.fatal("no key/login for subagent model '{s}' via '{s}'", .{ requested_model, if (provider_arg) |id| id else root.id }),
+        error.UnknownProvider => std.process.fatal("unknown subagent provider '{s}' — run `graff models` to list providers", .{split.provider}),
+        error.ModelNotOnProvider => std.process.fatal("subagent model '{s}' is not available through provider '{s}'", .{ split.model, split.provider }),
+        error.CrossProviderConsentRequired => std.process.fatal("subagent provider '{s}' differs from root provider '{s}' — add --allow-cross-provider-subagents to confirm prompts and code may be sent to both providers", .{ split.provider, root.id }),
+        error.MissingKey => std.process.fatal("no key/login for subagent model '{s}' via '{s}'", .{ split.model, split.provider }),
     };
 }
 
@@ -337,4 +372,35 @@ test "ladder rungs vs providerClass: documented, intentional disagreement (#291)
     try std.testing.expectEqualStrings("frontier", @import("scoring.zig").providerClass("claude-opus-4-8"));
     try std.testing.expectEqualStrings("mid", @import("scoring.zig").providerClass("claude-sonnet-4-6"));
     try std.testing.expectEqualStrings("small", @import("scoring.zig").providerClass("claude-haiku-4-5"));
+}
+
+test "--subagent-model accepts <provider>/<model> while preserving openrouter slash models" {
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    for (provider_mod.provider_specs, &keys.values) |spec, *value| {
+        if (std.mem.eql(u8, spec.id, "codex") or
+            std.mem.eql(u8, spec.id, "kimi") or
+            std.mem.eql(u8, spec.id, "codegraff") or
+            std.mem.eql(u8, spec.id, "openrouter")) value.* = "test-token";
+    }
+    const codex_root = try keys.providerById("codex", "gpt-6.1-sol");
+
+    const same = try subagentProvider(keys, codex_root, null, "codex/gpt-6-luna", false);
+    try std.testing.expectEqualStrings("codex", same.id);
+    try std.testing.expectEqualStrings("gpt-6-luna", same.model);
+
+    try std.testing.expectError(error.CrossProviderConsentRequired, subagentProvider(keys, codex_root, null, "kimi/k3", false));
+    const cross = try subagentProvider(keys, codex_root, null, "kimi/k3", true);
+    try std.testing.expectEqualStrings("kimi", cross.id);
+    try std.testing.expectEqualStrings("k3", cross.model);
+
+    const gw = try subagentProvider(keys, codex_root, null, "codegraff/live-gateway-only-model", true);
+    try std.testing.expectEqualStrings("codegraff", gw.id);
+    try std.testing.expectEqualStrings("live-gateway-only-model", gw.model);
+
+    try std.testing.expectError(error.UnknownModel, subagentProvider(keys, codex_root, null, "codex/", false));
+
+    const or_root = try keys.providerById("openrouter", "anthropic/claude-sonnet-4.6");
+    const or_worker = try subagentProvider(keys, or_root, null, "anthropic/claude-sonnet-4.6", false);
+    try std.testing.expectEqualStrings("openrouter", or_worker.id);
+    try std.testing.expectEqualStrings("anthropic/claude-sonnet-4.6", or_worker.model);
 }

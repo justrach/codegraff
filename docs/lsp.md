@@ -64,16 +64,20 @@ the workspace are filtered and marked. Results are capped at 64 KiB.
 
 ## Lifecycle and limitations
 
-Each query starts an owned, bounded server session: initialize → initialized →
-didOpen → query/report → shutdown/exit and cleanup. The process runner owns the
-entire process group/job, including cancellation and descendants. Protocol
-framing, notifications and server requests are bounded. Model/provider credentials
-are not deliberately passed; the server uses the existing scrubbed tool environment.
+When `warm_ttl_ms` is `0` or omitted (the default), each query starts an owned,
+bounded server session: initialize → initialized → didOpen → query/report →
+shutdown/exit and cleanup. The process runner owns the entire process group/job,
+including cancellation and descendants. Protocol framing, notifications and
+server requests are bounded. Model/provider credentials are not deliberately
+passed; the server uses the existing scrubbed tool environment.
 
-This first version is intentionally one-shot, not a persistent IDE index. It
-avoids stale document versions and process lifetime leaks, but pays initialization
-cost on every query. Cross-file references depend on what the configured server
-can index within the deadline; no whole-repository completeness is promised.
+By default, queries pay initialization cost instead of leaving background server
+processes running. Setting `"warm_ttl_ms"` (`100`–`300000` ms) enables optional
+POSIX per-`(workspace, server)` `AF_UNIX` session reuse (`0700` state directory,
+`0600` socket) that tracks file SHA-256 hashes (`didOpen`/`didChange`),
+serializes concurrent queries, and reaps the server process group on idle TTL
+expiry. Cross-file references still depend on what the configured server can
+index within the deadline; no whole-repository completeness is promised.
 Diagnostics are on demand, not automatically attached after every edit.
 
 Server registrations are immutable snapshots captured at root session startup
