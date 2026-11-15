@@ -98,7 +98,7 @@ pub fn execBatch(ctx: ToolCtx, input: Value) !ToolOutput {
         const verdict = edit_verify.verifyNative(before, after, draft);
         if (verdict != .ok) return .{ .text = try edit_verify.verdictText(gpa, path, verdict, "the write"), .is_error = true };
         const msg = try std.fmt.allocPrint(gpa, "applied {d} edit span(s) to {s} (verified)", .{ list.items.len, path });
-        return .{ .text = try @import("syntax_note.zig").appendToOwned(gpa, ctx.io, msg, path, resolved, draft) };
+        return @import("formatters.zig").finishEdit(ctx, path, resolved, msg, after);
     }
 }
 

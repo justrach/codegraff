@@ -194,6 +194,10 @@ fn refuseRead(self: *Agent, call: ToolCall) !ExecResult {
 }
 
 pub fn rejectToolCall(self: *Agent, call: ToolCall) !?ExecResult {
+    if (@import("hard_policy_gate.zig").denialAgent(self, self.historyAlloc(), call)) |denied| {
+        self.emitToolRejected(call, "hard_policy", denied);
+        return .{ .text = denied, .is_error = true };
+    }
     if (self.sub and self.synthesis.reporting()) {
         const message = @import("workflow_synthesis.zig").tool_refusal;
         self.emitToolRejected(call, "workflow_synthesis", message);
@@ -526,7 +530,7 @@ test "clock_sleep counts against --max-tool-calls and --dedupe-tool-calls like a
     var agent: Agent = .{
         .gpa = a,
         .arena = a,
-        .io = undefined, // rejectToolCall never touches self.io
+        .io = std.testing.io, // hard policy performs a real settings read before dispatch
         .client = undefined,
         .provider = undefined,
         .messages = undefined,
@@ -561,7 +565,7 @@ test "rejectToolCall: truncated arguments are a local error, not an executed cal
     var agent: Agent = .{
         .gpa = a,
         .arena = a,
-        .io = undefined,
+        .io = std.testing.io,
         .client = undefined,
         .provider = undefined,
         .messages = undefined,

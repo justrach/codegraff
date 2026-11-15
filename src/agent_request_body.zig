@@ -25,7 +25,7 @@ pub fn responsesOutputLimit(self: *const Agent) u32 {
 pub fn buildBody(self: *Agent, tools_in: ?[]const u8, force_tool: bool, stream: bool, stream_usage: bool) ![]u8 {
     if (self.reasoning == .none and !@import("effort_route.zig").mimoRoute(self.provider.id, self.provider.model)) return error.ReasoningOffUnsupported;
     // #695: an EMPTY catalog string means "omit tools" — `""` serialized the malformed `"tools":,` that 400s every provider (0.0.280).
-    const tools: ?[]const u8 = if (tools_in) |t| (if (t.len == 0) null else t) else null;
+    const tools: ?[]const u8 = if (tools_in) |t| (if (t.len == 0) null else try @import("hard_policy_catalog.zig").filterAgent(self, self.scratchAlloc(), t, self.provider.id, self.registry)) else null;
     var aw: Io.Writer.Allocating = .init(self.gpa);
     errdefer aw.deinit();
     var s: std.json.Stringify = .{ .writer = &aw.writer };

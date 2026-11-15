@@ -471,7 +471,7 @@ pub fn emitSchema(w: *Io.Writer) !void {
     try s.objectField("tools");
     try s.beginArray();
     // Optionals + rlm: SDK dump is unconditional (#352, #868).
-    for (root_specs ++ optional_specs ++ [_]ToolSpec{.{ .name = rlm.tool_name, .desc = rlm.tool_desc, .schema = rlm.tool_schema }}) |t| {
+    for (root_specs ++ optional_specs ++ [_]ToolSpec{ @import("lsp.zig").spec, .{ .name = rlm.tool_name, .desc = rlm.tool_desc, .schema = rlm.tool_schema } }) |t| {
         try s.beginObject();
         try s.objectField("name");
         try s.write(t.name);

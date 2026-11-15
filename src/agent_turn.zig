@@ -25,6 +25,7 @@ pub fn run(self: *Agent, root_turn_prepared: *std.atomic.Value(bool)) anyerror![
     self.read_miss.reset();
     self.tool_repeat.reset();
     @import("named_work.zig").beginTurn(self);
+    if (!self.sub) _ = @import("plugin_management.zig").reloadAtBoundary();
     try self.ensureRootTools(self.provider.kind);
     var task_scope = @import("task_intent.zig").State.begin(self);
     if (!self.sub and !root_turn_prepared.swap(false, .acq_rel)) @import("cancel_source.zig").clear();

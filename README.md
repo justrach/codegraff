@@ -107,6 +107,20 @@ shortens the transcript.
   <img src="docs/images/readme-context-workshop.png" alt="Context moves through three steps: reuse setup, work with context, and carry results forward" width="960">
 </p>
 
+## Extensions and policy
+
+Optional [formatters](docs/formatters.md) run after verified file edits.
+[Native extensions](docs/native-extensions.md) add bounded request callbacks and
+data-only panels in Harness; executable callbacks require explicit local trust.
+[Plugin management](docs/plugin-management.md) enables, disables, registers and
+reloads metadata without copying foreign plugin trees or auto-running their hooks.
+[Hard policies](docs/policies.md) restrict providers, tools, MCP, skills, plugins
+and web search independently of ordinary approvals. Formatters and executable
+extensions are off by default and do not add text to the model's prompt.
+Optional [language servers](docs/lsp.md) provide real diagnostics, hover,
+definitions and references through a read-only `lsp` tool and model-free CLI.
+LSP is off by default; it uses explicitly configured, already installed servers.
+
 ## MCP servers
 
 ```sh

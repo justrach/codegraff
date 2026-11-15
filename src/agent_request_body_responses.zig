@@ -68,7 +68,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
                 if (!self.sub) next = codex_tool_search.splice(self.scratchAlloc(), next) catch next;
                 next = codex_tool_search.spliceWebSearch(self.scratchAlloc(), next) catch next;
             }
-            break :blk next;
+            break :blk try @import("hard_policy_catalog.zig").filterAgent(self, self.scratchAlloc(), next, self.provider.id, self.registry);
         };
         const async_payload = try @import("async_tool_policy.zig").decorate(self.scratchAlloc(), self.provider, payload, self.async_tools_armed and !self.sub and (!self.compaction_request or self.server_compaction_request));
         try s.objectField("tools");

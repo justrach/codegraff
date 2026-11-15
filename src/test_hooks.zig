@@ -431,4 +431,5 @@ test {
     _ = @import("read_path_norm.zig");
     _ = @import("edit_match.zig");
     _ = @import("job_ring.zig");
+    _ = @import("hard_policy_context_tests.zig");
 }

@@ -453,7 +453,10 @@ pub const usage_text =
     \\  graff mcp                         list configured MCP servers
     \\  graff mcp install                configure local HTTP service and MCP clients
     \\  graff mcp serve [--http] [--port N] expose run_task to MCP clients
-    \\  graff plugins [load <name>]       list Claude/Cursor/Grok/Codex plugin trees (in place)
+    \\  graff plugins [list|load|enable|disable|register|remove|reload]  manage in-place plugin metadata
+    \\  graff lsp diagnostics PATH          query a configured local language server
+    \\  graff extensions list --json       list trusted native extension panels
+    \\  graff extensions invoke ID ACTION  invoke a declared native panel action
     \\  graff computer [status|install|stop|off|allow|grant|open]  nanocua's switches (macOS)
     \\
 ++ learn_usage ++

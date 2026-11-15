@@ -162,13 +162,27 @@ const scan = @import("plugin_scan.zig");
 /// `project` is the workspace root (cwd in production, a tmp dir in tests).
 /// Production reuses the first walk; tests always scan live.
 pub fn discover(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Dir) []const Plugin {
-    return scan.discover(io, arena, home, project);
+    // Policy revocation also applies to a cached discovery receipt.
+    const doc = @import("hard_policy.zig").loadAt(io, arena, project);
+    var out: std.ArrayList(Plugin) = .empty;
+    for (scan.discover(io, arena, home, project)) |p| {
+        const id = @import("plugin_management.zig").foreignId(arena, p.origin, p.name) catch continue;
+        if (!doc.allows("plugin.use", p.name) or !doc.allows("plugin.use", id)) continue;
+        out.append(arena, p) catch {};
+    }
+    return out.items;
 }
 
 pub fn discoverFresh(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Dir) []const Plugin {
     last_visits = 0;
     if (off()) return &.{};
+    const management = @import("plugin_management.zig");
+    const state = management.load(io, arena, project) catch return &.{};
     var list: std.ArrayList(Plugin) = .empty;
+    for (state.directories) |path| {
+        // Registration imports foreign metadata only, never a native runtime.
+        if (std.fs.path.isAbsolute(path)) adopt(io, arena, &list, path, "registered", false, "");
+    }
     var visits: usize = 0;
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const n = project.realPath(io, &buf) catch 0;
@@ -190,7 +204,14 @@ pub fn discoverFresh(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Di
         takeCodex(io, arena, &list, join(arena, cwd, ".codex"), false);
     }
     last_visits = visits;
-    return list.items;
+    const doc = @import("hard_policy.zig").loadAt(io, arena, project);
+    var active: std.ArrayList(Plugin) = .empty;
+    for (list.items) |p| {
+        const id = management.foreignId(arena, p.origin, p.name) catch continue;
+        if (!state.enabled(id) or !doc.allows("plugin.use", p.name) or !doc.allows("plugin.use", id)) continue;
+        active.append(arena, p) catch {};
+    }
+    return active.items;
 }
 
 pub fn skillDirs(io: Io, arena: Allocator, home: ?[]const u8, project: Io.Dir, personal: bool) []const []const u8 {
@@ -287,62 +308,17 @@ pub fn mergeMcp(io: Io, arena: Allocator, home: []const u8, dir: Io.Dir, servers
     takeRel(io, arena, dir, servers, found, ".grok/mcp.json");
 }
 
-/// `/plugins` — list discovered plugin trees and where they came from.
+/// Shared user command surface; mutations never run from a model tool.
 pub fn slashCommand(io: Io, arena: Allocator, home: []const u8, line: []const u8, out: *Io.Writer) !bool {
     if (!(std.mem.eql(u8, line, "/plugins") or std.mem.startsWith(u8, line, "/plugins "))) return false;
-    if (off()) {
-        try out.writeAll("plugins disabled (GRAFF_NO_PLUGINS). unset it and restart to scan Cursor/Claude/Grok/Codex trees.\n");
-        try out.flush();
-        return true;
-    }
-    const rest = std.mem.trim(u8, line["/plugins".len..], " \t");
-    const list = discover(io, arena, if (home.len > 0) home else null, Io.Dir.cwd());
-    if (std.mem.startsWith(u8, rest, "load ")) {
-        const want = std.mem.trim(u8, rest["load ".len..], " \t");
-        for (list) |p| {
-            if (!std.ascii.eqlIgnoreCase(p.name, want)) continue;
-            try out.print("{s}  [{s}/{s}]  {s}\n", .{ p.name, p.origin, if (p.personal) "user" else "project", p.path });
-            if (p.commands) try out.writeAll("  commands/*.md load as skills (Claude default)\n");
-            if (p.root_skill) |rs| try out.print("  root skill: {s}\n", .{rs.name});
-            if (p.skills) try out.writeAll("  skills: on-demand via the skill tool / /skills\n");
-            if (p.agents) try out.writeAll("  agents: in the fleet\n");
-            if (p.mcp) try out.writeAll("  mcp: in the merge (needs /mcp trust or --yolo)\n");
-            try out.print("hooks are not run. {s}\n", .{scan.format(arena)});
-            try out.flush();
-            return true;
-        }
-        try out.print("no plugin named '{s}'. /plugins lists what graff is reading.\n", .{want});
-        try out.flush();
-        return true;
-    }
-    if (list.len == 0) {
-        try out.print("no plugins discovered ({d}ms, {d} dirs). graff reads Claude/Cursor/Grok/Codex trees in place (skills/, commands/, agents/, mcp.json, root SKILL.md). nothing to copy; GRAFF_NO_PLUGINS=1 disables.\n", .{ scan.last.ms, scan.last.visits });
-        try out.flush();
-        return true;
-    }
-    try out.print("{s} (in-place, Claude layout, not copied):\n", .{scan.format(arena)});
-    for (list) |p| {
-        try out.print("  {s}  [{s}/{s}]", .{ p.name, p.origin, if (p.personal) "user" else "project" });
-        if (p.skills) try out.writeAll(" skills");
-        if (p.commands) try out.writeAll(" commands");
-        if (p.agents) try out.writeAll(" agents");
-        if (p.mcp) try out.writeAll(" mcp");
-        try out.print("  {s}\n", .{p.path});
-    }
-    try out.writeAll("skills and commands/*.md load on demand (skill tool / /skills). /plugins load <name> shows one. MCP still needs /mcp trust or --yolo.\n");
-    try out.flush();
-    return true;
+    return @import("plugin_commands.zig").run(io, arena, home, Io.Dir.cwd(), std.mem.trim(u8, line["/plugins".len..], " \t"), out);
 }
 
-/// `graff plugins` — same listing as `/plugins`, without starting a session.
 pub fn command(io: Io, arena: Allocator, home: []const u8, args: []const []const u8) !void {
     var obuf: [4096]u8 = undefined;
     var out = Io.File.stdout().writer(io, &obuf);
-    const line = if (args.len >= 2 and std.mem.eql(u8, args[0], "load"))
-        std.fmt.allocPrint(arena, "/plugins load {s}", .{args[1]}) catch "/plugins"
-    else
-        "/plugins";
-    _ = try slashCommand(io, arena, home, line, &out.interface);
+    const rest = try std.mem.join(arena, " ", args);
+    _ = try @import("plugin_commands.zig").run(io, arena, home, Io.Dir.cwd(), rest, &out.interface);
 }
 
 const testing = std.testing;

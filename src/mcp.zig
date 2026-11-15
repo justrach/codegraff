@@ -302,6 +302,10 @@ pub const Registry = struct {
         name: []const u8,
         cfg: std.json.ObjectMap,
     ) !void {
+        if (@import("hard_policy.zig").check(reg.io, a, "mcp.use", name)) |denied| {
+            if (reg.show_diagnostics) std.debug.print("  [mcp] {s}\n", .{denied});
+            return error.HardPolicyDenied;
+        }
         const command_v = cfg.get("command");
         const url_v = cfg.get("url");
         if ((command_v == null) == (url_v == null)) return error.BadMcpConfig;

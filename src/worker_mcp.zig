@@ -19,9 +19,10 @@ const Agent = @import("agent.zig").Agent;
 /// child would be served gains the MCP tools the root loaded. A resumed worker
 /// is rebuilt through the same path, so it also picks up later loads.
 pub fn inherit(agent: *Agent) void {
-    const registry = agent.registry orelse return;
     agent.worker_tools = "";
-    const base = agent.toolsJson();
+    const base = @import("lsp_catalog.zig").append(agent.arena, agent.provider.kind, agent.toolsJson(), agent.lsp_registry);
+    agent.worker_tools = base;
+    const registry = agent.registry orelse return;
     const tools = registry.snapshotTools(agent.arena) catch return;
     const built = withLoaded(agent.arena, agent.provider.kind, base, tools, agent.read_only);
     if (built.ptr != base.ptr) agent.worker_tools = built;

@@ -87,6 +87,8 @@ pub fn context(self: *Agent) ToolCtx {
         .tools_used = &self.tools_used,
         .loop_deadline_ms = self.loop_deadline_ms,
         .agent_cwd = self.agent_cwd,
+        .lsp_registry = self.lsp_registry,
+        .hard_policy = @import("hard_policy_context.zig").captureAgent(self),
         .subagent_feedback = self.feedback,
         .read_miss = &self.read_miss,
         .parent_effort = self.reasoning,

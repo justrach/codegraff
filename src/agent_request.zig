@@ -195,13 +195,14 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     var tls_failures: usize = 0; // Construction-only budget survives every body/WS rebuild.
     @import("cache_ttl.zig").begin(self); // #1320: before request_started moves
     var call: @import("model_call.zig").Call = .{}; // #1665: pairs every started attempt
+    var extensions: @import("extension_runtime.zig").RequestState = .{};
     errdefer call.fail(self, false);
     rebuild: while (true) {
         if (@import("agent_async_tools.zig").started(self)) return error.AsyncToolStreamFailed;
         const live = self.usesLiveTransport();
         self.streamed_text = false;
         self.streamed_args = .none;
-        const body = try self.buildBody(tools, force, live, stream_usage);
+        const body = try @import("extension_runtime.zig").prepare(self, try self.buildBody(tools, force, live, stream_usage), &extensions);
         defer self.gpa.free(body);
         if (!self.sub) {
             const hud = @import("prompt_cache_hud.zig");
@@ -237,6 +238,10 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                 usage_attempts.begin();
                 self.h2_reset.clear();
                 main_mod.g_retry_after_ms = 0; // #1795: clear per attempt so a prior Retry-After cannot leak
+                if (@import("hard_policy_context.zig").checkAgent(self, self.arena, "provider.use", self.provider.id)) |denied| {
+                    self.last_api_error = denied;
+                    return error.HardPolicyDenied;
+                }
                 const attempt_body = if (live)
                     self.postLive(body)
                 else
@@ -414,6 +419,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
                     call.finish(self, ms);
                     try @import("agent_model_loop.zig").checkResponse(self, obj);
+                    @import("extension_runtime.zig").observed(self);
                     return obj;
                 },
                 .err => |failure| {
@@ -503,6 +509,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                 if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
                 call.finish(self, ms);
                 try @import("agent_model_loop.zig").checkResponse(self, root);
+                @import("extension_runtime.zig").observed(self);
                 return root;
             }
         }
@@ -576,6 +583,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, ms, body.len, resp_body.len, self.last_context_tokens, self.last_cache_read, false);
         call.finish(self, ms);
         try @import("agent_model_loop.zig").checkResponse(self, root);
+        @import("extension_runtime.zig").observed(self);
         return root;
     }
 }

@@ -67,6 +67,10 @@ pub fn noteInput(ctx: tools.ToolCtx, input: std.json.Value) void {
 }
 
 pub fn exec(ctx: tools.ToolCtx, input: std.json.Value) !tools.ToolOutput {
+    return execWithRegistry(ctx, input, @import("formatters.zig").active);
+}
+
+pub fn execWithRegistry(ctx: tools.ToolCtx, input: std.json.Value, registry: @import("formatters.zig").Registry) !tools.ToolOutput {
     const gpa = ctx.gpa;
     const io = ctx.io;
     const raw_path = tools.strField(input, "path") orelse return tools.missingArg(gpa, "path");
@@ -105,8 +109,12 @@ pub fn exec(ctx: tools.ToolCtx, input: std.json.Value) !tools.ToolOutput {
     };
     edit_verify.preserveMode(io, resolved, prev_stat);
     noteKnown(io, resolved);
+    var formatted = try @import("formatters.zig").runner.run(registry, gpa, io, ctx.agent_cwd, path, resolved);
+    defer formatted.deinit(gpa);
+    const final = formatted.bytes orelse content;
     const dir = if (made_dir) std.fs.path.dirname(path) else null;
-    return .{ .text = try resultText(gpa, io, path, resolved, content, if (prev_stat) |st| st.size else null, dir) };
+    const text = try resultText(gpa, io, path, resolved, final, if (prev_stat) |st| st.size else null, dir, !formatted.failed_restore);
+    return .{ .text = try formatted.appendNote(gpa, text), .is_error = formatted.failed_restore };
 }
 
 /// A new file whose directory is missing gets the directory first, as
@@ -124,7 +132,8 @@ fn writeCreating(io: Io, resolved: []const u8, data: []const u8, new_file: bool)
     return false;
 }
 
-fn resultText(gpa: Allocator, io: Io, path: []const u8, resolved: []const u8, content: []const u8, prev_size: ?u64, made_dir: ?[]const u8) ![]u8 {
+fn resultText(gpa: Allocator, io: Io, path: []const u8, resolved: []const u8, content: []const u8, prev_size: ?u64, made_dir: ?[]const u8, known_final: bool) ![]u8 {
+    if (!known_final) return std.fmt.allocPrint(gpa, "wrote {s}; final bytes could not be verified", .{path});
     var out: std.Io.Writer.Allocating = .init(gpa);
     errdefer out.deinit();
     const w = &out.writer;
@@ -132,7 +141,7 @@ fn resultText(gpa: Allocator, io: Io, path: []const u8, resolved: []const u8, co
         try w.print("replaced {s} ({d} bytes; was {d})", .{ path, content.len, was });
     } else try w.print("created {s} ({d} bytes)", .{ path, content.len });
     if (made_dir) |d| try w.print(" in new directory {s}", .{d});
-    try syntax_note.append(gpa, io, w, path, resolved, content);
+    if (known_final) try syntax_note.append(gpa, io, w, path, resolved, content);
     return out.toOwnedSlice();
 }
 

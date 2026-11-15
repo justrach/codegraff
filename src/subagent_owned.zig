@@ -35,6 +35,8 @@ pub const Owned = struct {
         const a = self.arena.allocator();
         var copy = source;
         copy.provider = try self.provider(source.provider);
+        copy.lsp_registry = try @import("lsp_config.zig").clone(a, source.lsp_registry);
+        copy.hard_policy = try @import("hard_policy_context.zig").clone(a, source.hard_policy orelse @import("hard_policy_context.zig").capture(source.io, a, source.agent_cwd, null));
         if (source.subagent_provider) |p| copy.subagent_provider = try self.provider(p);
         if (source.agent_cwd) |cwd| {
             copy.agent_cwd = try a.dupe(u8, cwd);

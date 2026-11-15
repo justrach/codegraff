@@ -208,6 +208,7 @@ pub fn adopt(env: Env, arena: Allocator, params: ?Value) AdoptError!void {
     if (@import("acp_t3.zig").keepsIsolatedTree()) if (info(env, arena)) |tree| if (workspace_switch.samePath(env.io, want, tree.root)) return;
     _ = workspace_switch.enterPath(env.gpa, env.io, arena, want) catch |err|
         return if (err == error.OutOfMemory) error.OutOfMemory else error.ChdirFailed;
+    @import("formatters.zig").init(env.io, arena);
 }
 
 /// session/load from a main checkout: a save made inside one of its

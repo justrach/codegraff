@@ -222,6 +222,7 @@ fn runHost(ctx: ToolCtx, call: spec_ptc.Call) ToolOutput {
 }
 
 fn runHostRaw(ctx: ToolCtx, call: spec_ptc.Call) ToolOutput {
+    if (@import("hard_policy_gate.zig").exec(ctx, .{ .id = "rlm", .name = call.name, .input = .null })) |blocked| return blocked;
     if (std.mem.eql(u8, call.name, "sleep_ms") or std.mem.eql(u8, call.name, "llm_query")) {
         if (ctx.run_budget) |budget| if (budget.toolRefusal(ctx.gpa, ctx.tracer)) |denied| return denied;
     }

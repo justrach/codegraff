@@ -234,7 +234,7 @@ pub fn applyEdit(ctx: ToolCtx, path: []const u8, resolved: []const u8, old: []co
         _ = std.mem.replace(u8, data, span.old, span.new, replaced);
         if (attempt == 0 and drifted(io, resolved, prev_stat)) continue;
         if (ctx.snapshots) |snaps| if (!ctx.from_sub) snaps.record(path, .{ .content = data });
-        const syntax_note = @import("syntax_note.zig");
+        const formatters = @import("formatters.zig");
         if (codedbpro_report.spliceViaDaemon(gpa, ctx, resolved, path, span.old, span.new, count, data.len)) |msg| {
             preserveMode(io, resolved, prev_stat);
             const verdict = verifyOnDisk(gpa, io, resolved, data, replaced, span.old, span.new, true);
@@ -242,7 +242,7 @@ pub fn applyEdit(ctx: ToolCtx, path: []const u8, resolved: []const u8, old: []co
                 gpa.free(msg);
                 return .{ .text = try verdictText(gpa, path, verdict, "codedb-pro"), .is_error = true };
             }
-            return .{ .text = try syntax_note.appendToOwned(gpa, io, msg, path, resolved, replaced) };
+            return formatters.finishEdit(ctx, path, resolved, msg, null);
         }
         zp: {
             const run = runCapped(gpa, io, &.{ companion_bin, resolved, "-p", span.old, "--all", "--content", span.new }, 4096, 4096, 0) catch break :zp;
@@ -259,7 +259,7 @@ pub fn applyEdit(ctx: ToolCtx, path: []const u8, resolved: []const u8, old: []co
                 const verdict = verifyOnDisk(gpa, io, resolved, data, replaced, span.old, span.new, true);
                 if (verdict != .ok) return .{ .text = try verdictText(gpa, path, verdict, "zigpatch"), .is_error = true };
                 const msg = try std.fmt.allocPrint(gpa, "replaced {d} occurrence(s) in {s} (zigpatch, verified)", .{ count, path });
-                return .{ .text = try syntax_note.appendToOwned(gpa, io, msg, path, resolved, replaced) };
+                return formatters.finishEdit(ctx, path, resolved, msg, null);
             }
         }
         try Io.Dir.cwd().writeFile(io, .{ .sub_path = resolved, .data = replaced });
@@ -267,7 +267,7 @@ pub fn applyEdit(ctx: ToolCtx, path: []const u8, resolved: []const u8, old: []co
         const verdict = verifyOnDisk(gpa, io, resolved, data, replaced, old, new, false);
         if (verdict != .ok) return .{ .text = try verdictText(gpa, path, verdict, "the write"), .is_error = true };
         const msg = try std.fmt.allocPrint(gpa, "replaced {d} occurrence(s) in {s} (verified)", .{ count, path });
-        return .{ .text = try syntax_note.appendToOwned(gpa, io, msg, path, resolved, replaced) };
+        return formatters.finishEdit(ctx, path, resolved, msg, replaced);
     }
 }
 

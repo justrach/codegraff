@@ -13,16 +13,18 @@ const local_tools = @import("local_tools.zig");
 const schedule = @import("schedule.zig");
 const jev_tool = @import("jev_tool.zig");
 
-fn withExtras(arena: Allocator, base: []const schema.ToolSpec, provider: Provider) ![]const schema.ToolSpec {
+fn withExtras(arena: Allocator, base: []const schema.ToolSpec, provider: Provider, lsp: @import("lsp_config.zig").Registry) ![]const schema.ToolSpec {
     const a = local_tools.catalogExtras(arena);
     const b = schedule.catalogExtras(arena);
     const c = jev_tool.catalogExtras(provider);
-    if (a.len == 0 and b.len == 0 and c.len == 0) return base;
-    const out = try arena.alloc(schema.ToolSpec, base.len + a.len + b.len + c.len);
+    const d = @import("lsp_catalog.zig").extras(lsp);
+    if (a.len == 0 and b.len == 0 and c.len == 0 and d.len == 0) return base;
+    const out = try arena.alloc(schema.ToolSpec, base.len + a.len + b.len + c.len + d.len);
     @memcpy(out[0..base.len], base);
     @memcpy(out[base.len..][0..a.len], a);
     @memcpy(out[base.len + a.len ..][0..b.len], b);
-    @memcpy(out[base.len + a.len + b.len ..], c);
+    @memcpy(out[base.len + a.len + b.len ..][0..c.len], c);
+    @memcpy(out[base.len + a.len + b.len + c.len ..], d);
     return out;
 }
 
@@ -86,7 +88,7 @@ pub fn ensureRootTools(self: *Agent, kind: Provider.Kind) !void {
     const specs = if (self.sub)
         try surface.filterSpecs(@TypeOf(schema.base_specs[0]), self.arena, schema.base_specs[0..])
     else
-        try withExtras(self.arena, try withoutAskUser(self, try schema.effectiveRootSpecs(self.arena)), self.provider);
+        try withExtras(self.arena, try withoutAskUser(self, try schema.effectiveRootSpecs(self.arena)), self.provider, self.lsp_registry);
     const connected: []const mcp.Tool = if (self.registry) |registry| blk: {
         const snapshot = try registry.snapshotTools(self.arena);
         break :blk if (self.sub) try surface.filterWorkerMcp(self.arena, snapshot) else snapshot;
@@ -120,6 +122,7 @@ test "invalidate without ensure leaves toolsJson empty; rebuild is a JSON array"
     agent.arena = arena;
     agent.sub = false;
     agent.registry = null;
+    agent.lsp_registry = .{};
     agent.tools_anthropic = "";
     agent.tools_openai = "";
     agent.tools_responses = "";
@@ -155,6 +158,7 @@ test "ask_user is offered only when a human can answer (ADR 0231)" {
     agent.arena = arena;
     agent.sub = false;
     agent.registry = null;
+    agent.lsp_registry = .{};
     agent.tools_responses = "";
     agent.provider = .{ .id = "xai", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "grok-4.6", .context = 100_000 };
     ask.g_no_human = true;

@@ -48,6 +48,8 @@ const restart_hint = "Inspect /mcp; `/mcp reconnect <server>` starts it again wi
 
 /// The registry lock is held throughout. Never replay a possibly executed call.
 pub fn call(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value) !CallResult {
+    if (@import("hard_policy_gate.zig").exec(.{ .gpa = out_alloc, .io = reg.io, .client = undefined, .provider = undefined, .registry = reg, .from_sub = false, .approvals = null, .tracer = null }, .{ .id = "policy", .name = qualified, .input = input })) |blocked|
+        return .{ .text = blocked.text, .is_error = true };
     return invoke(reg, out_alloc, qualified, input) catch |err| switch (err) {
         error.McpClosed, error.ReadFailed, error.WriteFailed, error.BrokenPipe, error.ConnectionResetByPeer => blk: {
             if (try @import("mcp_restart.zig").closeForRestart(reg, out_alloc, qualified, @errorName(err))) |text| break :blk .{ .text = text, .is_error = true };

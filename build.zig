@@ -176,6 +176,13 @@ pub fn build(b: *std.Build) void {
         "Run the env-gated OpenAI cache retention materialize/live tests",
     );
     openai_cache_retention_step.dependOn(&run_openai_cache_retention.step);
+    const native_extensions_test = b.addSystemCommand(&.{ "python3", "scripts/test-native-extensions.py", "--graff" });
+    native_extensions_test.addArtifactArg(exe);
+    test_step.dependOn(&native_extensions_test.step);
+    test_step.dependOn(&b.addSystemCommand(&.{ "python3", "scripts/test_lsp_client.py" }).step);
+    const lsp_integration_test = b.addSystemCommand(&.{ "python3", "scripts/test-lsp-integration.py", "--allow-missing-clangd", "--graff" });
+    lsp_integration_test.addArtifactArg(exe);
+    test_step.dependOn(&lsp_integration_test.step);
     const acp_preauth_test = b.addSystemCommand(&.{ "python3", "scripts/test-acp-preauth.py" });
     acp_preauth_test.addArtifactArg(exe);
     test_step.dependOn(&acp_preauth_test.step);

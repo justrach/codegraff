@@ -98,7 +98,7 @@ pub const commands = [_]Item{
     .{ .name = "/agents", .desc = "list agent types — builtin personas + .harness/agents" },
     .{ .name = "/workers", .usage = "/workers [child-id]", .desc = "inspect this session's subagents: click/Enter for live activity and reports, Esc to return" },
     .{ .name = "/skills", .usage = "/skills [add|remove <name>]", .desc = "list SKILL.md playbooks + companion tools; add/remove enables or disables one" },
-    .{ .name = "/plugins", .usage = "/plugins [list|load <name>]", .desc = "list Claude/Cursor/Grok/Codex plugin trees graff is reading in place; load names one" },
+    .{ .name = "/plugins", .usage = "/plugins [list|load <name>|enable <id>|disable <id>|register <dir>|remove <dir>|reload]", .desc = "manage in-place plugin metadata and native runtime IDs; reload at a safe boundary, never auto-run foreign hooks" },
     .{ .name = "/hooks", .desc = "list lifecycle hooks and the built-in codedb guard" },
     .{ .name = "/doctor", .desc = "read-only health check: goal/todo, live jobs, model-call budget" },
     .{ .name = "/btw", .usage = "/btw <question>", .desc = "ask one side question about this conversation — billed, never added, rides the parent cache prefix" },

@@ -88,7 +88,7 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     // #255: reserved before any gate/dispatch runs so tool_started/
     // tool_finished bracket the whole call, including a gate denial below.
     const call_id: u64 = if (ctx.tracer) |tr| tr.toolStarted(call.name, call.input) else 0;
-    if (noLocalToolsGate(ctx, call) orelse @import("peer_scope.zig").gateExec(ctx, call) orelse codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call) orelse codedbpro_report.licensedGate(ctx, call) orelse tool_surface.gate(ctx, call) orelse native_fold.gateExec(ctx.gpa, call.name, ctx.from_sub)) |blocked| {
+    if (@import("hard_policy_gate.zig").exec(ctx, call) orelse noLocalToolsGate(ctx, call) orelse @import("peer_scope.zig").gateExec(ctx, call) orelse codedbGuard(ctx, call) orelse companionRoute(ctx, call) orelse hookGate(ctx, call) orelse codedbpro_report.licensedGate(ctx, call) orelse tool_surface.gate(ctx, call) orelse native_fold.gateExec(ctx.gpa, call.name, ctx.from_sub)) |blocked| {
         var out = blocked;
         out.ms = t0.untilNow(ctx.io, .awake).toMilliseconds();
         if (ctx.tracer) |tr| {
@@ -352,10 +352,11 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         return out;
     }
     if (std.mem.eql(u8, call.name, "write_file")) return write_file.exec(ctx, input); // ADR 0231
+    if (std.mem.eql(u8, call.name, "lsp")) return @import("lsp.zig").execute(ctx, input);
     // Loads one SKILL.md body (or lists them). Rescans on every call, so a
     // skill written this session is loadable without a restart.
     if ((comptime @import("build_options").extras) and std.mem.eql(u8, call.name, html_view.tool_name)) return html_view.exec(ctx, input);
-    if (std.mem.eql(u8, call.name, "skill")) return skill_docs.execSkill(gpa, io, input);
+    if (std.mem.eql(u8, call.name, "skill")) return @import("skill_policy.zig").exec(gpa, io, input, ctx.agent_cwd, ctx.hard_policy);
     // #352: codex-gated. execImagegen answers a call that was never advertised
     // (an unavailable session) with the same honest error it gives the model.
     if ((comptime @import("build_options").extras) and std.mem.eql(u8, call.name, imagegen.tool_name)) return imagegen.execImagegen(ctx, input);

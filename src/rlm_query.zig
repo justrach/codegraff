@@ -42,6 +42,10 @@ pub fn run(ctx: ToolCtx, args_json: []const u8) ToolOutput {
         };
     }
     defer if (permit) |*p| p.release();
+    var policy_scratch = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer policy_scratch.deinit();
+    if (@import("hard_policy_context.zig").check(ctx.io, policy_scratch.allocator(), ctx.agent_cwd, ctx.hard_policy, "provider.use", ctx.provider.id)) |reason|
+        return .{ .text = ctx.gpa.dupe(u8, reason) catch &.{}, .is_error = true };
     const body = buildBody(ctx.gpa, ctx.provider, prompt) catch {
         return .{ .text = ctx.gpa.dupe(u8, "rlm: llm_query could not build request") catch &.{}, .is_error = true };
     };

@@ -41,6 +41,7 @@ pub const gated_tools = [_][]const u8{
     "edit_file",
     "write_file",
     "codedb",
+    "lsp",
     "read_tool_result",
     // #352: imagegen looks like a content tool but is a local write-and-spawn
     // primitive — it starts `codex exec --sandbox workspace-write` or python3
@@ -222,7 +223,7 @@ test "#330: the gated set is exactly the host-touching built-ins; webfetch, meta
     defer enabled = saved;
 
     for (gated_tools) |tool| try std.testing.expect(isLocalTool(tool));
-    try std.testing.expectEqual(@as(usize, 8), gated_tools.len);
+    try std.testing.expectEqual(@as(usize, 9), gated_tools.len);
     try std.testing.expect(isLocalTool("bash") and isLocalTool("bash_output") and isLocalTool("bash_kill"));
     try std.testing.expect(isLocalTool("imagegen")); // #352: optional, but still a local spawn+write
     try std.testing.expect(isLocalTool("render_html")); // writes the snapshot under the host's own $HOME
@@ -351,7 +352,8 @@ test "#330: neither catalog advertises a local tool under the gate, and webfetch
     for (open) |spec| {
         if (isLocalTool(spec.name)) open_local += 1;
     }
-    try std.testing.expectEqual(gated_tools.len, open_local);
+    // LSP is a per-agent runtime extra, not part of this base catalog.
+    try std.testing.expectEqual(gated_tools.len - 1, open_local);
 
     enabled = true;
     const gated = try schema.effectiveRootSpecs(arena);
@@ -362,7 +364,7 @@ test "#330: neither catalog advertises a local tool under the gate, and webfetch
         if (std.mem.eql(u8, spec.name, "webfetch")) kept_webfetch = true;
         if (std.mem.eql(u8, spec.name, "subagent")) kept_subagent = true;
     }
-    try std.testing.expectEqual(open.len - gated_tools.len - 1, gated.len); // rlm also drops under #330
+    try std.testing.expectEqual(open.len - open_local - 1, gated.len); // rlm also drops under #330
     try std.testing.expect(kept_webfetch); // pure host HTTP: no sandbox to escape
     try std.testing.expect(kept_subagent); // orchestration stays; the child inherits the gate
 

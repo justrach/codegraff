@@ -284,6 +284,7 @@ fn insert(arena: Allocator, list: *std.ArrayList(Skill), sk: Skill) void {
 /// entirely — the same opt-out key the companion registry uses (skills.zig), so
 /// `/skills remove <name>` works for both kinds.
 fn applyDisabled(io: Io, arena: Allocator, list: *std.ArrayList(Skill)) void {
+    @import("skill_policy.zig").filter(io, arena, list);
     const data = Io.Dir.cwd().readFileAlloc(io, policy.settings_path, arena, .limited(1 << 20)) catch return;
     const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
     if (v != .object) return;
@@ -334,23 +335,10 @@ pub fn promptCatalog(arena: Allocator, list: []const Skill) []const u8 {
 /// name (list), rescans so a SKILL.md written this session still loads.
 /// An unknown name comes back as an error listing what does exist.
 pub fn execSkill(gpa: Allocator, io: Io, input: Value) !ToolOutput {
-    const requested = std.mem.trim(u8, tools.strField(input, "name") orelse "", " \t\r\n");
-    if (requested.len > 0) {
-        for (g_skills) |sk| {
-            if (std.ascii.eqlIgnoreCase(sk.name, requested)) return .{ .text = try render(gpa, io, sk) };
-        }
-    }
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-    const list = scan(io, arena_state.allocator(), g_home);
-    if (requested.len == 0) return .{ .text = try listing(gpa, list, null) };
-    for (list) |sk| {
-        if (std.ascii.eqlIgnoreCase(sk.name, requested)) return .{ .text = try render(gpa, io, sk) };
-    }
-    return .{ .text = try listing(gpa, list, requested), .is_error = true };
+    return @import("skill_policy.zig").exec(gpa, io, input, null, null);
 }
 
-fn render(gpa: Allocator, io: Io, sk: Skill) ![]u8 {
+pub fn render(gpa: Allocator, io: Io, sk: Skill) ![]u8 {
     var body = sk.body;
     var hold = std.heap.ArenaAllocator.init(gpa);
     defer hold.deinit();
@@ -373,7 +361,7 @@ fn render(gpa: Allocator, io: Io, sk: Skill) ![]u8 {
     return aw.toOwnedSlice();
 }
 
-fn listing(gpa: Allocator, list: []const Skill, unknown: ?[]const u8) ![]u8 {
+pub fn listing(gpa: Allocator, list: []const Skill, unknown: ?[]const u8) ![]u8 {
     var aw: Io.Writer.Allocating = .init(gpa);
     errdefer aw.deinit();
     if (unknown) |name| try aw.writer.print("no skill named '{s}'. ", .{name});

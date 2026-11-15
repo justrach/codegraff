@@ -142,6 +142,8 @@ pub const ToolCtx = struct {
     tools_used: ?*ToolSink = null, // the calling agent's tool log (trajectory/process mining)
     loop_deadline_ms: ?i64 = null, // the running /goal run's wall-clock deadline, copied from the spawning Agent: a child inherits the parent's ABSOLUTE deadline (minus an integration margin), never a slice of it
     agent_cwd: ?[]const u8 = null, // #276 P0-1: per-agent isolated worktree (absolute path); null = shared cwd. Set from Agent.agent_cwd, never a process-wide chdir — safe across parallel sibling subagents on the same pool.
+    hard_policy: ?*const @import("hard_policy.zig").Document = null, // owned snapshot before child isolation, never process-global
+    lsp_registry: @import("lsp_config.zig").Registry = .{},
     read_miss: ?*@import("read_miss.zig").Tracker = null, // #1116: turn-scoped consecutive read_file miss latch
     parent_effort: ?main_mod.ReasoningEffort = null, // ADR 0232: the caller's live effort (/effort or Jev); an unpinned child runs at it
     parent_messages: []const std.json.Value = &.{}, // ADR 0232: the caller's history, read only while its tool batch runs

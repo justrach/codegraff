@@ -298,6 +298,8 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         .registry = ctx.registry,
         .tracer = ctx.tracer,
         .run_budget = ctx.run_budget,
+        .hard_policy = ctx.hard_policy orelse @import("hard_policy_context.zig").capture(ctx.io, arena, ctx.agent_cwd, null),
+        .lsp_registry = ctx.lsp_registry,
         .loop_deadline_ms = ctx.loop_deadline_ms, // a timed run's deadline reaches grandchildren too, not just depth 1
         .depth = ctx.depth + 1,
         .call_kind = if (std.mem.eql(u8, kind, "judge_task"))

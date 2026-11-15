@@ -212,6 +212,7 @@ pub fn buildRootAgent(
     @import("session_select.zig").resolve(io, arena, flags);
     var root: agent_mod.Agent = .{
         .snapshots = snaps,
+        .lsp_registry = @import("lsp_config.zig").load(io, arena),
         .gpa = gpa,
         .arena = arena,
         .io = io,

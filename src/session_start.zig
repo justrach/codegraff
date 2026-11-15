@@ -194,6 +194,7 @@ pub fn setupWorktreeAndBanner(
     // model an ABSOLUTE path. Left unwired in tests, where the cap stays the
     // pre-#409 plain truncation.
     tool_spill.enable(.{ .io = io, .dir = .cwd(), .base_abs = main_mod.g_cwd_display });
+    @import("formatters.zig").init(io, arena);
     if ((comptime @import("build_options").learn) and flags.experiment_n > 0) {
         const exp_id = flags.resume_flag orelse "live";
         const n = @import("experiment_pool.zig").arm(gpa, io, arena, exp_id, flags.experiment_n) catch |err|
