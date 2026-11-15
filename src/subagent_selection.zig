@@ -15,6 +15,7 @@
 const std = @import("std");
 
 const catalog_selection = @import("catalog_selection.zig");
+const claude_wire = @import("claude_wire.zig");
 const pricing = @import("pricing.zig");
 const provider_mod = @import("provider.zig");
 const tier_ladder = @import("subagent_tier_ladder.zig");
@@ -59,10 +60,69 @@ pub fn modelForProvider(provider_id: []const u8, query: []const u8) ?[]const u8 
     return candidate;
 }
 
+fn newerVer(maj_a: u16, min_a: u16, maj_b: u16, min_b: u16) bool {
+    return maj_a > maj_b or (maj_a == maj_b and min_a > min_b);
+}
+
+fn gptSuffixRank(name: []const u8, suffix: []const u8) ?struct { u16, u16 } {
+    if (!std.mem.startsWith(u8, name, "gpt-") or !std.mem.endsWith(u8, name, suffix)) return null;
+    if (name.len <= "gpt-".len + suffix.len) return null;
+    const mid = name["gpt-".len .. name.len - suffix.len];
+    var it = std.mem.splitScalar(u8, mid, '.');
+    const maj = std.fmt.parseInt(u16, it.next() orelse "", 10) catch 0;
+    const min = if (it.next()) |p| (std.fmt.parseInt(u16, p, 10) catch 0) else 0;
+    return .{ maj, min };
+}
+
+/// Resolve a compiled ladder rung name against `provider_id`'s live catalog.
+/// Exact/alias/unique-substring lookup runs first; if a live refresh rotated
+/// a Claude or GPT generation past the compiled version, fall back dynamically
+/// to the newest matching family/tier model on `provider_id`. `xai` is strictly
+/// `grok-4.7` or nothing and never substitutes another Grok model.
+pub fn liveLadderModel(provider_id: []const u8, rung: []const u8) ?[]const u8 {
+    if (modelForProvider(provider_id, rung)) |m| return m;
+    if (std.mem.eql(u8, provider_id, "xai")) return null;
+    if (claude_wire.version(rung)) |want| {
+        var best: ?[]const u8 = null;
+        var best_maj: u16 = 0;
+        var best_min: u16 = 0;
+        for (pricing.models()) |m| {
+            if (!std.mem.eql(u8, m.provider, provider_id)) continue;
+            const v = claude_wire.version(m.name) orelse continue;
+            if (v.family != want.family) continue;
+            if (best == null or newerVer(v.major, v.minor, best_maj, best_min)) {
+                best = m.name;
+                best_maj = v.major;
+                best_min = v.minor;
+            }
+        }
+        return best;
+    }
+    if (std.mem.startsWith(u8, rung, "gpt-")) {
+        for ([_][]const u8{ "-astra", "-sol", "-luna" }) |suffix| {
+            if (!std.mem.endsWith(u8, rung, suffix)) continue;
+            var best: ?[]const u8 = null;
+            var best_maj: u16 = 0;
+            var best_min: u16 = 0;
+            for (pricing.models()) |m| {
+                if (!std.mem.eql(u8, m.provider, provider_id)) continue;
+                const r = gptSuffixRank(m.name, suffix) orelse continue;
+                if (best == null or newerVer(r[0], r[1], best_maj, best_min)) {
+                    best = m.name;
+                    best_maj = r[0];
+                    best_min = r[1];
+                }
+            }
+            return best;
+        }
+    }
+    return null;
+}
+
 /// Default worker sibling for `root` on its own ladder, descending exactly
-/// one rung. `root.model` must exactly match a rung name (frontier or mid)
-/// for this provider's ladder — an off-ladder or unrecognized root model
-/// returns null rather than guessing at the nearest rung.
+/// one rung. `root.model` must match a ladder frontier (`frontier` or
+/// `hard_frontier`) or `mid` rung (or its live rotated sibling) — off-ladder
+/// or bottom-rung models return null so workers inherit root unchanged.
 ///
 /// GPT-6 roots keep their model: demoting Astra onto Sol is a SWE-bench
 /// regression (Astra-low beats Sol-high). Unpinned workers inherit;
@@ -76,11 +136,22 @@ fn defaultLadderModel(root: provider_mod.Provider) ?[]const u8 {
             return null;
         }
     }
-    if (std.mem.eql(u8, root.model, ladder.frontier)) return ladder.mid orelse ladder.small;
-    if (ladder.mid) |mid| {
-        if (std.mem.eql(u8, root.model, mid)) return ladder.small;
-    }
-    return null; // root is already the bottom rung, or isn't on this ladder
+    const root_bare = if (std.mem.endsWith(u8, root.model, "[1m]")) root.model[0 .. root.model.len - "[1m]".len] else root.model;
+    const f_live = liveLadderModel(root.id, ladder.frontier) orelse ladder.frontier;
+    const hf_match = if (ladder.hard_frontier) |hf| blk: {
+        const hf_live = liveLadderModel(root.id, hf) orelse hf;
+        break :blk std.mem.eql(u8, root_bare, hf) or std.mem.eql(u8, root_bare, hf_live);
+    } else false;
+    const target: ?[]const u8 = if (std.mem.eql(u8, root_bare, ladder.frontier) or std.mem.eql(u8, root_bare, f_live) or hf_match)
+        (ladder.mid orelse ladder.small)
+    else if (ladder.mid) |mid| blk: {
+        const mid_live = liveLadderModel(root.id, mid) orelse mid;
+        break :blk if (std.mem.eql(u8, root_bare, mid) or std.mem.eql(u8, root_bare, mid_live)) ladder.small else null;
+    } else null;
+    const raw = target orelse return null;
+    const resolved = liveLadderModel(root.id, raw) orelse raw;
+    if (std.mem.eql(u8, resolved, root.model) or std.mem.eql(u8, resolved, root_bare)) return null;
+    return resolved;
 }
 
 /// Resolves the default ladder sibling to an actual Provider, reusing
@@ -266,11 +337,15 @@ test "defaultLadderModel: descends one rung per provider, bottom rung inherits" 
         for ([_][]const u8{ "gpt-6-astra", "gpt-6-sol", "gpt-6-luna" }) |model|
             try std.testing.expect(defaultLadderModel(mk(id, model)) == null);
     }
-    // anthropic: opus-5-5 -> sonnet-5-5 -> (bottom) (ADR 0219). #471: a rung
-    // must be a cheaper seat, so older opus generations are not rungs, and a
-    // root still on one is off-ladder and inherits.
-    try std.testing.expectEqualStrings("claude-sonnet-5-5", defaultLadderModel(mk("anthropic", "claude-opus-5-5")).?);
-    try std.testing.expect(defaultLadderModel(mk("anthropic", "claude-sonnet-5-5")) == null);
+    // anthropic & claude-agent: dual frontier (opus-5-5 / fable-5-2) ->
+    // sonnet-5-5 -> haiku-5-5 -> (bottom). Older opus generations remain
+    // off-ladder and inherit.
+    for ([_][]const u8{ "anthropic", "claude-agent" }) |id| {
+        try std.testing.expectEqualStrings("claude-sonnet-5-5", defaultLadderModel(mk(id, "claude-opus-5-5")).?);
+        try std.testing.expectEqualStrings("claude-sonnet-5-5", defaultLadderModel(mk(id, "claude-fable-5-2")).?);
+        try std.testing.expectEqualStrings("claude-haiku-5-5", defaultLadderModel(mk(id, "claude-sonnet-5-5")).?);
+        try std.testing.expect(defaultLadderModel(mk(id, "claude-haiku-5-5")) == null);
+    }
     try std.testing.expect(defaultLadderModel(mk("anthropic", "claude-opus-5")) == null);
     try std.testing.expect(defaultLadderModel(mk("anthropic", "claude-opus-4-8")) == null);
     // deepseek / codegraff: pro (the session default) descends to flash;
@@ -278,8 +353,10 @@ test "defaultLadderModel: descends one rung per provider, bottom rung inherits" 
     try std.testing.expectEqualStrings("deepseek-v4-flash", defaultLadderModel(mk("deepseek", "deepseek-v4-pro")).?);
     try std.testing.expect(defaultLadderModel(mk("deepseek", "deepseek-v4-flash")) == null);
     try std.testing.expectEqualStrings("deepseek-v4-flash", defaultLadderModel(mk("codegraff", "deepseek-v4-pro")).?);
-    // unlisted provider -> no ladder at all
+    // xai: single-model grok-4.7 inherits; unlisted groq -> null
+    try std.testing.expect(defaultLadderModel(mk("xai", "grok-4.7")) == null);
     try std.testing.expect(defaultLadderModel(mk("xai", "grok-4.3")) == null);
+    try std.testing.expect(defaultLadderModel(mk("groq", "openai/gpt-oss-120b")) == null);
     // a real, catalogued model that just isn't a rung on its own provider's
     // ladder -> never guess at the nearest one
     try std.testing.expect(defaultLadderModel(mk("anthropic", "claude-opus-4-5")) == null);

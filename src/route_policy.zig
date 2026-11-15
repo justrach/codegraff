@@ -216,9 +216,13 @@ pub fn shapeOfPhases(phases: []const std.json.Value) Shape {
 /// and the trace (and the policy cell it feeds) is keyed on the rung.
 pub fn tierOf(provider_id: []const u8, model: []const u8) ?Tier {
     const l = tier_ladder.forProvider(provider_id) orelse return null;
-    if (std.mem.eql(u8, l.frontier, model)) return .frontier;
+    if (l.isFrontier(model)) return .frontier;
     if (l.mid) |m| if (std.mem.eql(u8, m, model)) return .mid;
     if (l.small) |s| if (std.mem.eql(u8, s, model)) return .small;
+    if (selection.liveLadderModel(provider_id, l.frontier)) |lf| if (std.mem.eql(u8, lf, model)) return .frontier;
+    if (l.hard_frontier) |hf| if (selection.liveLadderModel(provider_id, hf)) |lhf| if (std.mem.eql(u8, lhf, model)) return .frontier;
+    if (l.mid) |m| if (selection.liveLadderModel(provider_id, m)) |lm| if (std.mem.eql(u8, lm, model)) return .mid;
+    if (l.small) |s| if (selection.liveLadderModel(provider_id, s)) |ls| if (std.mem.eql(u8, ls, model)) return .small;
     return null;
 }
 

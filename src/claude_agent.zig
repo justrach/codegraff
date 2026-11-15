@@ -397,7 +397,7 @@ fn turn(self: *Agent, a: std.mem.Allocator, s: *Session, tools: ?Value, poll: bo
             .cancel => |id| s.cancel(id),
             .result => |r| {
                 if (r.is_error) {
-                    const sse = try failSse(self, a, try problem(a, r.text));
+                    const sse = try failSse(self, a, try problemForModel(a, self.provider.model, r.text));
                     full.deinit();
                     return .{ .sse = sse, .failed = true };
                 }
@@ -411,10 +411,24 @@ fn turn(self: *Agent, a: std.mem.Allocator, s: *Session, tools: ?Value, poll: bo
     return .{ .sse = try full.toOwnedSlice() };
 }
 
-pub fn problem(a: std.mem.Allocator, text: []const u8) ![]const u8 {
+fn isUsageLimitText(text: []const u8) bool {
+    const util = @import("util.zig");
+    return @import("agent_request_quota.zig").isQuotaExceeded(text) or
+        util.indexOfIgnoreCase(text, "usage limit") != null or
+        util.indexOfIgnoreCase(text, "hit your limit") != null or
+        util.indexOfIgnoreCase(text, "reached your limit") != null;
+}
+
+pub fn problemForModel(a: std.mem.Allocator, model: []const u8, text: []const u8) ![]const u8 {
     if (std.mem.indexOf(u8, text, "Not logged in") != null or std.mem.indexOf(u8, text, "/login") != null)
         return "Claude Code is not logged in. Run `claude auth login` in a terminal, then try again.";
+    if (@import("claude_wire.zig").isFable(model) and isUsageLimitText(text))
+        return std.fmt.allocPrint(a, "Claude Code stopped: {s} (Fable uses a separate plan limit; switch with `/model claude-opus-5-5` to continue on your shared Claude plan pool.)", .{text});
     return std.fmt.allocPrint(a, "Claude Code stopped: {s}", .{text});
+}
+
+pub fn problem(a: std.mem.Allocator, text: []const u8) ![]const u8 {
+    return problemForModel(a, "", text);
 }
 
 /// A failure the user should read, as an assistant reply on the Messages

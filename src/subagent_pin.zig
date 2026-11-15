@@ -182,6 +182,13 @@ pub fn parseEffort(s: []const u8) ?Effort {
     return if (e == .ultra) null else e;
 }
 
+/// Top reasoning efforts (`xhigh`, `max`) unlock a dual-frontier provider's
+/// `hard_frontier` seat (`claude-fable-5-2`); ordinary `tier: "frontier"` asks
+/// stay on the shared-pool `frontier` (`claude-opus-5-5`).
+pub fn isHardEffort(e: ?Effort) bool {
+    return if (e) |x| (x == .xhigh or x == .max) else false;
+}
+
 /// The persona's own pin, if `name` matches a loaded agent type. An unknown
 /// name is "no opinion", matching resolveOverride/resolveIsolation's
 /// never-fail-a-spawn-on-a-typo contract.
@@ -250,24 +257,33 @@ pub fn resolveIn(base: Provider, pin: Pin, cell: Cell) Resolved {
     if (pin.tier) |tier| {
         const ladder = tier_ladder.forModel(base.id, base.model) orelse return .{ .outcome = .no_ladder };
         const rung = ladder.modelFor(tier) orelse return .{ .outcome = .no_rung };
-        // A ladder rung is still checked against the LIVE catalog: `graff
-        // models refresh` can drop a model the compiled ladder names, and a
-        // pin resolving to a model the provider no longer serves must fall
-        // back rather than send a request that 404s mid-fleet.
-        const resolved = selection.modelForProvider(base.id, rung) orelse return .{ .outcome = .unknown_model };
-        // COST CEILING: a tier rung may DESCEND price, never raise it — on a
-        // multi-vendor catalog (the codegraff gateway serves everything up to
-        // opus-class) an automatic rung must not spend more than the model
-        // the user chose. Escalation stays possible, but only by naming the
-        // model in the call — visible, never implicit.
-        if (!rungAffordableOn(base, resolved)) return .{ .outcome = .rung_pricier };
-        // #372: the learned layer sits HERE, below every explicit pin. It is
-        // handed the CATALOG-resolved ladder answer and may return a measured
-        // improvement on it; a swap that somehow fails the same cost ceiling
-        // is dropped rather than failing the spawn, so the worst case is
-        // today's ladder answer.
-        if (route_policy.learnedRung(base.id, cell, resolved)) |learned| {
-            if (rungAffordableOn(base, learned)) return finish(base, learned, .learned_policy);
+        const hard = tier == .frontier and isHardEffort(pin.effort);
+        var used_hard = false;
+        const resolved = blk: {
+            if (hard) if (ladder.hard_frontier) |hf| {
+                if (selection.liveLadderModel(base.id, hf)) |hf_resolved| {
+                    if (rungAffordableOn(base, hf_resolved)) {
+                        used_hard = true;
+                        break :blk hf_resolved;
+                    }
+                }
+            };
+            // A ladder rung is still checked against the LIVE catalog (with
+            // dynamic family fallback on rotated catalogs): a missing rung must
+            // fail soft rather than sending a request that 404s mid-fleet.
+            const std_resolved = selection.liveLadderModel(base.id, rung) orelse return .{ .outcome = .unknown_model };
+            // COST CEILING: a tier rung may DESCEND price, never raise it — on a
+            // multi-vendor catalog an automatic rung must not spend more than the
+            // model the user chose. Escalation stays possible by naming the model.
+            if (!rungAffordableOn(base, std_resolved)) return .{ .outcome = .rung_pricier };
+            break :blk std_resolved;
+        };
+        // #372: the learned layer sits HERE, below every explicit pin. Do not
+        // override an explicit hard-task frontier selection.
+        if (!used_hard) {
+            if (route_policy.learnedRung(base.id, cell, resolved)) |learned| {
+                if (rungAffordableOn(base, learned)) return finish(base, learned, .learned_policy);
+            }
         }
         return finish(base, resolved, .ladder);
     }
@@ -305,6 +321,30 @@ fn deepseekFamily(p: Provider) bool {
     return std.mem.eql(u8, p.id, "deepseek") or std.mem.startsWith(u8, p.model, "deepseek");
 }
 
+/// Resolve a provider's rung model and benchmark score for `(sid, tier, hard)`.
+fn rungScoreFor(sid: []const u8, tier: Tier, hard: bool) ?struct { model: []const u8, score: f64 } {
+    const ladder = tier_ladder.forProvider(sid) orelse return null;
+    const std_rung = ladder.modelFor(tier) orelse return null;
+    var used_hard = false;
+    const resolved = blk: {
+        if (hard) if (ladder.hard_frontier) |hf| {
+            if (selection.liveLadderModel(sid, hf)) |hf_live| {
+                used_hard = true;
+                break :blk hf_live;
+            }
+        };
+        break :blk selection.liveLadderModel(sid, std_rung) orelse return null;
+    };
+    const live_frontier = selection.liveLadderModel(sid, ladder.frontier);
+    const is_frontier = ladder.isFrontier(resolved) or (if (live_frontier) |lf| std.mem.eql(u8, resolved, lf) else false);
+    // Only frontier asks get the frontier fallback bonus so single-model
+    // mid rungs (e.g. xAI grok-4.7) do not outrank real mid tiers, and equal
+    // 1.0 scores across unbenched plans keep the active plan's own seat.
+    const fallback_score: f64 = if (tier == .frontier and (used_hard or is_frontier)) 1.0 else 0;
+    const score = bench_priors.scoreFor(sid, resolved) orelse fallback_score;
+    return .{ .model = resolved, .score = score };
+}
+
 /// SUB-FIRST TIER ROUTING (explicit `tier` asks only — the silent no-tier
 /// default still inherits the user's chosen family): a logged-in flat-rate
 /// subscription is marginal-cost-zero, so its rung outranks a metered
@@ -313,7 +353,7 @@ fn deepseekFamily(p: Provider) bool {
 /// The login is still standing consent for an *exact* model pin. Metered
 /// cross-provider routing keeps the explicit --subagent-provider bar.
 /// When several subs serve the rung, the bench sheet's score picks.
-fn subscriptionRung(tier: Tier, base: Provider) ?Resolved {
+fn subscriptionRung(tier: Tier, effort: ?Effort, base: Provider) ?Resolved {
     if (deepseekFamily(base)) return null;
     // MiMo's explicit budget policy is independent of the older benchmark
     // snapshot. Keep Pro/Flash workers local instead of selecting Luna merely
@@ -325,22 +365,30 @@ fn subscriptionRung(tier: Tier, base: Provider) ?Resolved {
         }
     }
     const keys = bench_priors.g_keys orelse return null;
+    const hard = tier == .frontier and isHardEffort(effort);
+    const base_is_plan = billing.forProvider(base) == .sub or blk: {
+        if (base.source != .none) break :blk false;
+        const bp = keys.providerById(base.id, base.model) catch break :blk false;
+        break :blk billing.costFor(base.id, bp.source) == .plan;
+    };
+    const local_score: ?f64 = if (base_is_plan)
+        if (rungScoreFor(base.id, tier, hard)) |lr| lr.score else null
+    else
+        null;
     var best: ?Resolved = null;
-    var best_score: f64 = -1;
+    var best_score: f64 = local_score orelse -1;
     for (subscription_providers) |sid| {
         if (std.mem.eql(u8, sid, base.id)) continue; // the base's own ladder handles it provider-locally
-        const ladder = tier_ladder.forProvider(sid) orelse continue;
-        const rung = ladder.modelFor(tier) orelse continue;
-        const resolved = selection.modelForProvider(sid, rung) orelse continue;
-        const prov = keys.providerById(sid, resolved) catch continue; // not logged in → not a candidate
-        // Unbenched compiled frontier (gpt-6-astra) must not lose to a
-        // scored older seat at 0. Treat missing as 1.0 only for that rung.
-        const s = bench_priors.scoreFor(sid, resolved) orelse
-            if (std.mem.eql(u8, resolved, ladder.frontier)) @as(f64, 1.0) else 0;
-        if (best == null or s > best_score) {
+        const cand = rungScoreFor(sid, tier, hard) orelse continue;
+        const prov = keys.providerById(sid, cand.model) catch continue; // not logged in → not a candidate
+        // Only logged-in flat-rate subscriptions qualify; metered API keys
+        // (XAI_API_KEY / ANTHROPIC_API_KEY) on sub-capable specs must not.
+        if (billing.costFor(sid, prov.source) != .plan) continue;
+        const beats = (best == null and local_score == null) or cand.score > best_score;
+        if (beats) {
             // source=ladder: it IS a ladder rung, just the subscription's own.
             best = .{ .provider = prov, .outcome = .sub_routed, .source = .ladder };
-            best_score = s;
+            best_score = cand.score;
         }
     }
     return best;
@@ -367,6 +415,7 @@ fn subscriptionModel(query: []const u8, base: Provider, src: Source) ?Resolved {
             if (!std.mem.eql(u8, model.provider, sid)) continue;
             if (!std.mem.eql(u8, model.name, query) and !pricing.modelAliasEquals(model.name, query)) continue;
             const prov = keys.providerById(sid, model.name) catch continue; // not logged in → not a candidate
+            if (billing.costFor(sid, prov.source) != .plan) continue;
             const s = bench_priors.scoreFor(sid, model.name) orelse 0;
             if (best == null or s > best_score) {
                 best = .{ .provider = prov, .outcome = .model_sub_routed, .source = src };
@@ -458,7 +507,7 @@ pub fn forSpawnIn(base: Provider, obj: std.json.ObjectMap, sub_ok: bool, cell: C
                 if (subscriptionModel(q, base, pin_src)) |r| break :blk r;
                 break :blk local; // keep the reported unknown_model + its reason
             }
-            if (pin.tier) |t| if (subscriptionRung(t, base)) |r| break :blk r;
+            if (pin.tier) |t| if (subscriptionRung(t, pin.effort, base)) |r| break :blk r;
         }
         break :blk resolveIn(base, pin, cell);
     };

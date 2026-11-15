@@ -28,6 +28,7 @@
 //! remembered in N files.
 
 const std = @import("std");
+const claude_wire = @import("claude_wire.zig");
 const pricing = @import("pricing.zig");
 const provider_mod = @import("provider.zig");
 
@@ -103,6 +104,31 @@ pub fn costFor(provider_id: []const u8, source: CredentialSource) CostClass {
         .login, .none => .plan,
         .environment, .profile, .stored, .session => .api,
     };
+}
+
+/// Which usage pool a plan seat draws from: `.separate` when the model has
+/// its own dedicated plan allowance (Claude Fable on `anthropic` /
+/// `claude-agent` subscriptions), `.shared` for ordinary plan models, and
+/// `.none` when the seat is metered/credits/local.
+pub const QuotaPool = enum {
+    none,
+    shared,
+    separate,
+};
+
+pub fn quotaPoolFor(provider_id: []const u8, model: []const u8, source: CredentialSource) QuotaPool {
+    if (costFor(provider_id, source) != .plan) return .none;
+    if ((std.mem.eql(u8, provider_id, "anthropic") or std.mem.eql(u8, provider_id, "claude-agent")) and claude_wire.isFable(model)) {
+        return .separate;
+    }
+    return .shared;
+}
+
+/// Picker badge for a concrete `(provider, model, source)` seat: `"plan*"`
+/// marks a plan model with a separate usage limit; all other seats use
+/// `CostClass.badge()` (`plan`, `credits`, `api`, `local`). Fits 7 columns.
+pub fn seatBadge(provider_id: []const u8, model: []const u8, source: CredentialSource) []const u8 {
+    return if (quotaPoolFor(provider_id, model, source) == .separate) "plan*" else costFor(provider_id, source).badge();
 }
 
 /// The billing class of one API call on this seat.

@@ -369,6 +369,7 @@ record only when you need the evidence or the edge cases.
 | [0342](0342-assistant-replay-is-not-prefill.md) | Messages requests preserve a trailing assistant reply and append one durable user continuation; replay is not prefill, and a residual prefill rejection never earns a pinned-seat fallback. |
 | [0343](0343-native-extensions-are-explicit-bounded-and-opt-in.md) | Native runtime plugins and formatters are explicit opt-ins; hard policies only restrict, callbacks are bounded and retry-stable, and UI contributions are data-only native controls. |
 | [0344](0344-language-servers-are-trusted-bounded-and-on-demand.md) | Installed language servers are explicit opt-ins with immutable inherited registrations, bounded one-shot read-only LSP queries, and honest incomplete diagnostics; no downloads, workspace edits, or implicit persistent processes. |
+| [0345](0345-claude-dual-frontier-separate-quota-and-plan-ladders.md) | `anthropic` and `claude-agent` declare a 3-rung ladder with dual frontier (`opus-5-5` normal, `fable-5-2` at `xhigh`/`max`), `billing.quotaPoolFor` marks Fable as a separate plan pool across REPL (`plan*`), ACP (`separateQuota`), and quota recovery (`stepDownSeparateQuotaPool`), `chatgpt-new` mirrors Codex tiers, `xai` stays strictly `grok-4.7` or nothing, `liveLadderModel` adapts to rotated live catalogs, and cross-provider sub routing requires `billing.costFor == .plan`. |
 
 ## When to write one
 

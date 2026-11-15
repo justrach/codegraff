@@ -25,7 +25,7 @@ pub const Row = struct {
     /// Context window in tokens; the table prints it, and 80% of it, in k.
     context: u64,
     provider: []const u8,
-    /// `billing.CostClass.badge()` — plan / credits / api / local.
+    /// `billing.seatBadge()` — plan / plan* (separate quota) / credits / api / local.
     cost: []const u8,
     has_key: bool = false,
     vision: bool = false,
@@ -61,7 +61,7 @@ pub fn writeRows(
             .name = m.name,
             .context = pricing.contextFor(m.provider, m.name),
             .provider = m.provider,
-            .cost = billing.costFor(m.provider, keys.source(m.provider)).badge(),
+            .cost = billing.seatBadge(m.provider, m.name, keys.source(m.provider)),
             .has_key = keys.get(m.provider) != null,
             .vision = is_vision(m.name),
             .current = std.mem.eql(u8, m.name, current_model) and std.mem.eql(u8, m.provider, current_provider),

@@ -46,6 +46,8 @@ pub fn providerClass(model: []const u8) []const u8 {
         .{ .needle = "luna", .tier = "small" },
         .{ .needle = "-sol", .tier = "mid" },
         .{ .needle = "opus", .tier = "frontier" },
+        .{ .needle = "fable", .tier = "frontier" },
+        .{ .needle = "mythos", .tier = "frontier" },
         .{ .needle = "gpt-6", .tier = "frontier" }, // astra and later GPT-6 flagships
         .{ .needle = "gpt-5", .tier = "frontier" }, // sol and bare gpt-5.x stay frontier
         .{ .needle = "deepseek-v4", .tier = "frontier" },
@@ -58,6 +60,7 @@ pub fn providerClass(model: []const u8) []const u8 {
         .{ .needle = "fugu", .tier = "frontier" },
         .{ .needle = "gemini-3", .tier = "frontier" },
         .{ .needle = "sonnet", .tier = "mid" },
+        .{ .needle = "haiku", .tier = "small" },
     };
     for (known) |k| if (util.indexOfIgnoreCase(model, k.needle) != null) return k.tier;
     // Unknown family: bucket by models.dev output price ($/1M output tokens).

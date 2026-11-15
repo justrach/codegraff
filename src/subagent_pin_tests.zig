@@ -192,25 +192,25 @@ test "graceful fallback: every unhonorable pin keeps the session default, never 
     }
 
     // A provider with no ladder at all: a tier pin is a no-op, not a crash.
-    const xai: Provider = .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "grok-4.3", .context = 256_000 };
-    try std.testing.expectEqual(pin_mod.Outcome.no_ladder, pin_mod.forSpawn(xai, obj(a, "{\"tier\":\"small\"}"), true).outcome);
+    const groq: Provider = .{ .id = "groq", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "openai/gpt-oss-120b", .context = 131_072 };
+    try std.testing.expectEqual(pin_mod.Outcome.no_ladder, pin_mod.forSpawn(groq, obj(a, "{\"tier\":\"small\"}"), true).outcome);
     // A ladder without that rung (deepseek has no mid) — never rounds to
     // the nearest rung.
     const deepseek: Provider = .{ .id = "deepseek", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "deepseek-v4-flash", .context = 128_000 };
     try std.testing.expectEqual(pin_mod.Outcome.no_rung, pin_mod.forSpawn(deepseek, obj(a, "{\"tier\":\"mid\"}"), true).outcome);
     const opus: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude-opus-5", .context = 1_000_000 };
-    try std.testing.expectEqual(pin_mod.Outcome.no_rung, pin_mod.forSpawn(opus, obj(a, "{\"tier\":\"mid\"}"), true).outcome);
-    try std.testing.expectEqualStrings("claude-sonnet-5-5", pin_mod.forSpawn(opus, obj(a, "{\"tier\":\"small\"}"), true).provider.?.model);
+    try std.testing.expectEqualStrings("claude-sonnet-5-5", pin_mod.forSpawn(opus, obj(a, "{\"tier\":\"mid\"}"), true).provider.?.model);
+    try std.testing.expectEqualStrings("claude-haiku-5-5", pin_mod.forSpawn(opus, obj(a, "{\"tier\":\"small\"}"), true).provider.?.model);
 }
 
 test "cost ceiling: a tier rung may descend price but never raise it" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    // anthropic's compiled ladder: frontier claude-opus-5-5 ($4/20), small
-    // claude-sonnet-5-5 ($2/10). Descending from an opus root is fine…
+    // anthropic's compiled ladder: frontier claude-opus-5-5 ($4/20), mid
+    // claude-sonnet-5-5 ($2/10), small claude-haiku-5-5 ($0.10/0.50).
     const opus: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "claude-opus-5", .context = 1_000_000 };
-    try std.testing.expectEqualStrings("claude-sonnet-5-5", pin_mod.forSpawn(opus, obj(a, "{\"tier\":\"small\"}"), true).provider.?.model);
+    try std.testing.expectEqualStrings("claude-haiku-5-5", pin_mod.forSpawn(opus, obj(a, "{\"tier\":\"small\"}"), true).provider.?.model);
     // …but a sonnet-5 root asking for the frontier rung would RAISE cost —
     // blocked with a reason, spawn keeps the session default. Naming the
     // model explicitly still escalates: that is the visible, consented path.

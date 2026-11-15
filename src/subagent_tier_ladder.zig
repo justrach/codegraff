@@ -45,6 +45,9 @@ pub const Tier = enum {
 pub const TierLadder = struct {
     provider: []const u8,
     frontier: []const u8,
+    /// Optional dual-frontier sibling reserved for hard tasks (`effort: xhigh`
+    /// or `max`), e.g. `claude-fable-5-2` alongside `claude-opus-5-5`.
+    hard_frontier: ?[]const u8 = null,
     mid: ?[]const u8 = null,
     small: ?[]const u8 = null,
 
@@ -59,15 +62,28 @@ pub const TierLadder = struct {
             .small => self.small,
         };
     }
+
+    pub fn modelForEffort(self: TierLadder, tier: Tier, hard_effort: bool) ?[]const u8 {
+        if (tier == .frontier and hard_effort) return self.hard_frontier orelse self.frontier;
+        return self.modelFor(tier);
+    }
+
+    pub fn isFrontier(self: TierLadder, model: []const u8) bool {
+        if (std.mem.eql(u8, self.frontier, model)) return true;
+        if (self.hard_frontier) |hf| if (std.mem.eql(u8, hf, model)) return true;
+        return false;
+    }
 };
 
 pub const ladders = [_]TierLadder{
     .{ .provider = "codex", .frontier = "gpt-6-astra", .mid = "gpt-6-sol", .small = "gpt-6-luna" },
+    .{ .provider = "chatgpt-new", .frontier = "gpt-6-astra", .mid = "gpt-6.1-sol", .small = "gpt-6-luna" },
     .{ .provider = "openai", .frontier = "gpt-6-astra", .mid = "gpt-6-sol", .small = "gpt-6-luna" },
-    // #471: the rungs below frontier must be cheaper SEATS. opus-5-5 ($4/$20)
-    // and sonnet-5-5 ($2/$10) are the current lineup (ADR 0219); descending to
-    // an older opus saves nothing, and sonnet-5-5 halves both halves of the bill.
-    .{ .provider = "anthropic", .frontier = "claude-opus-5-5", .small = "claude-sonnet-5-5" },
+    // Dual frontier on Claude: opus-5-5 is the everyday frontier (shared plan
+    // pool), fable-5-2 is the hard-task frontier (separate plan pool, selected
+    // at effort xhigh/max), sonnet-5-5 is mid ($2/$10), haiku-5-5 is small.
+    .{ .provider = "anthropic", .frontier = "claude-opus-5-5", .hard_frontier = "claude-fable-5-2", .mid = "claude-sonnet-5-5", .small = "claude-haiku-5-5" },
+    .{ .provider = "claude-agent", .frontier = "claude-opus-5-5", .hard_frontier = "claude-fable-5-2", .mid = "claude-sonnet-5-5", .small = "claude-haiku-5-5" },
     // Flash is the cheaper DeepSeek seat ($0.14/$0.28 vs pro $1.1/$2.2) and
     // still outclasses luna. Pro stays the frontier name a codegraff/direct
     // session actually starts on; small descends to flash instead of hopping
@@ -83,6 +99,10 @@ pub const ladders = [_]TierLadder{
     // mechanical work (code search, greps, extraction) actually wants. Giving
     // k3 a `small` rung too would let it outscore luna and swallow that tier.
     .{ .provider = "kimi", .frontier = "k3", .mid = "k3" },
+    // xAI / SuperGrok is single-model: grok-4.7 or nothing (never descend to
+    // legacy grok-4.6 / grok-4.3 / grok-build). Leaves `small` null so cheap
+    // mechanical asks can still borrow another logged-in plan's small rung.
+    .{ .provider = "xai", .frontier = "grok-4.7", .mid = "grok-4.7" },
 };
 
 /// Is `rung` a genuinely cheaper SEAT than `frontier` — strictly less $/MTok
@@ -129,11 +149,27 @@ fn seatChecked(l: TierLadder) TierLadder {
 /// takes over rather than the provider losing its tiering entirely. Measured
 /// data still outranks the default whenever it names a real cheaper seat.
 pub fn forProvider(provider_id: []const u8) ?TierLadder {
-    for (@import("bench_priors.zig").g_ladders) |l| if (std.mem.eql(u8, l.provider, provider_id)) {
-        const checked = seatChecked(l);
-        if (checked.mid != null or checked.small != null) return checked;
-        break;
-    };
+    // xAI is always single-model (grok-4.7 or nothing); never let older
+    // bench priors demote it onto legacy grok-4.6 / grok-4.3 / grok-build.
+    if (!std.mem.eql(u8, provider_id, "xai")) {
+        for (@import("bench_priors.zig").g_ladders) |l| if (std.mem.eql(u8, l.provider, provider_id)) {
+            var checked = seatChecked(l);
+            if (checked.mid != null or checked.small != null) {
+                if (checked.hard_frontier == null) {
+                    for (ladders) |compiled| if (std.mem.eql(u8, compiled.provider, provider_id)) {
+                        if (compiled.hard_frontier) |hf| {
+                            const same_lower = (checked.mid != null and std.mem.eql(u8, checked.mid.?, hf)) or
+                                (checked.small != null and std.mem.eql(u8, checked.small.?, hf));
+                            if (!same_lower) checked.hard_frontier = hf;
+                        }
+                        break;
+                    };
+                }
+                return checked;
+            }
+            break;
+        };
+    }
     for (ladders) |l| if (std.mem.eql(u8, l.provider, provider_id)) return seatChecked(l);
     return null;
 }
@@ -164,6 +200,7 @@ test "subagent tier ladder: every rung is a real model on its own provider (#291
     // about what the binary ships, not what a previous test left active.
     for (ladders) |l| {
         try std.testing.expect(inShippedTable(l.provider, l.frontier));
+        if (l.hard_frontier) |hf| try std.testing.expect(inShippedTable(l.provider, hf));
         if (l.mid) |m| try std.testing.expect(inShippedTable(l.provider, m));
         if (l.small) |s| try std.testing.expect(inShippedTable(l.provider, s));
     }
@@ -178,9 +215,12 @@ fn inShippedTable(provider_id: []const u8, model: []const u8) bool {
 
 test "forProvider: known providers found, others null" {
     try std.testing.expectEqualStrings("gpt-6-astra", forProvider("codex").?.frontier);
+    try std.testing.expectEqualStrings("gpt-6.1-sol", forProvider("chatgpt-new").?.mid.?);
+    try std.testing.expectEqualStrings("claude-fable-5-2", forProvider("claude-agent").?.hard_frontier.?);
     try std.testing.expectEqualStrings("deepseek-v4-flash", forProvider("deepseek").?.small.?);
     try std.testing.expectEqualStrings("deepseek-v4-flash", forProvider("codegraff").?.small.?);
-    try std.testing.expect(forProvider("xai") == null);
+    try std.testing.expectEqualStrings("grok-4.7", forProvider("xai").?.frontier);
+    try std.testing.expect(forProvider("groq") == null);
 }
 
 test "Tier.parse/modelFor: the rung vocabulary #292 pins against (#291 names)" {
@@ -234,8 +274,9 @@ test "#471 a derived ladder offering no real descent yields to the compiled row"
     bench.g_ladders = &derived;
     const l = forProvider("anthropic").?;
     try std.testing.expectEqualStrings("claude-opus-5-5", l.frontier); // the compiled row, whole
-    try std.testing.expect(l.mid == null);
-    try std.testing.expectEqualStrings("claude-sonnet-5-5", l.small.?); // from the compiled row
+    try std.testing.expectEqualStrings("claude-fable-5-2", l.hard_frontier.?);
+    try std.testing.expectEqualStrings("claude-sonnet-5-5", l.mid.?);
+    try std.testing.expectEqualStrings("claude-haiku-5-5", l.small.?); // from the compiled row
 
     // A derived ladder that DOES name a genuinely cheaper seat still wins:
     // measured data outranks the hand-picked default, which is the whole

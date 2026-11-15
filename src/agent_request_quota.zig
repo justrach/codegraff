@@ -103,6 +103,29 @@ pub fn transportCode(err: anyerror) ?[]const u8 {
     };
 }
 
+/// When a separate-quota plan model (`claude-fable-5-2` on an `anthropic`
+/// subscription login) hits its dedicated cap, step sideways onto the
+/// shared-pool plan frontier (`claude-opus-5-5`) BEFORE promoting any parked
+/// metered API key. Bounded one-way: once on `.shared`, a second cap falls
+/// through to `handOffExhaustedPlan` or surfaces the quota error.
+pub fn stepDownSeparateQuotaPool(self: *@import("agent.zig").Agent) bool {
+    const billing = @import("billing.zig");
+    if (billing.forProvider(self.provider) != .sub) return false;
+    if (billing.quotaPoolFor(self.provider.id, self.provider.model, self.provider.source) != .separate) return false;
+    const ladder = @import("subagent_tier_ladder.zig").forProvider(self.provider.id) orelse return false;
+    const fallback = @import("subagent_selection.zig").liveLadderModel(self.provider.id, ladder.frontier) orelse ladder.frontier;
+    if (std.mem.eql(u8, fallback, self.provider.model)) return false;
+    if (billing.quotaPoolFor(self.provider.id, fallback, self.provider.source) == .separate) return false;
+    const exhausted_model = self.provider.model;
+    self.provider = self.provider.withModel(fallback);
+    if (self.tracer) |tr| tr.note("quota_pool_stepdown", "separate plan quota exhausted — switched to shared plan frontier");
+    self.say(
+        "[⚠ {s} hit its separate plan limit — switching to {s} on your shared {s} plan pool for the rest of this session.]\n",
+        .{ exhausted_model, fallback, self.provider.id },
+    ) catch {};
+    return true;
+}
+
 /// The existing one-shot login refresh and consented plan handoff remain the
 /// only exceptions. Never send a quota fault through an auth refresh ladder.
 pub fn handle(self: *@import("agent.zig").Agent, etype: []const u8, code: ?[]const u8, msg: []const u8, refreshed: *bool) !bool {
@@ -111,6 +134,10 @@ pub fn handle(self: *@import("agent.zig").Agent, etype: []const u8, code: ?[]con
     self.last_api_error_detail = null;
     const fault = classify(etype, code, msg) orelse return false;
     const policy = @import("agent_request_policy.zig");
+    if (fault == .quota and stepDownSeparateQuotaPool(self)) {
+        self.closeCodexWs();
+        return true;
+    }
     if (fault == .quota and policy.handOffExhaustedPlan(self)) {
         self.closeCodexWs(); // an existing socket still carries the spent credential
         return true;

@@ -33,9 +33,11 @@ pub fn isClaudeApi(provider_id: []const u8, model: []const u8) bool {
         @import("provider_codegraff.zig").usesMessages(provider_id, model);
 }
 
-/// Parse `claude-opus-5-5`, `claude-sonnet-4-6-20260101`, `claude-fable-5`.
+/// Parse `claude-opus-5-5`, `claude-sonnet-4-6-20260101`, `claude-fable-5`,
+/// and `[1m]` 1M-context variants such as `claude-fable-5-2[1m]`.
 pub fn version(model: []const u8) ?Version {
-    const rest = if (std.mem.startsWith(u8, model, "claude-")) model["claude-".len..] else return null;
+    const trimmed = if (std.mem.endsWith(u8, model, "[1m]")) model[0 .. model.len - "[1m]".len] else model;
+    const rest = if (std.mem.startsWith(u8, trimmed, "claude-")) trimmed["claude-".len..] else return null;
     var it = std.mem.splitScalar(u8, rest, '-');
     const family = std.meta.stringToEnum(Family, it.next() orelse return null) orelse return null;
     const major = std.fmt.parseInt(u16, it.next() orelse return null, 10) catch return null;
@@ -45,6 +47,14 @@ pub fn version(model: []const u8) ?Version {
     else
         0;
     return .{ .family = family, .major = major, .minor = minor };
+}
+
+/// True for the Claude Fable family (`claude-fable-5-2`, `claude-fable-5-2[1m]`,
+/// or Claude Code's `claude-agent-fable` alias), which draws from a separate
+/// usage pool on Claude subscription plans.
+pub fn isFable(model: []const u8) bool {
+    if (version(model)) |v| return v.family == .fable;
+    return std.mem.eql(u8, model, "claude-agent-fable");
 }
 
 fn atLeast(v: Version, major: u16, minor: u16) bool {
@@ -159,6 +169,11 @@ test "Claude model ids parse by family and version; dates are not minors" {
     try t.expectEqual(Version{ .family = .sonnet, .major = 4, .minor = 0 }, version("claude-sonnet-4-20250514").?);
     try t.expectEqual(Version{ .family = .fable, .major = 5, .minor = 1 }, version("claude-fable-5-1").?);
     try t.expectEqual(Version{ .family = .fable, .major = 5, .minor = 2 }, version("claude-fable-5-2").?);
+    try t.expectEqual(Version{ .family = .fable, .major = 5, .minor = 2 }, version("claude-fable-5-2[1m]").?);
+    try t.expect(isFable("claude-fable-5-2"));
+    try t.expect(isFable("claude-fable-5-2[1m]"));
+    try t.expect(isFable("claude-agent-fable"));
+    try t.expect(!isFable("claude-opus-5-5"));
     try t.expect(version("gpt-5.5") == null);
     try t.expect(version("claude-3-5-sonnet") == null);
 }

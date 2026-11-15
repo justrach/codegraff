@@ -50,6 +50,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const Provider = @import("provider.zig").Provider;
+const billing = @import("billing.zig");
 const vision = @import("vision.zig");
 const pricing = @import("pricing.zig");
 const bench_priors = @import("bench_priors.zig");
@@ -217,7 +218,7 @@ pub fn visionModelFor(provider_id: []const u8) ?[]const u8 {
         for ([_]?[]const u8{ l.small, l.mid, l.frontier }) |rung| {
             const name = rung orelse continue;
             if (!vision.visionModel(name)) continue;
-            if (selection.modelForProvider(provider_id, name)) |m| return m;
+            if (selection.liveLadderModel(provider_id, name)) |m| return m;
         }
     }
     var best: ?[]const u8 = null;
@@ -245,6 +246,7 @@ pub fn visionSeat(base: Provider) ?Provider {
             if (std.mem.eql(u8, sid, base.id)) continue; // handled provider-locally below
             const name = visionModelFor(sid) orelse continue;
             const prov = keys.providerById(sid, name) catch continue; // not logged in → not a candidate
+            if (billing.costFor(sid, prov.source) != .plan) continue;
             const score = bench_priors.scoreFor(sid, name) orelse 0;
             if (best == null or score > best_score) {
                 best = prov;
