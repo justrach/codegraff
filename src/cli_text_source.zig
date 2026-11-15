@@ -5,6 +5,12 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.68
+    \\  • Add dual-frontier worker tier selection (`hard_frontier` at `xhigh`/`max`), single-model ladder bounds, and live-catalog rung fallback (ADR 0345).
+    \\  • Surface separate plan quota pools in `/models` (`plan*`) and ACP `graff/models` (`separateQuota`), with intra-plan frontier stepdown on usage limits.
+    \\  • Restrict cross-provider flat-rate borrowing to `.plan` subscription logins and keep equal-scored rungs on the active plan.
+    \\  • Enable the workspace-owning ACP client profile for `zeron` in `graff acp` and read `~/.simple-harness-keys.json` before macOS Keychain lookup.
+    \\
     \\0.302.74.67
     \\  • Add opt-in runtime extensions (`graff extensions`, `plugins enable|disable`) and worker-inherited `policies` across REPL and ACP (ADR 0343).
     \\  • Add opt-in post-write `formatters` with verified-byte restore and multicall symlink preservation.

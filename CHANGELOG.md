@@ -10,6 +10,13 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.68
+
+- Add dual-frontier subagent tier selection (`hard_frontier` at `xhigh`/`max` reasoning effort), single-model provider ladder constraints, and dynamic live-catalog family fallback when compiled rung IDs rotate (ADR 0345).
+- Surface separate plan quota pools in `/models` (`plan*`) and ACP `graff/models` (`separateQuota`), and step exhausted separate-pool plan turns sideways onto the shared plan frontier before credential failover.
+- Require `.plan`-billed subscription logins for cross-provider flat-rate tier, model, and vision borrowing, and keep equal-scored plan rungs on the active session's provider.
+- Enable the workspace-owning ACP client profile (`configOptions` model picker and direct working-tree edits) for `zeron` clients in `graff acp`, and check `~/.simple-harness-keys.json` before macOS Keychain lookup.
+
 ## v0.302.74.67
 
 - Add opt-in trusted runtime extensions (`runtime_plugins`, `graff extensions`, `graff plugins enable|disable`) and hard policy statements (`policies`) inherited across workers and enforced across REPL and ACP (ADR 0343).
