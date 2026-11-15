@@ -35,6 +35,7 @@ fn bareNativeName(raw: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, raw, local_tools.install_name)) return local_tools.install_name;
     if (std.mem.eql(u8, raw, schedule.tool_name)) return schedule.tool_name;
     if (std.mem.eql(u8, raw, jev_tool.name)) return jev_tool.name;
+    if (std.mem.eql(u8, raw, "lsp")) return "lsp";
     return null;
 }
 
@@ -75,6 +76,9 @@ pub fn findSessionSpec(arena: Allocator, name: []const u8, maybe_provider: ?Prov
     for (schedule.catalogExtras(arena)) |spec| {
         if (std.mem.eql(u8, spec.name, name)) return spec;
     }
+    for (@import("lsp_catalog.zig").rootExtras()) |spec| {
+        if (std.mem.eql(u8, spec.name, name)) return spec;
+    }
     if (maybe_provider) |p| {
         for (jev_tool.catalogExtras(p)) |spec| {
             if (std.mem.eql(u8, spec.name, name)) return spec;
@@ -105,6 +109,10 @@ pub fn canLoadFoldedSpec(arena: Allocator, name: []const u8) !?schema.ToolSpec {
         for (schema.root_specs) |s| if (std.mem.eql(u8, s.name, name)) break :blk s;
         for (schema.optional_specs) |s| if (std.mem.eql(u8, s.name, name)) break :blk s;
         if (std.mem.eql(u8, name, rlm.tool_name)) break :blk .{ .name = rlm.tool_name, .desc = rlm.tool_desc, .schema = rlm.tool_schema };
+        if (std.mem.eql(u8, name, "lsp")) {
+            if (!@import("lsp_config.zig").root_enabled) return null;
+            break :blk @import("lsp.zig").spec;
+        }
         return null;
     };
     const compacted = try no_local_tools.compactLeanSpecs(schema.ToolSpec, arena, &.{raw_spec});
@@ -145,6 +153,8 @@ pub fn unavailableReason(name: []const u8) []const u8 {
         return "disabled in --old / --no-rlm mode.";
     if (std.mem.eql(u8, name, jev_tool.name))
         return "not enabled for the active provider or model.";
+    if (std.mem.eql(u8, name, "lsp") and !@import("lsp_config.zig").root_enabled)
+        return "no lsp.servers configured in .harness/settings.json.";
     if (tool_surface.hideBuiltin(name))
         return "superseded by the connected companion MCP surface in this session.";
     if (no_local_tools.lean and !no_local_tools.leanKeeps(name))
@@ -269,7 +279,7 @@ pub fn fallbackNativeQuery(agent: anytype, query: []const u8) !?ExecResult {
             if (std.mem.eql(u8, s.name, name)) break s.desc;
         } else for (schema.optional_specs) |s| {
             if (std.mem.eql(u8, s.name, name)) break s.desc;
-        } else "";
+        } else if (std.mem.eql(u8, name, "lsp")) @import("lsp.zig").spec.desc else "";
         if (scoreSpec(name, desc, query) == 0) continue;
         const rest = (try listDeferredNative(agent.arena)) orelse "";
         const sep = if (rest.len > 0) "\n" else "";

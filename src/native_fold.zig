@@ -64,6 +64,7 @@ pub const folded = [_][]const u8{
     "read_tool_result",
     "subagent_resume",
     "schedule_task",
+    "lsp",
     // ADR 0022 / 0140: isFolded is false under --old so the structured-only
     // catalog stays byte-stable. While available, rlm is on the catalog
     // from turn one — no batch-size or compactAt gate.
@@ -378,7 +379,7 @@ pub fn markIfFolded(name: []const u8) void {
 pub fn gateExec(gpa: Allocator, name: []const u8, from_sub: bool) ?@import("tools.zig").ToolOutput {
     _ = gpa;
     if (from_sub) return null; // subs are served comptime-baked full catalogs — nothing is folded for them
-    if (@import("main.zig").plan_mode) return null;
+    if (@import("main.zig").plan_mode and !std.mem.eql(u8, name, "lsp")) return null;
     if (!blocked(name)) return null;
     markLoaded(name);
     return null;

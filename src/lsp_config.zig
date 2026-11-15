@@ -3,12 +3,14 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Value = std.json.Value;
+pub var root_enabled: bool = false;
 pub const Server = struct {
     id: []const u8,
     command: []const []const u8,
     extensions: []const []const u8,
     language_id: []const u8,
     timeout_ms: u64 = 5000,
+    warm_ttl_ms: u64 = 0,
 };
 pub const Registry = struct {
     servers: []const Server = &.{},
@@ -52,13 +54,16 @@ pub fn parse(a: Allocator, bytes: []const u8) !Registry {
         if (!@import("extension_runtime.zig").identifier(id)) return error.InvalidLspConfig;
         for (out.items) |old| if (std.mem.eql(u8, old.id, id)) return error.InvalidLspConfig;
         const timeout = entry.object.get("timeout_ms") orelse Value{ .integer = 5000 };
-        if (timeout != .integer or timeout.integer < 100 or timeout.integer > 10_000) return error.InvalidLspConfig;
+        if (timeout != .integer or timeout.integer < 100 or timeout.integer > 30_000) return error.InvalidLspConfig;
+        const warm = entry.object.get("warm_ttl_ms") orelse Value{ .integer = 0 };
+        if (warm != .integer or (warm.integer != 0 and (warm.integer < 100 or warm.integer > 300_000))) return error.InvalidLspConfig;
         try out.append(a, .{
             .id = id,
             .command = try strings(a, entry.object.get("command") orelse return error.InvalidLspConfig, false),
             .extensions = try strings(a, entry.object.get("extensions") orelse return error.InvalidLspConfig, true),
             .language_id = try text(entry.object.get("language_id") orelse return error.InvalidLspConfig),
             .timeout_ms = @intCast(timeout.integer),
+            .warm_ttl_ms = @intCast(warm.integer),
         });
     }
     return .{ .servers = try out.toOwnedSlice(a) };
@@ -82,7 +87,7 @@ pub fn clone(a: Allocator, source: Registry) !Registry {
         for (server.command, command) |s, *d| d.* = try a.dupe(u8, s);
         const extensions = try a.alloc([]const u8, server.extensions.len);
         for (server.extensions, extensions) |s, *d| d.* = try a.dupe(u8, s);
-        dest.* = .{ .id = try a.dupe(u8, server.id), .command = command, .extensions = extensions, .language_id = try a.dupe(u8, server.language_id), .timeout_ms = server.timeout_ms };
+        dest.* = .{ .id = try a.dupe(u8, server.id), .command = command, .extensions = extensions, .language_id = try a.dupe(u8, server.language_id), .timeout_ms = server.timeout_ms, .warm_ttl_ms = server.warm_ttl_ms };
     }
     return .{ .servers = out, .problem = if (source.problem) |p| try a.dupe(u8, p) else null };
 }

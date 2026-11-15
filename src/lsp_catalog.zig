@@ -6,6 +6,9 @@ pub const specs = [_]schema.ToolSpec{@import("lsp.zig").spec};
 pub fn extras(registry: config.Registry) []const schema.ToolSpec {
     return if (registry.enabled() and !@import("no_local_tools.zig").enabled) &specs else &.{};
 }
+pub fn rootExtras() []const schema.ToolSpec {
+    return if (config.root_enabled and !@import("no_local_tools.zig").enabled) &specs else &.{};
+}
 pub fn append(a: std.mem.Allocator, kind: @import("provider.zig").Provider.Kind, base: []const u8, registry: config.Registry) []const u8 {
     if (extras(registry).len == 0) return base;
     var output: std.Io.Writer.Allocating = .init(a);

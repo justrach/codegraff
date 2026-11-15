@@ -234,6 +234,7 @@ pub fn buildRootAgent(
         .tools_openai = "",
         .tools_responses = "",
     };
+    @import("lsp_config.zig").root_enabled = root.lsp_registry.enabled();
     // #410: the durable session's name is settled BEFORE the prompt funnel runs — setRootSystemPrompts composes the transcript line out of it.
     // The pid suffix keeps two graffs started in the same millisecond from
     // sharing a session name — which would also share one .session.json file

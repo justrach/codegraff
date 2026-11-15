@@ -13,10 +13,12 @@ import time
 import unittest
 
 SOURCE = Path(__file__).resolve().parents[1] / "src" / "lsp_client.py"
+WARM_SOURCE = Path(__file__).resolve().parents[1] / "src" / "lsp_warm.py"
 SPEC = importlib.util.spec_from_file_location("lsp_client", SOURCE)
 lsp = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(lsp)
 EMBEDDED = SOURCE.read_text(encoding="utf-8")
+WARM_EMBEDDED = WARM_SOURCE.read_text(encoding="utf-8")
 
 # This server deliberately uses its own framing instead of importing the client.
 SERVER = r'''
@@ -283,7 +285,7 @@ class ClientTests(Fixture):
 
     def test_validation_precedes_launch(self):
         outside = self.root.parent / "not-in-root.c"
-        for change in [dict(timeout_ms=10001), dict(timeout_ms=True), dict(line=-1),
+        for change in [dict(timeout_ms=30001), dict(timeout_ms=True), dict(line=-1),
                        dict(character=1000), dict(path=str(outside)), dict(path="fixture.c"),
                        dict(operation="execute_command"), dict(command="python3"),
                        dict(command=[]), dict(language_id="")]:
@@ -384,6 +386,100 @@ class InstalledClangdTests(Fixture):
             position = location.get("targetSelectionRange", location.get("range"))["start"]
             self.assertEqual(position["line"], 0)
             self.assertEqual(position["character"], 4)
+
+
+WARM_SERVER = r'''
+import json, os, sys
+pidfile = sys.argv[1]
+open(pidfile, 'w').write(str(os.getpid()))
+def read():
+    headers = {}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if line == b'\r\n': break
+        if not line: sys.exit(0)
+        k, v = line.split(b':', 1)
+        headers[k.lower()] = v.strip()
+    return json.loads(sys.stdin.buffer.read(int(headers[b'content-length'])))
+def send(message):
+    raw = json.dumps(dict(jsonrpc='2.0', **message)).encode()
+    sys.stdout.buffer.write(b'Content-Length: ' + str(len(raw)).encode() + b'\r\n\r\n' + raw)
+    sys.stdout.buffer.flush()
+init = read()
+send(dict(id=init['id'], result=dict(capabilities={})))
+assert read()['method'] == 'initialized'
+versions = {}
+while True:
+    msg = read()
+    m, p = msg.get('method'), msg.get('params', {})
+    if m == 'textDocument/didOpen':
+        td = p['textDocument']
+        versions[td['uri']] = td['version']
+        diags = [dict(message='err_v1')] if 'broken' in td['text'] else []
+        send(dict(method='textDocument/publishDiagnostics', params=dict(uri=td['uri'], version=td['version'], diagnostics=diags)))
+    elif m == 'textDocument/didChange':
+        uri, ver = p['textDocument']['uri'], p['textDocument']['version']
+        versions[uri] = ver
+        txt = p['contentChanges'][-1]['text']
+        diags = [dict(message='err_v' + str(ver))] if 'broken' in txt else []
+        send(dict(method='textDocument/publishDiagnostics', params=dict(uri=uri, version=ver, diagnostics=diags)))
+    elif m == 'textDocument/hover':
+        uri = p['textDocument']['uri']
+        send(dict(id=msg['id'], result=dict(contents=f'pid={os.getpid()} ver={versions.get(uri)}')))
+'''
+
+
+@unittest.skipUnless(os.name == "posix", "warm daemon uses POSIX AF_UNIX")
+class WarmClientTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="lsp-warm-")
+        self.root = Path(self.temp.name)
+        self.source = self.root / "fixture.c"
+        self.source.write_text("int broken = 1;\n", encoding="utf-8")
+        self.server = self.root / "warm_server.py"
+        self.server.write_text(WARM_SERVER, encoding="utf-8")
+        self.pidfile = self.root / "warm.pid"
+
+    def tearDown(self):
+        try:
+            self.invoke("__shutdown_warm")
+        except Exception:
+            pass
+        self.temp.cleanup()
+
+    def invoke(self, operation, warm_ttl_ms=3000):
+        req = dict(command=[sys.executable, "-u", str(self.server), str(self.pidfile)],
+                   root=str(self.root), path=str(self.source), language_id="c",
+                   operation=operation, line=0, character=4, timeout_ms=2000,
+                   server_id="warmtest", warm_ttl_ms=warm_ttl_ms)
+        completed = subprocess.run([sys.executable, "-c", WARM_EMBEDDED, WARM_EMBEDDED, EMBEDDED, json.dumps(req)],
+                                   capture_output=True, timeout=15)
+        self.assertEqual(completed.returncode, 0, completed.stderr.decode(errors="replace"))
+        return json.loads(completed.stdout)
+
+    def test_reuse_didchange_cached_diags_and_ttl_reap(self):
+        d1 = self.invoke("diagnostics", warm_ttl_ms=250)
+        self.assertTrue(d1["complete"] and not d1["warm_hit"])
+        self.assertEqual(d1["result"][0]["message"], "err_v1")
+        pid1 = int(self.pidfile.read_text())
+        h1 = self.invoke("hover", warm_ttl_ms=250)
+        self.assertTrue(h1["complete"] and h1["warm_hit"])
+        self.assertIn(f"pid={pid1} ver=1", h1["result"]["contents"])
+        self.source.write_text("int clean = 2;\n", encoding="utf-8")
+        d2 = self.invoke("diagnostics", warm_ttl_ms=250)
+        self.assertTrue(d2["complete"] and d2["warm_hit"])
+        self.assertEqual(d2["result"], [])
+        d3 = self.invoke("diagnostics", warm_ttl_ms=250)
+        self.assertTrue(d3["complete"] and d3["warm_hit"] and d3["result"] == [])
+        h2 = self.invoke("hover", warm_ttl_ms=250)
+        self.assertIn(f"pid={pid1} ver=2", h2["result"]["contents"])
+        for _ in range(30):
+            try:
+                os.kill(pid1, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        self.fail("warm LSP server was not reaped after idle TTL")
 
 
 if __name__ == "__main__":

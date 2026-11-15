@@ -112,8 +112,8 @@ def validate(request):
     if not isinstance(operation, str) or operation not in OPERATIONS:
         fail("invalid_request", "Unsupported LSP operation")
     timeout = request.get("timeout_ms", 5000)
-    if type(timeout) is not int or not 1 <= timeout <= 10000:
-        fail("invalid_request", "timeout_ms must be between 1 and 10000")
+    if type(timeout) is not int or not 1 <= timeout <= 30000:
+        fail("invalid_request", "timeout_ms must be between 1 and 30000")
     language = request.get("language_id")
     if not isinstance(language, str) or not 1 <= len(language) <= 128:
         fail("invalid_request", "Expected language_id")
@@ -193,7 +193,7 @@ _EXTERNAL = object()
 
 
 class Client:
-    def __init__(self, command, root, deadline):
+    def __init__(self, command, root, deadline, new_session=False):
         self.deadline = deadline
         self.events = queue.Queue(maxsize=16)
         self.writes = queue.Queue(maxsize=4)
@@ -202,9 +202,11 @@ class Client:
         self.diagnostics = None
         self.uri = None
         self.pending = None
+        self.read_budget = [0]
         # Do not detach: the embedding process runner owns descendant cleanup.
         self.proc = subprocess.Popen(command, cwd=str(root), stdin=subprocess.PIPE,
-                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     start_new_session=new_session)
         self.threads = [threading.Thread(target=fn, daemon=True)
                         for fn in (self._read, self._stderr, self._write)]
         for thread in self.threads:
@@ -226,9 +228,8 @@ class Client:
 
     def _read(self):
         try:
-            budget = [0]
             while not self.stop.is_set():
-                message = read_frame(self.proc.stdout, budget)
+                message = read_frame(self.proc.stdout, self.read_budget)
                 self._put(("message", message))
                 if message is None:
                     return
@@ -254,9 +255,12 @@ class Client:
     def _write(self):
         while not self.stop.is_set():
             try:
-                frame, done, errors = self.writes.get(timeout=0.05)
+                item = self.writes.get(timeout=0.05)
             except queue.Empty:
                 continue
+            if item is None:
+                return
+            frame, done, errors = item
             try:
                 self.proc.stdin.write(frame)
                 self.proc.stdin.flush()
@@ -346,6 +350,10 @@ class Client:
                 pass
         self.stop.set()
         try:
+            self.writes.put_nowait(None)
+        except queue.Full:
+            pass
+        try:
             if self.proc.poll() is None:
                 self.proc.terminate()
             try:
@@ -355,12 +363,18 @@ class Client:
                 self.proc.wait(timeout=0.5)
         except ProcessLookupError:
             self.proc.wait(timeout=0.5)
-        for thread in self.threads:
+        self.threads[2].join(timeout=0.2)
+        for thread in self.threads[:2]:
             thread.join(timeout=0.05)
+        if not self.threads[2].is_alive():
+            try:
+                self.proc.stdin.close()
+            except (OSError, ValueError):
+                pass
         # Closing a buffered pipe held by a reader can deadlock if an inherited
         # descendant still holds it; the runner will kill that process group.
-        if not any(thread.is_alive() for thread in self.threads):
-            for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
+        if not any(thread.is_alive() for thread in self.threads[:2]):
+            for stream in (self.proc.stdout, self.proc.stderr):
                 try:
                     stream.close()
                 except OSError:

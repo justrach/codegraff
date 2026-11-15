@@ -98,6 +98,7 @@ pub const LiveTurn = struct {
         if (!std.mem.eql(u8, self.session_id, session_id)) {
             self.session_id = self.root.arena.dupe(u8, session_id) catch session_id;
             self.root.lsp_registry = @import("lsp_config.zig").load(self.root.io, self.root.arena);
+            @import("lsp_config.zig").root_enabled = self.root.lsp_registry.enabled();
             self.root.invalidateRootTools();
             if (self.session_id.len > 0) {
                 @import("presence.zig").noteLabelsFrom(self.root.io, self.root.gpa, self.root.arena, self.root.session_title, self.session_id);

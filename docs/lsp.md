@@ -21,7 +21,8 @@ An operator opts in through protected `.harness/settings.json`:
 Use an already installed server and the language ID appropriate to the project.
 The first configured server matching the file extension wins; a tool call may
 select a configured server ID explicitly. Up to 16 servers are supported, with
-100–10,000 ms deadlines. Commands are argv arrays, never shell interpolation.
+100–30,000 ms deadlines and optional bounded warm session reuse (`warm_ttl_ms`:
+`0` default one-shot, or `100–300,000` ms per-workspace idle TTL on POSIX). Commands are argv arrays, never shell interpolation.
 Use absolute paths for custom server scripts that must also work in isolated
 worker checkouts. Servers remain trusted local programs, not OS-sandboxed code;
 they may read project configuration, run compiler probes, or write their own
@@ -31,8 +32,10 @@ stdio client; no Python packages are needed.
 ## Operations
 
 The optional native `lsp` tool supports `status`, `diagnostics`, `hover`,
-`definition`, `references`, and `document_symbols`. It is advertised only when
-servers were configured at trusted session startup/adoption. The engine path is
+`definition`, `references`, and `document_symbols`. On root sessions it stays
+folded behind `load_tool_schemas` (or auto-loads on direct call, including in
+plan mode) and is advertised only when servers were configured at trusted session
+startup/adoption. Workers inherit eager access. The engine path is
 the same for line REPL, ACP/Harness, RLM calls, and inherited worker tools.
 `tool.use` policies on `lsp` and `--no-local-tools` also block execution.
 

@@ -18,13 +18,18 @@ than a first read-only LSP integration.
   or packages are discovered/downloaded. Missing configuration leaves both the
   catalog and execution capability off.
 - A native optional `lsp` tool and model-free local CLI share one engine executor.
-  REPL, ACP/Harness, RLM, and worker dispatch use that same path. Existing
+  REPL, ACP/Harness, RLM, and worker dispatch use that same path; on root sessions
+  `lsp` stays folded behind `load_tool_schemas` until needed. Existing
   `tool.use` policies and `--no-local-tools` remain backstops.
 - Server registrations are immutable per-agent snapshots. Child worktrees
   cannot substitute their own commands; detached workers deep-own the snapshot.
   A newly adopted ACP root captures its selected workspace's configuration.
-- Each call uses an owned one-shot stdio JSON-RPC session: initialize, didOpen,
-  read-only operation/current diagnostics, shutdown and process-tree cleanup.
+- By default (`warm_ttl_ms = 0`) each call uses an owned one-shot stdio JSON-RPC
+  session (100–30,000 ms timeout): initialize, didOpen, read-only operation/current
+  diagnostics, shutdown and process-tree cleanup. Operators may opt into bounded
+  per-workspace POSIX session reuse (`warm_ttl_ms`: 100–300,000 ms), which tracks
+  document SHA-256 hashes (`didOpen`/`didChange`) and reaps the server process
+  group when idle.
   The client supports diagnostics, hover, definitions, references and document
   symbols; it never applies workspace edits or executes server commands.
 - An embedded, standard-library Python 3.9+ helper implements Content-Length

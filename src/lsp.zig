@@ -64,11 +64,16 @@ pub fn execute(ctx: tools.ToolCtx, input: Value) !tools.ToolOutput {
     const paths = @import("codedbpro_paths.zig");
     const root = try paths.sessionAbs(a, ctx.io, ctx.agent_cwd, ".");
     const absolute = try paths.sessionAbs(a, ctx.io, ctx.agent_cwd, path);
-    const request = try std.json.Stringify.valueAlloc(a, .{ .command = server.command, .root = root, .path = absolute, .language_id = server.language_id, .operation = operation, .line = line, .character = character, .timeout_ms = server.timeout_ms }, .{});
+    const request = try std.json.Stringify.valueAlloc(a, .{ .command = server.command, .root = root, .path = absolute, .language_id = server.language_id, .operation = operation, .line = line, .character = character, .timeout_ms = server.timeout_ms, .server_id = server.id, .warm_ttl_ms = server.warm_ttl_ms }, .{});
     if (request.len > 32 * 1024) return fail(ctx.gpa, "LSP request exceeds 32 KiB");
     var empty = std.process.Environ.Map.init(a);
     defer empty.deinit();
-    const result = runner.runCappedWithOptions(ctx.gpa, ctx.io, &.{ "python3", "-c", @embedFile("lsp_client.py"), request }, 64 * 1024, 4096, server.timeout_ms + 2000, .{
+    const use_warm = server.warm_ttl_ms > 0 and @import("builtin").os.tag != .windows;
+    const argv: []const []const u8 = if (use_warm)
+        &.{ "python3", "-c", @embedFile("lsp_warm.py"), @embedFile("lsp_warm.py"), @embedFile("lsp_client.py"), request }
+    else
+        &.{ "python3", "-c", @embedFile("lsp_client.py"), request };
+    const result = runner.runCappedWithOptions(ctx.gpa, ctx.io, argv, 64 * 1024, 4096, server.timeout_ms + (if (use_warm) @as(u64, 3000) else 2000), .{
         .cwd = .{ .path = root },
         .environ_map = @import("tool_env.zig").get() orelse &empty,
         .kill_process_tree = true,
