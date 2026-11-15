@@ -265,7 +265,11 @@ test "LSP config merges global default registry under workspace overrides and re
 
 test "LSP global config dir is write-protected by harness_policy" {
     const policy = @import("harness_policy.zig");
+    try std.testing.expect(policy.protectedWriteRefusal(".graff/lsp") != null);
     try std.testing.expect(policy.protectedWriteRefusal(".graff/lsp/settings.json") != null);
-    try std.testing.expect(policy.protectedWriteRefusal("/Users/alice/.graff/lsp/bin/zls") != null);
+    try std.testing.expect(policy.protectedWriteRefusal("/home/dev/.graff/lsp/bin/zls") != null);
+    try std.testing.expect(policy.protectedWriteRefusal("C:\\Users\\dev\\.graff\\lsp\\settings.json") != null);
+    try std.testing.expect(policy.protectedWriteRefusal("C:\\Users\\dev\\.GRAFF/LSP/bin/zls") != null);
     try std.testing.expect(policy.protectedWriteRefusal("src/lsp.zig") == null);
+    try std.testing.expect(policy.protectedWriteRefusal(".graff/sessions/a.json") == null);
 }

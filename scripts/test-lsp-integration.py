@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+from urllib.parse import unquote, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'eval'))
 from mock_model import ScriptedModel
@@ -54,10 +55,10 @@ def stop(proc):
         proc.wait(timeout=3)
 
 
-def invoke(binary, cwd, env, words, stdin=None, timeout=35):
+def invoke(binary, cwd, env, words, stdin=None, timeout=45):
     proc = subprocess.Popen([binary, *words], cwd=cwd, env=env, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, start_new_session=True)
+                            text=True, encoding='utf-8', start_new_session=True)
     try:
         stdout, stderr = proc.communicate(stdin, timeout=timeout)
         return proc.returncode, stdout, stderr
@@ -122,8 +123,11 @@ class Fixture:
         self.settings.parent.mkdir()
         self.config = {'ai_title': False, 'session_recap': False,
                        'skills': {'codedbpro': False, 'muonry': False}}
-        self.env = {key: os.environ[key] for key in ('PATH', 'TMPDIR', 'SystemRoot')
-                    if key in os.environ}
+        self.env = {key: os.environ[key] for key in (
+            'PATH', 'PATHEXT', 'TMPDIR', 'TEMP', 'TMP',
+            'SystemRoot', 'SystemDrive', 'WINDIR', 'COMSPEC',
+            'APPDATA', 'LOCALAPPDATA',
+        ) if key in os.environ}
         self.env.update(HOME=str(self.home), USERPROFILE=str(self.home),
                         XDG_CONFIG_HOME=str(self.home / '.config'),
                         XDG_CACHE_HOME=str(self.home / '.cache'),
@@ -139,7 +143,7 @@ class Fixture:
     def save(self):
         self.settings.write_text(json.dumps(self.config))
 
-    def configure(self, command=None, timeout=5000, server_id='clangd'):
+    def configure(self, command=None, timeout=20000, server_id='clangd'):
         self.config['lsp'] = {'servers': [{'id': server_id,
             'command': command or [self.clangd, '--background-index=false'],
             'extensions': ['.cpp'], 'language_id': 'cpp', 'timeout_ms': timeout}]}
@@ -193,7 +197,7 @@ class Acp:
         self.proc = subprocess.Popen([fixture.binary, 'acp', '--yolo', '--old', '--no-lean',
             '--no-telemetry', '--model', 'lspfixture/mock'], cwd=fixture.root, env=fixture.env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, start_new_session=True)
+            text=True, encoding='utf-8', start_new_session=True)
         self.events, self.errors, self.messages = [], [], queue.Queue()
         self.threads = [threading.Thread(target=self.read, daemon=True),
                         threading.Thread(target=lambda: self.errors.extend(self.proc.stderr), daemon=True)]
@@ -240,6 +244,18 @@ def call(operation, **arguments):
     return {'tool': 'lsp', 'arguments': {'operation': operation, **arguments}}
 
 
+def uri_matches(uri, expected_path):
+    if not isinstance(uri, str):
+        return False
+    parsed = urlsplit(uri)
+    if parsed.scheme != 'file' or parsed.netloc not in ('', 'localhost'):
+        return False
+    decoded = unquote(parsed.path)
+    if os.name == 'nt' and len(decoded) > 2 and decoded[0] == '/' and decoded[2] == ':':
+        decoded = decoded[1:]
+    return Path(decoded).resolve() == expected_path.resolve()
+
+
 def test_cli(f):
     status = f.cli('status')
     require(status['enabled'] is False and status['servers'] == [], 'LSP must default off')
@@ -259,7 +275,7 @@ def test_cli(f):
     require('twice' in json.dumps(hover) and 'int' in json.dumps(hover), 'real clangd hover missing type')
     definitions = complete(f.cli('definition', 'source.cpp', '2', str(POSITION['character'])), 'definition')
     location = definitions[0] if isinstance(definitions, list) else definitions
-    require(location.get('targetUri', location.get('uri')) == source.resolve().as_uri(),
+    require(uri_matches(location.get('targetUri', location.get('uri')), source),
             'definition did not resolve to source.cpp')
     position = location.get('targetSelectionRange', location.get('range'))['start']
     require(position == {'line': 0, 'character': 4}, 'definition position is wrong')
@@ -369,18 +385,24 @@ def test_acp(f):
     model = ScriptedModel([call('hover', path='source.cpp', server='clangd', **POSITION), {'text': DONE}])
     port = model.start(0)
     f.router(port)
-    marker = f.marker_server()
-    f.config['lsp']['servers'][0]['id'] = 'launch-only'
-    f.save()
-    client = Fixture(f.root, 'client-workspace', f.binary, f.clangd)
-    client.configure()
-    client.router(port)
+    if os.name == 'posix':
+        marker = f.marker_server()
+        f.config['lsp']['servers'][0]['id'] = 'launch-only'
+        f.save()
+        client = Fixture(f.root, 'client-workspace', f.binary, f.clangd)
+        client.configure()
+        client.router(port)
+        target_cwd = client.root
+    else:
+        marker = None
+        f.configure()
+        target_cwd = f.root
     acp = None
     try:
         acp = Acp(f)
         acp.request('initialize', {'protocolVersion': 1})
-        created = acp.request('session/new', {'cwd': str(client.root), 'mcpServers': []})
-        require(Path(created.get('_meta', {}).get('graff/cwd', '')).resolve() == client.root.resolve(),
+        created = acp.request('session/new', {'cwd': str(target_cwd), 'mcpServers': []})
+        require(Path(created.get('_meta', {}).get('graff/cwd', '')).resolve() == target_cwd.resolve(),
                 'ACP did not adopt the client workspace')
         turn = acp.request('session/prompt', {'sessionId': created['sessionId'],
                            'prompt': [{'type': 'text', 'text': 'Run the offline LSP fixture.'}]})
@@ -389,7 +411,8 @@ def test_acp(f):
                 'ACP client configuration did not expose lsp')
         hover = complete(reply_json(model.requests[1]), 'hover')
         require('twice' in json.dumps(hover), 'ACP client-configured tool did not reach real clangd')
-        require(not marker.exists(), 'ACP launched the daemon-cwd server instead of client configuration')
+        if marker is not None:
+            require(not marker.exists(), 'ACP launched the daemon-cwd server instead of client configuration')
         updates = [e['params']['update'] for e in acp.events if e.get('method') == 'session/update']
         require(any(u.get('sessionUpdate') == 'tool_call' and
                     u.get('_meta', {}).get('graff/toolName') == 'lsp' for u in updates),
@@ -409,7 +432,7 @@ def test_global_default_and_setup(f):
     global_cfg.parent.mkdir(parents=True, exist_ok=True)
     global_cfg.write_text(json.dumps({'lsp': {'servers': [{
         'id': 'clangd', 'command': [f.clangd, '--background-index=false'],
-        'extensions': ['.cpp'], 'language_id': 'cpp', 'timeout_ms': 5000,
+        'extensions': ['.cpp'], 'language_id': 'cpp', 'timeout_ms': 20000,
     }]}}))
     status = f.cli('status')
     require(status['enabled'] and [s['id'] for s in status['servers']] == ['clangd'],

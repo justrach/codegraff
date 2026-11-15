@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Synthetic stdio LSP tests; python3 scripts/test_lsp_client.py -v."""
+import ctypes
 import importlib.util
 import io
 import json
@@ -11,6 +12,32 @@ import sys
 import tempfile
 import time
 import unittest
+
+
+def pid_is_alive(pid):
+    if os.name == "nt":
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_int
+        # SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION
+        handle = kernel32.OpenProcess(0x00101000, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == 5
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == 0x00000102
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
 
 SOURCE = Path(__file__).resolve().parents[1] / "src" / "lsp_client.py"
 WARM_SOURCE = Path(__file__).resolve().parents[1] / "src" / "lsp_warm.py"
@@ -80,7 +107,7 @@ assert opened['method'] == 'textDocument/didOpen'
 document = opened['params']['textDocument']
 assert document['version'] == 1
 uri = document['uri']
-if mode == 'text': assert document['text'] == '/* 😀 */ int value = 7;\n'
+if mode == 'text': assert document['text'] in ('/* 😀 */ int value = 7;\n', '/* 😀 */ int value = 7;\r\n')
 if mode == 'push':
     send(dict(method='textDocument/publishDiagnostics', params=dict(uri=uri + '.other', diagnostics=[])))
     send(dict(method='textDocument/publishDiagnostics', params=dict(uri=uri, version=0, diagnostics=[])))
@@ -154,9 +181,9 @@ class Fixture(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="lsp-synthetic-")
         self.root = Path(self.temp.name)
         self.source = self.root / "fixture.c"
-        self.source.write_text("int value = 7;\n", encoding="utf-8")
+        self.source.write_bytes(b"int value = 7;\n")
         self.server = self.root / "server.py"
-        self.server.write_text(SERVER, encoding="utf-8")
+        self.server.write_bytes(SERVER.encode("utf-8"))
         self.pidfile = self.root / "server.pid"
 
     def tearDown(self):
@@ -181,8 +208,10 @@ class Fixture(unittest.TestCase):
 
     def assert_server_gone(self):
         pid = int(self.pidfile.read_text())
-        with self.assertRaises(ProcessLookupError):
-            os.kill(pid, 0)
+        deadline = time.monotonic() + 1.0
+        while pid_is_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.025)
+        self.assertFalse(pid_is_alive(pid), f"server pid {pid} still alive")
 
 
 class ClientTests(Fixture):
@@ -277,11 +306,12 @@ class ClientTests(Fixture):
         self.assert_server_gone()
 
     def test_actual_text_and_utf16_position(self):
-        self.source.write_text("/* 😀 */ int value = 7;\n", encoding="utf-8")
-        reply = self.invoke(self.request("text", character=13))
-        self.assertTrue(reply["complete"], reply)
-        invalid = self.invoke(self.request("text", character=4))
-        self.assertEqual(invalid["error"]["code"], "invalid_request")
+        for ending in (b"\n", b"\r\n"):
+            self.source.write_bytes("/* 😀 */ int value = 7;".encode("utf-8") + ending)
+            reply = self.invoke(self.request("text", character=13))
+            self.assertTrue(reply["complete"], reply)
+            invalid = self.invoke(self.request("text", character=4))
+            self.assertEqual(invalid["error"]["code"], "invalid_request")
 
     def test_validation_precedes_launch(self):
         outside = self.root.parent / "not-in-root.c"

@@ -52,8 +52,8 @@ fn runSetup(io: Io, a: std.mem.Allocator, words: []const []const u8, flag_check:
     const runner = @import("process_runner.zig");
     var empty = std.process.Environ.Map.init(a);
     defer empty.deinit();
-    const argv: []const []const u8 = &.{ "python3", "-c", @embedFile("lsp_setup.py"), req };
-    const result = runner.runCappedWithOptions(a, io, argv, 64 * 1024, 16 * 1024, 180_000, .{
+    const tail: []const []const u8 = &.{ "-c", @embedFile("lsp_setup.py"), req };
+    const result = @import("lsp.zig").runPython(a, a, io, tail, 64 * 1024, 16 * 1024, 180_000, .{
         .environ_map = @import("tool_env.zig").get() orelse &empty,
         .kill_process_tree = true,
     }) catch return error.LspQueryFailed;

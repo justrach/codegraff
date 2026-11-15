@@ -6,11 +6,14 @@ import json
 import os
 from pathlib import Path
 import platform
+import queue
 import shlex
 import shutil
 import subprocess
 import sys
 import tarfile
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,24 +30,37 @@ def runnable(cmd, timeout=5):
 
 
 def stdio_probe(cmd, timeout=6):
-    import select
-    import time
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                        "params": {"processId": os.getpid(), "rootUri": None, "capabilities": {}}}).encode("utf-8")
     frame = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
     proc = None
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        chunks = queue.Queue()
+
+        def pump():
+            try:
+                while True:
+                    chunk = proc.stdout.read1(4096) if hasattr(proc.stdout, "read1") else proc.stdout.read(4096)
+                    if not chunk:
+                        break
+                    chunks.put(chunk)
+            except (OSError, ValueError):
+                pass
+            finally:
+                chunks.put(None)
+
+        threading.Thread(target=pump, daemon=True).start()
         proc.stdin.write(frame)
         proc.stdin.flush()
-        buf, fd, deadline = bytearray(), proc.stdout.fileno(), time.monotonic() + timeout
+        buf, deadline = bytearray(), time.monotonic() + timeout
         while time.monotonic() < deadline and len(buf) < 65536:
             wait = max(0.05, deadline - time.monotonic())
-            ready, _, _ = select.select([proc.stdout], [], [], wait)
-            if not ready:
+            try:
+                chunk = chunks.get(timeout=wait)
+            except queue.Empty:
                 break
-            chunk = os.read(fd, 4096)
-            if not chunk:
+            if chunk is None:
                 break
             buf.extend(chunk)
             if b'"capabilities"' in buf:
@@ -64,6 +80,7 @@ def stdio_probe(cmd, timeout=6):
 def find_exe(names, extra_dirs=(), version_arg="--version", probe_stdio=False):
     seen = set()
     candidates = [Path(d) for d in extra_dirs if d]
+    extra_path = os.pathsep.join(str(d) for d in candidates)
     candidates.extend(Path(p) for p in os.environ.get("PATH", "").split(os.pathsep) if p)
 
     def check(key):
@@ -73,12 +90,15 @@ def find_exe(names, extra_dirs=(), version_arg="--version", probe_stdio=False):
         return ok, (ver[0] if ver else "")
 
     for name in names:
-        hit = shutil.which(name)
-        if hit and hit not in seen:
-            seen.add(hit)
-            ok, ver = check(hit)
-            if ok:
-                return hit, ver
+        for search_path in (None, extra_path):
+            if search_path == "":
+                continue
+            hit = shutil.which(name, path=search_path)
+            if hit and hit not in seen:
+                seen.add(hit)
+                ok, ver = check(hit)
+                if ok:
+                    return hit, ver
         for d in candidates:
             p = d / name
             key = str(p)
@@ -128,7 +148,8 @@ def fetch_bytes(url, timeout=60):
 def atomic_write(path, data, mode):
     tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     tmp.write_bytes(data)
-    os.chmod(tmp, mode)
+    if os.name == "posix":
+        os.chmod(tmp, mode)
     os.replace(tmp, path)
 
 
@@ -198,7 +219,8 @@ def install_rust_analyzer(bin_dir):
 
 def install_node_packages(node_pkg_dir, node_exe, pkgs):
     node_pkg_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(node_pkg_dir, 0o700)
+    if os.name == "posix":
+        os.chmod(node_pkg_dir, 0o700)
     pkg_json = node_pkg_dir / "package.json"
     if not pkg_json.exists():
         atomic_write(pkg_json, b'{"name":"graff-lsp-packages","private":true}\n', 0o600)
@@ -270,8 +292,9 @@ def main():
     if not check_only:
         lsp_home.mkdir(mode=0o700, parents=True, exist_ok=True)
         bin_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(lsp_home, 0o700)
-        os.chmod(bin_dir, 0o700)
+        if os.name == "posix":
+            os.chmod(lsp_home, 0o700)
+            os.chmod(bin_dir, 0o700)
     node_exe = find_node()
     servers, summary, errors = [], [], []
 

@@ -210,12 +210,14 @@ pub fn protectsGitMetadata(path: []const u8) bool {
 }
 
 fn protectsGlobalLsp(trimmed: []const u8) bool {
-    const win_dir = ".graff\\lsp";
-    return std.mem.eql(u8, trimmed, global_lsp_dir) or std.mem.eql(u8, trimmed, win_dir) or
-        std.mem.startsWith(u8, trimmed, global_lsp_dir ++ "/") or std.mem.startsWith(u8, trimmed, win_dir ++ "\\") or
-        std.mem.endsWith(u8, trimmed, "/" ++ global_lsp_dir) or std.mem.endsWith(u8, trimmed, "\\" ++ win_dir) or
-        std.mem.indexOf(u8, trimmed, "/" ++ global_lsp_dir ++ "/") != null or
-        std.mem.indexOf(u8, trimmed, "\\" ++ win_dir ++ "\\") != null;
+    var it = std.mem.tokenizeAny(u8, trimmed, "/\\");
+    var prev_graff = false;
+    while (it.next()) |comp| {
+        const clean = std.mem.trimEnd(u8, comp, ". ");
+        if (prev_graff and std.ascii.eqlIgnoreCase(clean, "lsp")) return true;
+        prev_graff = std.ascii.eqlIgnoreCase(clean, ".graff");
+    }
+    return false;
 }
 
 /// Refusal message when `write_file` or `edit_file` targets `.harness/settings.json`,

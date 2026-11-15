@@ -53,7 +53,7 @@ const extra_secrets = [_][]const u8{
 /// Never scrubbed, whatever a provider spec names as its `env_key`: codex's
 /// no-key sentinel is a control flag, and a project router naming one of
 /// the rest would otherwise leave every tool child unable to run.
-const never_secret = [_][]const u8{ "CODEX_DISABLED", "CHATGPT_NEW_DISABLED", "GRAFF_CLAUDE_AGENT", "GRAFF_LSP_CONFIG", "PATH", "HOME", "USER", "SHELL", "TMPDIR", "LANG" };
+const never_secret = [_][]const u8{ "CODEX_DISABLED", "CHATGPT_NEW_DISABLED", "GRAFF_CLAUDE_AGENT", "GRAFF_LSP_CONFIG", "PATH", "PATHEXT", "SystemRoot", "USERPROFILE", "HOME", "USER", "SHELL", "TMPDIR", "TEMP", "TMP", "LANG" };
 
 /// Non-interactive defaults every tool child gets (#1268), over whatever the
 /// user has set: a tool call can never answer an editor or a prompt.

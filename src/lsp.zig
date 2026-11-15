@@ -43,6 +43,26 @@ pub fn languageIdForPath(path: []const u8, configured: []const u8) []const u8 {
 fn valid(operation: []const u8) bool {
     return positional(operation) or std.mem.eql(u8, operation, "status") or std.mem.eql(u8, operation, "diagnostics") or std.mem.eql(u8, operation, "document_symbols");
 }
+pub fn runPython(gpa: Allocator, arena: Allocator, io: std.Io, tail_argv: []const []const u8, stdout_cap: usize, stderr_cap: usize, deadline_ms: u64, options: runner.CappedRunOptions) !runner.CappedRun {
+    const progs = if (@import("builtin").os.tag == .windows)
+        [_][]const u8{ "python3", "python" }
+    else
+        [_][]const u8{ "python3", "/usr/bin/python3", "python" };
+    const argv = try arena.alloc([]const u8, 1 + tail_argv.len);
+    @memcpy(argv[1..], tail_argv);
+    var last_err: anyerror = error.FileNotFound;
+    for (progs) |prog| {
+        argv[0] = prog;
+        return runner.runCappedWithOptions(gpa, io, argv, stdout_cap, stderr_cap, deadline_ms, options) catch |err| switch (err) {
+            error.FileNotFound => {
+                last_err = err;
+                continue;
+            },
+            else => return err,
+        };
+    }
+    return last_err;
+}
 pub fn execute(ctx: tools.ToolCtx, input: Value) !tools.ToolOutput {
     if (@import("no_local_tools.zig").enabled) return fail(ctx.gpa, "LSP is disabled by --no-local-tools");
     var arena = std.heap.ArenaAllocator.init(ctx.gpa);
@@ -86,11 +106,11 @@ pub fn execute(ctx: tools.ToolCtx, input: Value) !tools.ToolOutput {
     var empty = std.process.Environ.Map.init(a);
     defer empty.deinit();
     const use_warm = server.warm_ttl_ms > 0 and @import("builtin").os.tag != .windows;
-    const argv: []const []const u8 = if (use_warm)
-        &.{ "python3", "-c", @embedFile("lsp_warm.py"), @embedFile("lsp_warm.py"), @embedFile("lsp_client.py"), request }
+    const tail: []const []const u8 = if (use_warm)
+        &.{ "-c", @embedFile("lsp_warm.py"), @embedFile("lsp_warm.py"), @embedFile("lsp_client.py"), request }
     else
-        &.{ "python3", "-c", @embedFile("lsp_client.py"), request };
-    const result = runner.runCappedWithOptions(ctx.gpa, ctx.io, argv, 64 * 1024, 4096, server.timeout_ms + (if (use_warm) @as(u64, 3000) else 2000), .{
+        &.{ "-c", @embedFile("lsp_client.py"), request };
+    const result = runPython(ctx.gpa, a, ctx.io, tail, 64 * 1024, 4096, server.timeout_ms + (if (use_warm) @as(u64, 3000) else 2000), .{
         .cwd = .{ .path = root },
         .environ_map = @import("tool_env.zig").get() orelse &empty,
         .kill_process_tree = true,

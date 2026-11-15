@@ -319,9 +319,11 @@ test "formatter built-in PATH lookup preserves multicall symlink basename and sk
         \\
     ;
     try tmp.dir.writeFile(io, .{ .sub_path = "multicall", .data = shim });
-    const mc = try tmp.dir.openFile(io, "multicall", .{ .mode = .read_write });
-    defer mc.close(io);
-    if (Io.File.Permissions.has_executable_bit) try mc.setPermissions(io, .fromMode(0o755));
+    {
+        const mc = try tmp.dir.openFile(io, "multicall", .{ .mode = .read_write });
+        defer mc.close(io);
+        if (Io.File.Permissions.has_executable_bit) try mc.setPermissions(io, .fromMode(0o755));
+    }
     try tmp.dir.symLink(io, "../multicall", "bin/rustfmt", .{});
     try tmp.dir.symLink(io, "../multicall", "bin/gofmt", .{});
     try tmp.dir.symLink(io, "../nonexistent", "broken/rustfmt", .{});
