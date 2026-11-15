@@ -5,6 +5,11 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.69
+    \\  • Track live rate-limit headers, WebSocket `codex.rate_limits`, and `claude-agent` events, and bypass exhausted `claude-fable-5-2` pools onto `claude-opus-5-5` (ADR 0346).
+    \\  • Surface signed-in account identities, plan credits, and remaining usage windows across `/usage`, `/cost`, ACP `graff/accounts`, and `_codegraff/usage.planWindows`.
+    \\  • Advertise `_meta["codegraff/accounts"]` and all 7 terminal `authMethods` in ACP `initialize`.
+    \\
     \\0.302.74.68
     \\  • Add dual-frontier worker tier selection (`hard_frontier` at `xhigh`/`max`), single-model ladder bounds, and live-catalog rung fallback (ADR 0345).
     \\  • Surface separate plan quota pools in `/models` (`plan*`) and ACP `graff/models` (`separateQuota`), with intra-plan frontier stepdown on usage limits.

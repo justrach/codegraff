@@ -10,6 +10,12 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.69
+
+- Track live provider rate-limit headers, Responses WebSocket `codex.rate_limits` frames, and Claude Agent `rate_limit_event` updates in `plan_usage_live`, and bypass exhausted `claude-fable-5-2` separate quota pools onto `claude-opus-5-5` before issuing a failing turn (ADR 0346).
+- Surface signed-in account identities (`email`, `displayName`, `organization`, `plan`), prepaid/reset credits, and remaining usage windows across `/usage`, `/cost`, ACP `graff/accounts` / `_codegraff/accounts`, and `_codegraff/usage.planWindows`.
+- Advertise `_meta["codegraff/accounts"]` and all seven terminal `authMethods` (`graff-login`, `anthropic`, `claude-agent`, `chatgpt-new`, `codex`, `xai`, `kimi`) in ACP `initialize`.
+
 ## v0.302.74.68
 
 - Add dual-frontier subagent tier selection (`hard_frontier` at `xhigh`/`max` reasoning effort), single-model provider ladder constraints, and dynamic live-catalog family fallback when compiled rung IDs rotate (ADR 0345).
