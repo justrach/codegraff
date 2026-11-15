@@ -400,6 +400,28 @@ def test_acp(f):
         model.stop()
 
 
+def test_global_default_and_setup(f):
+    setup_reply = f.cli('setup', '--check')
+    require(setup_reply.get('version') == 1 and setup_reply.get('check_only') is True,
+            'lsp setup --check did not report check_only JSON')
+    require(f.cli('status')['enabled'] is False, 'clean workspace without global config must start off')
+    global_cfg = f.home / '.graff' / 'lsp' / 'settings.json'
+    global_cfg.parent.mkdir(parents=True, exist_ok=True)
+    global_cfg.write_text(json.dumps({'lsp': {'servers': [{
+        'id': 'clangd', 'command': [f.clangd, '--background-index=false'],
+        'extensions': ['.cpp'], 'language_id': 'cpp', 'timeout_ms': 5000,
+    }]}}))
+    status = f.cli('status')
+    require(status['enabled'] and [s['id'] for s in status['servers']] == ['clangd'],
+            'home ~/.graff/lsp/settings.json was not loaded by default')
+    require(complete(f.cli('diagnostics', 'source.cpp'), 'diagnostics') == [],
+            'default home LSP did not serve unconfigured workspace')
+    f.config['lsp'] = False
+    f.save()
+    require(f.cli('status')['enabled'] is False,
+            'workspace lsp=false did not override global ~/.graff/lsp/settings.json')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--graff', default='zig-out/bin/graff')
@@ -417,6 +439,7 @@ def main():
              ('status/path confinement/CLI gates', test_boundaries),
              ('diagnostics timeout is incomplete and server reaped', test_timeout),
              ('default-off JSON REPL catalog', test_catalog_off),
+             ('global default, override, opt-out, and lsp setup', test_global_default_and_setup),
              ('configured JSON REPL native tool', test_repl),
              ('JSON REPL no-local-tools runtime gate', test_gate),
              ('JSON REPL hard-policy runtime gate', lambda f: test_gate(f, policy=True)),

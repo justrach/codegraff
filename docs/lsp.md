@@ -1,8 +1,20 @@
 # Local language servers
 
-LSP is **off by default**. Graff does not download servers, discover executable
-project configuration, or run a server merely because a language is present.
-An operator opts in through protected `.harness/settings.json`:
+LSP is **off by default until configured**: graff never auto-runs an unregistered
+server on a project merely because source files exist, and never reads executable
+commands from project config alone unless workspace or user settings register
+them. Configuration is read from:
+
+1. Global user defaults: `$HOME/.graff/lsp/settings.json` (or `GRAFF_LSP_CONFIG`).
+2. Workspace overrides: protected `.harness/settings.json` in the workspace root.
+
+Run `graff lsp setup` (`--check` for dry-run status) to detect existing
+language servers on `PATH`, install missing standard servers into isolated
+`$HOME/.graff/lsp/` storage, and write `$HOME/.graff/lsp/settings.json` so all
+main sessions enable them automatically. Workspace `.harness/settings.json`
+entries take precedence per server ID, and `"lsp": false` opts a workspace out
+of both global and local LSP servers. Both `.harness/settings.json` and
+`.graff/lsp` are write-protected against model edits.
 
 ```json
 {
@@ -18,8 +30,12 @@ An operator opts in through protected `.harness/settings.json`:
 }
 ```
 
-Use an already installed server and the language ID appropriate to the project.
-The first configured server matching the file extension wins; a tool call may
+Use an already installed server (or bootstrap via `graff lsp setup`) and the
+language ID appropriate to the project; omitted language IDs map `.ts`/`.mts`/`.cts`
+to `typescript`, `.tsx` to `typescriptreact`, `.js`/`.mjs`/`.cjs` to
+`javascript`, and `.jsx` to `javascriptreact`.
+The first configured server matching the file extension wins (workspace entries
+precede global entries with the same ID); a tool call may
 select a configured server ID explicitly. Up to 16 servers are supported, with
 100–30,000 ms deadlines and optional bounded warm session reuse (`warm_ttl_ms`:
 `0` default one-shot, or `100–300,000` ms per-workspace idle TTL on POSIX). Commands are argv arrays, never shell interpolation.

@@ -22,7 +22,9 @@ const Io = std.Io;
 /// theme/animation choice. One spelling, so every reader and writer agrees.
 pub const settings_dir = ".harness";
 pub const settings_path = ".harness/settings.json";
+pub const global_lsp_dir = ".graff/lsp";
 pub const settings_write_refusal = "refused: " ++ settings_path ++ " is the harness's own policy file (approvals, hooks, pre-approvals) — a model never widens its own permissions. Ask the USER to change config, or proceed without this tool.";
+pub const global_lsp_write_refusal = "refused: " ++ global_lsp_dir ++ " is the harness's user-level LSP directory — a model never modifies configured language servers. Ask the USER to run `graff lsp setup` or edit config.";
 pub const git_metadata_refusal = "refused: .git metadata (config, hooks, refs) is read-only to file tools — run git commands in shell instead";
 
 /// Read-only basics plus the build, so subagents are useful out of the box.
@@ -207,8 +209,17 @@ pub fn protectsGitMetadata(path: []const u8) bool {
     return false;
 }
 
-/// Refusal message when `write_file` or `edit_file` targets `.harness/settings.json`
-/// or `.git` internals, or null when the target is an ordinary file path.
+fn protectsGlobalLsp(trimmed: []const u8) bool {
+    const win_dir = ".graff\\lsp";
+    return std.mem.eql(u8, trimmed, global_lsp_dir) or std.mem.eql(u8, trimmed, win_dir) or
+        std.mem.startsWith(u8, trimmed, global_lsp_dir ++ "/") or std.mem.startsWith(u8, trimmed, win_dir ++ "\\") or
+        std.mem.endsWith(u8, trimmed, "/" ++ global_lsp_dir) or std.mem.endsWith(u8, trimmed, "\\" ++ win_dir) or
+        std.mem.indexOf(u8, trimmed, "/" ++ global_lsp_dir ++ "/") != null or
+        std.mem.indexOf(u8, trimmed, "\\" ++ win_dir ++ "\\") != null;
+}
+
+/// Refusal message when `write_file` or `edit_file` targets `.harness/settings.json`,
+/// `.graff/lsp`, or `.git` internals, or null when the target is an ordinary file path.
 pub fn protectedWriteRefusal(path: []const u8) ?[]const u8 {
     const trimmed = std.mem.trim(u8, path, " \t");
     if (std.mem.eql(u8, trimmed, settings_path) or
@@ -217,6 +228,7 @@ pub fn protectedWriteRefusal(path: []const u8) ?[]const u8 {
     {
         return settings_write_refusal;
     }
+    if (protectsGlobalLsp(trimmed)) return global_lsp_write_refusal;
     if (protectsGitMetadata(trimmed)) return git_metadata_refusal;
     return null;
 }

@@ -192,3 +192,80 @@ test "LSP folds under native_fold on root only when configured and auto-loads in
     try std.testing.expect(fold.gateExec(a, "lsp", false) == null);
     try std.testing.expect(fold.isLoaded("lsp"));
 }
+
+test "LSP languageIdForPath maps JS/TS/JSX/TSX extensions while preserving other languages" {
+    const lsp = @import("lsp.zig");
+    try std.testing.expectEqualStrings("typescript", lsp.languageIdForPath("src/app.ts", "typescript"));
+    try std.testing.expectEqualStrings("typescript", lsp.languageIdForPath("src/app.MTS", "javascript"));
+    try std.testing.expectEqualStrings("typescriptreact", lsp.languageIdForPath("src/Card.tsx", "typescript"));
+    try std.testing.expectEqualStrings("javascript", lsp.languageIdForPath("src/index.js", "typescript"));
+    try std.testing.expectEqualStrings("javascript", lsp.languageIdForPath("src/index.mjs", "typescript"));
+    try std.testing.expectEqualStrings("javascriptreact", lsp.languageIdForPath("src/Widget.jsx", "typescript"));
+    try std.testing.expectEqualStrings("cpp", lsp.languageIdForPath("src/main.cpp", "cpp"));
+    try std.testing.expectEqualStrings("python", lsp.languageIdForPath("src/app.py", "python"));
+}
+
+test "LSP config merges global default registry under workspace overrides and respects lsp=false" {
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var home_tmp = std.testing.tmpDir(.{});
+    defer home_tmp.cleanup();
+    var ws_tmp = std.testing.tmpDir(.{});
+    defer ws_tmp.cleanup();
+    try home_tmp.dir.createDirPath(io, ".graff/lsp");
+    try home_tmp.dir.writeFile(io, .{ .sub_path = ".graff/lsp/settings.json", .data =
+        \\{"lsp":{"servers":[
+        \\  {"id":"python","command":["global-py","--stdio"],"extensions":[".py"],"language_id":"python"},
+        \\  {"id":"rust","command":["global-ra"],"extensions":[".rs"],"language_id":"rust"}
+        \\]}}
+    });
+    const home_path = try home_tmp.dir.realPathFileAlloc(io, ".", a);
+    const ws_path = try ws_tmp.dir.realPathFileAlloc(io, ".", a);
+
+    // 1. Workspace without settings inherits global ~/.graff/lsp/settings.json.
+    const inherited = config.loadFrom(io, a, ws_tmp.dir, ws_path, home_path, null);
+    try std.testing.expect(inherited.problem == null);
+    try std.testing.expect(inherited.enabled());
+    try std.testing.expectEqualStrings("global-py", inherited.select("app.py", null).?.command[0]);
+    try std.testing.expectEqualStrings("global-ra", inherited.select("src/main.rs", null).?.command[0]);
+
+    // 2. Workspace server overrides matching id while keeping non-conflicting global entries.
+    try ws_tmp.dir.createDirPath(io, ".harness");
+    try ws_tmp.dir.writeFile(io, .{ .sub_path = ".harness/settings.json", .data =
+        \\{"lsp":{"servers":[
+        \\  {"id":"python","command":["project-py","--stdio"],"extensions":[".py"],"language_id":"python"},
+        \\  {"id":"cpp","command":["project-clangd"],"extensions":[".cpp"],"language_id":"cpp"}
+        \\]}}
+    });
+    const merged = config.loadFrom(io, a, ws_tmp.dir, ws_path, home_path, null);
+    try std.testing.expect(merged.problem == null);
+    try std.testing.expectEqual(@as(usize, 3), merged.servers.len);
+    try std.testing.expectEqualStrings("project-py", merged.select("app.py", null).?.command[0]);
+    try std.testing.expectEqualStrings("project-clangd", merged.select("a.cpp", null).?.command[0]);
+    try std.testing.expectEqualStrings("global-ra", merged.select("src/lib.rs", null).?.command[0]);
+
+    // 3. Explicit GRAFF_LSP_CONFIG overrides home path when workspace allows global merge.
+    try home_tmp.dir.writeFile(io, .{ .sub_path = "override.json", .data =
+        \\{"lsp":{"servers":[{"id":"zig","command":["override-zls"],"extensions":[".zig"],"language_id":"zig"}]}}
+    });
+    const override_path = try std.fs.path.join(a, &.{ home_path, "override.json" });
+    const overridden = config.loadFrom(io, a, ws_tmp.dir, ws_path, home_path, override_path);
+    try std.testing.expectEqualStrings("override-zls", overridden.select("main.zig", null).?.command[0]);
+    try std.testing.expect(overridden.select("src/lib.rs", null) == null);
+
+    // 4. Workspace "lsp":false disables global defaults too.
+    try ws_tmp.dir.writeFile(io, .{ .sub_path = ".harness/settings.json", .data = "{\"lsp\":false}" });
+    const disabled = config.loadFrom(io, a, ws_tmp.dir, ws_path, home_path, null);
+    try std.testing.expect(disabled.problem == null);
+    try std.testing.expect(!disabled.enabled());
+}
+
+test "LSP global config dir is write-protected by harness_policy" {
+    const policy = @import("harness_policy.zig");
+    try std.testing.expect(policy.protectedWriteRefusal(".graff/lsp/settings.json") != null);
+    try std.testing.expect(policy.protectedWriteRefusal("/Users/alice/.graff/lsp/bin/zls") != null);
+    try std.testing.expect(policy.protectedWriteRefusal("src/lsp.zig") == null);
+}

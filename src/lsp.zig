@@ -24,6 +24,22 @@ pub fn positional(operation: []const u8) bool {
     for ([_][]const u8{ "hover", "definition", "references" }) |name| if (std.mem.eql(u8, operation, name)) return true;
     return false;
 }
+pub fn languageIdForPath(path: []const u8, configured: []const u8) []const u8 {
+    const is_js_family = std.mem.eql(u8, configured, "typescript") or
+        std.mem.eql(u8, configured, "javascript") or
+        std.mem.eql(u8, configured, "typescriptreact") or
+        std.mem.eql(u8, configured, "javascriptreact");
+    if (!is_js_family) return configured;
+    if (std.ascii.endsWithIgnoreCase(path, ".tsx")) return "typescriptreact";
+    if (std.ascii.endsWithIgnoreCase(path, ".jsx")) return "javascriptreact";
+    if (std.ascii.endsWithIgnoreCase(path, ".js") or
+        std.ascii.endsWithIgnoreCase(path, ".mjs") or
+        std.ascii.endsWithIgnoreCase(path, ".cjs")) return "javascript";
+    if (std.ascii.endsWithIgnoreCase(path, ".ts") or
+        std.ascii.endsWithIgnoreCase(path, ".mts") or
+        std.ascii.endsWithIgnoreCase(path, ".cts")) return "typescript";
+    return configured;
+}
 fn valid(operation: []const u8) bool {
     return positional(operation) or std.mem.eql(u8, operation, "status") or std.mem.eql(u8, operation, "diagnostics") or std.mem.eql(u8, operation, "document_symbols");
 }
@@ -51,7 +67,7 @@ pub fn execute(ctx: tools.ToolCtx, input: Value) !tools.ToolOutput {
     const path = field(input.object, "path") orelse return fail(ctx.gpa, "lsp requires path");
     if (path.len == 0 or path.len > 4096 or std.mem.indexOfScalar(u8, path, 0) != null) return fail(ctx.gpa, "invalid LSP path");
     const id = if (input.object.get("server")) |v| (if (v == .string) v.string else return fail(ctx.gpa, "server must be a string")) else null;
-    const server = registry.select(path, id) orelse return fail(ctx.gpa, "no configured LSP server matches this file; configure lsp.servers in protected .harness/settings.json");
+    const server = registry.select(path, id) orelse return fail(ctx.gpa, "no configured LSP server matches this file; configure lsp.servers in protected .harness/settings.json or run graff lsp setup");
     var line: i64 = 0;
     var character: i64 = 0;
     if (positional(operation)) {
@@ -64,7 +80,8 @@ pub fn execute(ctx: tools.ToolCtx, input: Value) !tools.ToolOutput {
     const paths = @import("codedbpro_paths.zig");
     const root = try paths.sessionAbs(a, ctx.io, ctx.agent_cwd, ".");
     const absolute = try paths.sessionAbs(a, ctx.io, ctx.agent_cwd, path);
-    const request = try std.json.Stringify.valueAlloc(a, .{ .command = server.command, .root = root, .path = absolute, .language_id = server.language_id, .operation = operation, .line = line, .character = character, .timeout_ms = server.timeout_ms, .server_id = server.id, .warm_ttl_ms = server.warm_ttl_ms }, .{});
+    const language_id = languageIdForPath(path, server.language_id);
+    const request = try std.json.Stringify.valueAlloc(a, .{ .command = server.command, .root = root, .path = absolute, .language_id = language_id, .operation = operation, .line = line, .character = character, .timeout_ms = server.timeout_ms, .server_id = server.id, .warm_ttl_ms = server.warm_ttl_ms }, .{});
     if (request.len > 32 * 1024) return fail(ctx.gpa, "LSP request exceeds 32 KiB");
     var empty = std.process.Environ.Map.init(a);
     defer empty.deinit();

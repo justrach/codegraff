@@ -13,14 +13,22 @@ than a first read-only LSP integration.
 
 ## Decision
 
-- An operator explicitly registers installed server argv, extensions, language
-  ID, and a bounded deadline in protected `.harness/settings.json`. No servers
-  or packages are discovered/downloaded. Missing configuration leaves both the
-  catalog and execution capability off.
+- Server registrations come from write-protected user defaults
+  (`$HOME/.graff/lsp/settings.json` or `GRAFF_LSP_CONFIG`) merged under
+  protected workspace `.harness/settings.json`, up to 16 servers. Project entries
+  override matching global server IDs, and `"lsp": false` opts a workspace out
+  entirely. When neither exists, both the catalog and execution capability stay
+  off; `graff lsp setup [--check]` is an explicit CLI step that checks `PATH`
+  first, installs missing standard servers into isolated `$HOME/.graff/lsp/`,
+  and writes the global defaults. Both `.harness/settings.json` and `.graff/lsp`
+  are write-protected against model edits.
 - A native optional `lsp` tool and model-free local CLI share one engine executor.
   REPL, ACP/Harness, RLM, and worker dispatch use that same path; on root sessions
   `lsp` stays folded behind `load_tool_schemas` until needed. Existing
   `tool.use` policies and `--no-local-tools` remain backstops.
+- Default `languageId` inference maps `.ts`/`.mts`/`.cts` to `typescript`,
+  `.tsx` to `typescriptreact`, `.js`/`.mjs`/`.cjs` to `javascript`, and `.jsx`
+  to `javascriptreact`.
 - Server registrations are immutable per-agent snapshots. Child worktrees
   cannot substitute their own commands; detached workers deep-own the snapshot.
   A newly adopted ACP root captures its selected workspace's configuration.

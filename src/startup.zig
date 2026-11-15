@@ -329,7 +329,7 @@ pub fn runSubcommand(io: Io, gpa: Allocator, arena: Allocator, init: std.process
     }
 
     if (@import("lsp_cli.zig").isCommand(flags.positionals.items))
-        return @import("lsp_cli.zig").run(io, arena, init.environ_map, flags.positionals.items, @import("no_local_tools.zig").enabled);
+        return @import("lsp_cli.zig").run(io, arena, init.environ_map, &flags);
 
     // `graff learn ...`: local immutable policy learning. It runs before key
     // resolution and normal session construction; configured child tools get

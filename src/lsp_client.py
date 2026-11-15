@@ -189,6 +189,23 @@ def filter_locations(value, root, removed, depth=0):
     return result
 
 
+def same_uri(candidate, expected_uri, expected_path):
+    if candidate == expected_uri:
+        return True
+    if not isinstance(candidate, str) or expected_path is None:
+        return False
+    try:
+        parsed = urlsplit(candidate)
+        if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+            return False
+        decoded = unquote(parsed.path, errors="strict")
+        if os.name == "nt" and len(decoded) > 2 and decoded[0] == "/" and decoded[2] == ":":
+            decoded = decoded[1:]
+        return Path(decoded).resolve() == expected_path
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
 _EXTERNAL = object()
 
 
@@ -201,7 +218,9 @@ class Client:
         self.count = 0
         self.diagnostics = None
         self.uri = None
+        self.doc_path = None
         self.pending = None
+        self.quiescent = None
         self.read_budget = [0]
         # Do not detach: the embedding process runner owns descendant cleanup.
         self.proc = subprocess.Popen(command, cwd=str(root), stdin=subprocess.PIPE,
@@ -303,8 +322,11 @@ class Client:
             method, params = value["method"], value.get("params", {})
             if "id" in value:
                 self._server_request(value)
+            elif method == "experimental/serverStatus" and isinstance(params, dict):
+                if isinstance(params.get("quiescent"), bool):
+                    self.quiescent = params["quiescent"]
             elif method == "textDocument/publishDiagnostics" and isinstance(params, dict):
-                if params.get("uri") == self.uri and params.get("version", 1) in (None, 1):
+                if same_uri(params.get("uri"), self.uri, self.doc_path) and params.get("version", 1) in (None, 1):
                     diagnostics = params.get("diagnostics")
                     if not isinstance(diagnostics, list):
                         fail("protocol_error", "Invalid diagnostics notification")
@@ -324,8 +346,13 @@ class Client:
             response["result"] = None
         elif method == "window/workDoneProgress/create":
             response["result"] = None
+        elif (method == "client/registerCapability" and isinstance(params, dict) and
+              isinstance(params.get("registrations"), list) and len(params["registrations"]) <= 32 and
+              all(isinstance(r, dict) and r.get("method") in ("workspace/didChangeConfiguration", "workspace/didChangeWatchedFiles")
+                  for r in params["registrations"])):
+            response["result"] = None
         else:
-            # No edits, commands, dynamic registrations or UI are performed.
+            # No edits, commands, or unsafe dynamic registrations are performed.
             response["error"] = {"code": -32601, "message": "Method not supported"}
         self.send(response)
 
@@ -389,11 +416,14 @@ def run(request):
         command, root, path, text, timeout = validate(request)
         client = Client(command, root, time.monotonic() + timeout / 1000.0)
         client.uri = path.as_uri()
+        client.doc_path = path
         client.request(1, "initialize", {
             "processId": os.getpid(), "rootUri": root.as_uri(),
             "workspaceFolders": [{"uri": root.as_uri(), "name": root.name}],
             "capabilities": {"general": {"positionEncodings": ["utf-16"]},
-                             "textDocument": {"diagnostic": {"dynamicRegistration": False}}},
+                             "textDocument": {"publishDiagnostics": {"relatedInformation": True},
+                                              "diagnostic": {"dynamicRegistration": False}},
+                             "experimental": {"serverStatusNotification": True}},
         })
         initialized = client.response(1)
         if not isinstance(initialized, dict) or not isinstance(initialized.get("capabilities"), dict):
@@ -405,6 +435,10 @@ def run(request):
         client.notify("textDocument/didOpen", {"textDocument": {
             "uri": client.uri, "languageId": request["language_id"], "version": 1, "text": text,
         }})
+        server_name = (initialized.get("serverInfo") or {}).get("name") if isinstance(initialized.get("serverInfo"), dict) else None
+        if server_name == "rust-analyzer":
+            while client.quiescent is not True:
+                client.event()
         params = {"textDocument": {"uri": client.uri}}
         if operation in ("hover", "definition", "references"):
             params["position"] = {"line": request["line"], "character": request["character"]}

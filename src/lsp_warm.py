@@ -39,8 +39,12 @@ def make_warm_client(lsp):
             method, params = value["method"], value.get("params", {})
             if "id" in value:
                 self._server_request(value)
+            elif method == "experimental/serverStatus" and isinstance(params, dict):
+                if isinstance(params.get("quiescent"), bool):
+                    self.quiescent = params["quiescent"]
             elif method == "textDocument/publishDiagnostics" and isinstance(params, dict):
-                uri = params.get("uri")
+                pub_uri = params.get("uri")
+                uri = self.uri if (self.uri and lsp.same_uri(pub_uri, self.uri, self.doc_path)) else pub_uri
                 expected = self.doc_versions.get(uri, 1)
                 if params.get("version", expected) in (None, expected):
                     diagnostics = params.get("diagnostics")
@@ -160,7 +164,9 @@ def handle_query(lsp, WarmClient, state, cfg, root, req):
                 "processId": os.getpid(), "rootUri": root.as_uri(),
                 "workspaceFolders": [{"uri": root.as_uri(), "name": root.name}],
                 "capabilities": {"general": {"positionEncodings": ["utf-16"]},
-                                 "textDocument": {"diagnostic": {"dynamicRegistration": False}}},
+                                 "textDocument": {"publishDiagnostics": {"relatedInformation": True},
+                                                  "diagnostic": {"dynamicRegistration": False}},
+                                 "experimental": {"serverStatusNotification": True}},
             })
             initialized = client.response(1)
             if not isinstance(initialized, dict) or not isinstance(initialized.get("capabilities"), dict):
@@ -169,7 +175,8 @@ def handle_query(lsp, WarmClient, state, cfg, root, req):
             if caps.get("positionEncoding", "utf-16") != "utf-16":
                 lsp.fail("unsupported_encoding", "Server did not select UTF-16 positions")
             client.notify("initialized", {})
-            state.update(client=client, caps=caps, next_id=2, docs={})
+            server_name = (initialized.get("serverInfo") or {}).get("name") if isinstance(initialized.get("serverInfo"), dict) else None
+            state.update(client=client, caps=caps, next_id=2, docs={}, needs_quiescent=(server_name == "rust-analyzer"))
         else:
             reply["warm_hit"] = True
             client = state["client"]
@@ -178,6 +185,7 @@ def handle_query(lsp, WarmClient, state, cfg, root, req):
             client.read_budget[0] = 0
         uri = path.as_uri()
         client.uri = uri
+        client.doc_path = path
         doc_hash = hashlib.sha256(text.encode("utf-8")).digest()
         entry = state["docs"].get(uri)
         if entry is None:
@@ -195,6 +203,10 @@ def handle_query(lsp, WarmClient, state, cfg, root, req):
             client.notify("textDocument/didChange", {"textDocument": {"uri": uri, "version": ver}, "contentChanges": [{"text": text}]})
         else:
             client.diagnostics = client.doc_diags.get(uri)
+        if state.get("needs_quiescent"):
+            while client.quiescent is not True:
+                client.event()
+            state["needs_quiescent"] = False
         params = {"textDocument": {"uri": uri}}
         if op in ("hover", "definition", "references"):
             params["position"] = {"line": req["line"], "character": req["character"]}
