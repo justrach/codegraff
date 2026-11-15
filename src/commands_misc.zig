@@ -201,7 +201,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (std.mem.eql(u8, line, "/cost") or std.mem.eql(u8, line, "/usage")) {
         const c = g_cost.snap(root.io);
         try renderSessionUsage(c, out);
-        if (comptime bo.extras) @import("plan_usage.zig").appendTo(root.io, root.gpa, arena, root.home, keys.get("xai"), out);
+        if (comptime bo.extras) @import("plan_usage.zig").appendTo(root.io, root.gpa, arena, root.home, keys, root.provider.id, out);
         try out.flush();
         return true;
     }

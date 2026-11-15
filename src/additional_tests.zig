@@ -88,3 +88,13 @@ test "submitted prompt retains attachment chip styling" {
         "\x1b[38;2;232;163;61m\x1b[7m[Image #1]\x1b[0m caption",
     ) != null);
 }
+
+test {
+    _ = .{
+        @import("plan_usage_live.zig"),
+        @import("plan_usage_live_tests.zig"),
+        @import("plan_accounts_probe.zig"),
+        @import("plan_accounts.zig"),
+        @import("acp_accounts.zig"),
+    };
+}

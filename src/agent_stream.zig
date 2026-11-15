@@ -151,6 +151,7 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
     // 429/5xx before any body: a retryable throttle — request() backs
     // off and retries (surfaced in the trace as a "retry" note).
     const status_code = @backingInt(response.head.status);
+    @import("plan_usage_live.zig").noteHttpResponse(client.io, self.provider.id, self.provider.model, status_code, response);
     if (@import("agent_request_quota.zig").httpError(status_code)) |err| {
         if (req.connection) |conn| conn.closing = true;
         return err;

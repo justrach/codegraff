@@ -193,6 +193,8 @@ pub const Inbox = struct {
             std.mem.eql(u8, method, "session/set_config_option") or
             std.mem.eql(u8, method, "graff/models") or
             std.mem.eql(u8, method, "graff/changes") or
+            std.mem.eql(u8, method, "graff/accounts") or
+            std.mem.eql(u8, method, "_codegraff/accounts") or
             std.mem.eql(u8, method, "session/fork");
     }
 

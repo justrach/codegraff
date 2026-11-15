@@ -73,6 +73,7 @@ pub fn post(gpa: Allocator, io: Io, provider: Provider, body: []const u8, opts: 
                 if (r.is_error) return .{ .problem = try gpa.dupe(u8, try agent.problem(a, r.text)) };
                 return .{ .message = try messageJson(gpa, if (text.items.len > 0) text.items else r.text) };
             },
+            .rate_limit => |rl| @import("plan_usage_live.zig").noteClaudeRateLimit(io, provider.model, rl),
             .cancel, .response, .ignore => {},
         }
     }

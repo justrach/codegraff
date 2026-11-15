@@ -122,6 +122,7 @@ pub fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.R
     if (try @import("acp_changes.zig").handle(arena, live.root.io, w, req)) return true;
     if (try @import("acp_session_fork.zig").handle(live, arena, w, req)) return true;
     if (try @import("acp_mcp_app.zig").handle(arena, w, req, live.root)) return true;
+    if (try @import("acp_accounts.zig").handle(arena, live.root.io, live.root.gpa, live.root.home, live.keys, live.root.provider.id, w, req)) return true;
     if (!std.mem.eql(u8, req.method, "graff/models")) return false;
     if (req.id == null) return true;
     const keys = live.keys;

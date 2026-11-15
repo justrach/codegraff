@@ -537,6 +537,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
         frames_seen += 1;
         if (frames_seen == 1) if (self.tracer) |tr| tr.note("ws", "first frame");
         if (fbuf.items.len == 0) continue :stream;
+        @import("plan_usage_live.zig").noteWsFrame(self.io, self.provider.id, fbuf.items);
         try loop_guard.event(self, fbuf.items, false);
         // Same per-line hook as the SSE reader: streams text/thinking/tool-arg
         // deltas to the TUI and ACP sinks (and runs async-tool admission).

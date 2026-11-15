@@ -318,6 +318,8 @@ pub fn strField(o: ObjectMap, key: []const u8) ?[]const u8 {
 }
 
 /// One line from `claude`, classified. Slices point into the parse arena.
+pub const RateLimit = @import("plan_usage_live.zig").ClaudeRateLimit;
+
 pub const Line = union(enum) {
     /// A raw Anthropic stream event (`stream_event.event`).
     event: Value,
@@ -327,6 +329,8 @@ pub const Line = union(enum) {
     /// The answer to a control request graff sent.
     response: Response,
     result: Result,
+    /// Usage / rate-limit notification (`rate_limit_event`).
+    rate_limit: RateLimit,
     ignore,
 };
 
@@ -373,6 +377,24 @@ pub fn classify(a: Allocator, line: []const u8) !Line {
         return .{ .result = .{
             .is_error = is_error or !std.mem.eql(u8, subtype, "success"),
             .text = strField(v.object, "result") orelse subtype,
+        } };
+    }
+    if (std.mem.eql(u8, kind, "rate_limit_event")) {
+        const info = if (v.object.get("rate_limit_info")) |i| (if (i == .object) i.object else v.object) else v.object;
+        return .{ .rate_limit = .{
+            .status = strField(info, "status") orelse "allowed",
+            .resets_at = if (info.get("resetsAt") orelse info.get("resets_at")) |rv| switch (rv) {
+                .integer => rv.integer,
+                .float => @as(i64, @intFromFloat(rv.float)),
+                else => null,
+            } else null,
+            .rate_limit_type = strField(info, "rateLimitType") orelse strField(info, "rate_limit_type") orelse "",
+            .utilization = if (info.get("utilization")) |uv| switch (uv) {
+                .float => uv.float,
+                .integer => @floatFromInt(uv.integer),
+                else => null,
+            } else null,
+            .overage_status = strField(info, "overageStatus") orelse strField(info, "overage_status"),
         } };
     }
     return .ignore;

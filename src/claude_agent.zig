@@ -220,6 +220,7 @@ fn aside(s: *Session, a: std.mem.Allocator, l: wire.Line, line: []const u8, tool
         .control => |c| try service(s, a, c, tools),
         .cancel => |id| s.cancel(id),
         .event, .result => try s.kept.keep(s.gpa, line),
+        .rate_limit => |rl| @import("plan_usage_live.zig").noteClaudeRateLimit(s.io, null, rl),
         .response, .ignore => {},
     }
 }
@@ -403,6 +404,7 @@ fn turn(self: *Agent, a: std.mem.Allocator, s: *Session, tools: ?Value, poll: bo
                 }
                 break;
             },
+            .rate_limit => |rl| @import("plan_usage_live.zig").noteClaudeRateLimit(self.io, self.provider.model, rl),
             .response, .ignore => {},
         }
     }

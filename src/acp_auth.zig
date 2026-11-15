@@ -32,7 +32,55 @@ pub const anthropic_login = AuthMethod{
     .args = &.{ "login", "anthropic" },
 };
 
-pub const advertised = [_]AuthMethod{ terminal_login, anthropic_login };
+pub const claude_agent_login = AuthMethod{
+    .id = "graff-login-claude-agent",
+    .name = "graff login claude-agent",
+    .description = "Use signed-in Claude Code CLI",
+    .type = "terminal",
+    .args = &.{ "login", "claude-agent" },
+};
+
+pub const chatgpt_login = AuthMethod{
+    .id = "graff-login-chatgpt-new",
+    .name = "graff login chatgpt-new",
+    .description = "ChatGPT Plus/Pro browser sign-in",
+    .type = "terminal",
+    .args = &.{ "login", "chatgpt-new" },
+};
+
+pub const codex_login = AuthMethod{
+    .id = "graff-login-codex",
+    .name = "graff login codex",
+    .description = "Codex / ChatGPT browser sign-in",
+    .type = "terminal",
+    .args = &.{ "login", "codex" },
+};
+
+pub const xai_login = AuthMethod{
+    .id = "graff-login-xai",
+    .name = "graff login xai",
+    .description = "xAI / Grok device sign-in",
+    .type = "terminal",
+    .args = &.{ "login", "xai" },
+};
+
+pub const kimi_login = AuthMethod{
+    .id = "graff-login-kimi",
+    .name = "graff login kimi",
+    .description = "Kimi Code device sign-in",
+    .type = "terminal",
+    .args = &.{ "login", "kimi" },
+};
+
+pub const advertised = [_]AuthMethod{
+    terminal_login,
+    anthropic_login,
+    claude_agent_login,
+    chatgpt_login,
+    codex_login,
+    xai_login,
+    kimi_login,
+};
 
 pub const required_message = "Authentication required: run `graff login`, then restart the ACP agent.";
 

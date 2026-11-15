@@ -262,7 +262,7 @@ pub const LiveTurn = struct {
             sink.writer.flush() catch {};
             output_lock.lockUncancelable(self.root.io);
             defer output_lock.unlock(self.root.io);
-            @import("acp_usage.zig").writeBestEffort(self.out, self.session_id, &@import("pricing.zig").g_cost, self.root.io);
+            @import("acp_usage.zig").writeBestEffortForProvider(self.out, self.session_id, &@import("pricing.zig").g_cost, self.root.io, self.root.provider.id);
         }
         turn_trace.record(self.root, self.root.io, arena, text, turn_id, started, result, self.root.effectiveContextTokens(), before, &self.prev_turn_id, &self.prev_prompt_fp);
         const isolated = context.restore(self.root);

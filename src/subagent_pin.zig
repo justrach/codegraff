@@ -261,10 +261,12 @@ pub fn resolveIn(base: Provider, pin: Pin, cell: Cell) Resolved {
         var used_hard = false;
         const resolved = blk: {
             if (hard) if (ladder.hard_frontier) |hf| {
-                if (selection.liveLadderModel(base.id, hf)) |hf_resolved| {
-                    if (rungAffordableOn(base, hf_resolved)) {
-                        used_hard = true;
-                        break :blk hf_resolved;
+                if (!@import("plan_usage_live.zig").isModelBlocked(base.id, hf)) {
+                    if (selection.liveLadderModel(base.id, hf)) |hf_resolved| {
+                        if (rungAffordableOn(base, hf_resolved)) {
+                            used_hard = true;
+                            break :blk hf_resolved;
+                        }
                     }
                 }
             };
@@ -328,9 +330,11 @@ fn rungScoreFor(sid: []const u8, tier: Tier, hard: bool) ?struct { model: []cons
     var used_hard = false;
     const resolved = blk: {
         if (hard) if (ladder.hard_frontier) |hf| {
-            if (selection.liveLadderModel(sid, hf)) |hf_live| {
-                used_hard = true;
-                break :blk hf_live;
+            if (!@import("plan_usage_live.zig").isModelBlocked(sid, hf)) {
+                if (selection.liveLadderModel(sid, hf)) |hf_live| {
+                    used_hard = true;
+                    break :blk hf_live;
+                }
             }
         };
         break :blk selection.liveLadderModel(sid, std_rung) orelse return null;

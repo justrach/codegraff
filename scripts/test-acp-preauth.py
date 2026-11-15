@@ -127,6 +127,41 @@ def main() -> None:
             "type": "terminal",
             "args": ["login", "anthropic"],
         },
+        {
+            "id": "graff-login-claude-agent",
+            "name": "graff login claude-agent",
+            "description": "Use signed-in Claude Code CLI",
+            "type": "terminal",
+            "args": ["login", "claude-agent"],
+        },
+        {
+            "id": "graff-login-chatgpt-new",
+            "name": "graff login chatgpt-new",
+            "description": "ChatGPT Plus/Pro browser sign-in",
+            "type": "terminal",
+            "args": ["login", "chatgpt-new"],
+        },
+        {
+            "id": "graff-login-codex",
+            "name": "graff login codex",
+            "description": "Codex / ChatGPT browser sign-in",
+            "type": "terminal",
+            "args": ["login", "codex"],
+        },
+        {
+            "id": "graff-login-xai",
+            "name": "graff login xai",
+            "description": "xAI / Grok device sign-in",
+            "type": "terminal",
+            "args": ["login", "xai"],
+        },
+        {
+            "id": "graff-login-kimi",
+            "name": "graff login kimi",
+            "description": "Kimi Code device sign-in",
+            "type": "terminal",
+            "args": ["login", "kimi"],
+        },
     ]
     if responses[0].get("id") != 1 or result.get("protocolVersion") != 1:
         fail("initialize response did not correlate or negotiate ACP v1", proc)

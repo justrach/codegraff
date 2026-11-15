@@ -1,19 +1,58 @@
 //! Codegraff ACP extension: cumulative known usage, never an inferred bill.
 const std = @import("std");
+const live_usage = @import("plan_usage_live.zig");
 const pricing = @import("pricing.zig");
 const proto = @import("acp_protocol.zig");
+
+const PlanWindowWire = struct {
+    label: []const u8,
+    usedPercent: f64,
+    remainingPercent: f64,
+    resetAfterSeconds: ?i64 = null,
+    resetsAtUnix: ?i64 = null,
+    status: ?[]const u8 = null,
+};
 
 /// Supplemental delivery never changes the original turn's result. Caller owns
 /// the ACP output lock; do not split serialization and flush across lock scopes.
 pub fn writeBestEffort(w: *std.Io.Writer, sid: []const u8, tally: *pricing.CostTally, io: std.Io) void {
-    write(w, sid, tally, io) catch return;
+    writeBestEffortForProvider(w, sid, tally, io, "");
+}
+
+pub fn writeBestEffortForProvider(w: *std.Io.Writer, sid: []const u8, tally: *pricing.CostTally, io: std.Io, provider_id: []const u8) void {
+    writeForProvider(w, sid, tally, io, provider_id) catch return;
     w.flush() catch {};
 }
 
 pub fn write(w: *std.Io.Writer, sid: []const u8, tally: *pricing.CostTally, io: std.Io) !void {
+    return writeForProvider(w, sid, tally, io, "");
+}
+
+pub fn writeForProvider(w: *std.Io.Writer, sid: []const u8, tally: *pricing.CostTally, io: std.Io, provider_id: []const u8) !void {
     const c = tally.snap(io);
     const complete = c.missing_usage_calls == 0 and c.unreported_failed_attempts == 0;
     const cost_complete = complete and c.sub_calls == 0 and c.unpriced_calls == 0;
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const snap = if (provider_id.len > 0) (live_usage.snapshot(io, a, provider_id) catch null) else null;
+    const plan_windows: ?[]const PlanWindowWire = if (snap) |s| blk: {
+        var list: std.ArrayList(PlanWindowWire) = .empty;
+        for (s.windows) |win| {
+            const used = win.used_pct orelse if (win.remaining_pct) |rp| @max(0.0, 100.0 - rp) else continue;
+            const rem = win.remaining_pct orelse @max(0.0, 100.0 - used);
+            try list.append(a, .{
+                .label = win.label,
+                .usedPercent = used,
+                .remainingPercent = rem,
+                .resetAfterSeconds = win.resets_in_s,
+                .resetsAtUnix = win.resets_at_unix,
+                .status = win.status,
+            });
+        }
+        break :blk if (list.items.len > 0) list.items else null;
+    } else null;
+
     try proto.writeNotification(w, "_codegraff/usage", .{
         .sessionId = sid,
         .usage = .{
@@ -31,6 +70,7 @@ pub fn write(w: *std.Io.Writer, sid: []const u8, tally: *pricing.CostTally, io: 
             .unreported_failed_attempts = c.unreported_failed_attempts,
             .subscription_calls = c.sub_calls,
             .unpriced_calls = c.unpriced_calls,
+            .planWindows = plan_windows,
         },
     });
 }
@@ -64,4 +104,19 @@ test "ACP supplemental usage tolerates a rejected writer" {
     // Prove this writer actually rejects the real serialized notification.
     try std.testing.expectError(error.WriteFailed, write(&broken, "disconnected", &tally, std.testing.io));
     writeBestEffort(&broken, "disconnected", &tally, std.testing.io);
+}
+
+test "ACP usage attaches live planWindows when provider has captured limits" {
+    live_usage.resetForTest();
+    defer live_usage.resetForTest();
+    const io = std.testing.io;
+    live_usage.noteHeaderList(io, "codex", "gpt-5", 200, &.{
+        .{ .name = "x-codex-primary-used-percent", .value = "35" },
+    });
+    var tally: pricing.CostTally = .{};
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeForProvider(&out.writer, "s1", &tally, io, "codex");
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"planWindows\":[{") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"remainingPercent\":65") != null);
 }

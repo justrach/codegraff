@@ -154,6 +154,7 @@ fn post(gpa: Allocator, client: *std.http.Client, provider: Provider, body: []co
     try sendHeadTask(&req, body, &response);
 
     const code = @backingInt(response.head.status);
+    @import("plan_usage_live.zig").noteHttpResponse(client.io, provider.id, provider.model, code, &response);
     if (code == 429 or code >= 500) {
         // Drain a snippet for quota classifiers, then poison: the connection
         // still holds unread body bytes.

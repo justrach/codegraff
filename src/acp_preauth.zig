@@ -77,10 +77,12 @@ test "pre-auth returns ACP auth_required with terminal-login instructions" {
 }
 
 test "pre-auth answers multiple initialize requests from the shared engine" {
+    const saved_version = engine.implementation_version;
+    defer engine.implementation_version = saved_version;
     engine.implementation_version = "preauth-test";
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();
-    var buf: [4096]u8 = undefined;
+    var buf: [8192]u8 = undefined;
     const output = try serveFixed(state.allocator(),
         \\{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}
         \\{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":9}}
@@ -93,7 +95,7 @@ test "pre-auth answers multiple initialize requests from the shared engine" {
         const reply = try std.json.parseFromSliceLeaky(std.json.Value, state.allocator(), line, .{});
         const result = reply.object.get("result").?.object;
         const methods = result.get("authMethods").?.array.items;
-        try std.testing.expectEqual(@as(usize, 2), methods.len);
+        try std.testing.expectEqual(@import("acp_auth.zig").advertised.len, methods.len);
         try std.testing.expectEqualStrings("graff-login", methods[0].object.get("id").?.string);
         try std.testing.expectEqualStrings("graff-login-anthropic", methods[1].object.get("id").?.string);
         try std.testing.expectEqualStrings("anthropic", methods[1].object.get("args").?.array.items[1].string);
@@ -106,10 +108,12 @@ test "pre-auth answers multiple initialize requests from the shared engine" {
 }
 
 test "pre-auth ignores invalid input and continues serving requests" {
+    const saved_version = engine.implementation_version;
+    defer engine.implementation_version = saved_version;
     engine.implementation_version = "preauth-test";
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();
-    var buf: [2048]u8 = undefined;
+    var buf: [4096]u8 = undefined;
     const output = try serveFixed(state.allocator(),
         \\{not json
         \\[1,2]
@@ -122,6 +126,8 @@ test "pre-auth ignores invalid input and continues serving requests" {
 }
 
 test "pre-auth accepts 65535 bytes and discards 65536 and 70000 byte records" {
+    const saved_version = engine.implementation_version;
+    defer engine.implementation_version = saved_version;
     engine.implementation_version = "preauth-boundaries";
     var state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer state.deinit();
@@ -131,7 +137,7 @@ test "pre-auth accepts 65535 bytes and discards 65536 and 70000 byte records" {
     try appendPaddedLine(&input, 65536, "{\"jsonrpc\":\"2.0\",\"id\":20,\"method\":\"session/new\",\"params\":{}}");
     try appendPaddedLine(&input, 70000, "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"session/new\",\"params\":{}}");
     try input.appendSlice("{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"initialize\",\"params\":{}}\n");
-    var buf: [4096]u8 = undefined;
+    var buf: [8192]u8 = undefined;
     const output = try serveFixed(a, input.items, &buf);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"id\":10") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "\"id\":11") != null);
@@ -141,6 +147,8 @@ test "pre-auth accepts 65535 bytes and discards 65536 and 70000 byte records" {
 }
 
 test "pre-auth reclaims scratch allocations across near-limit records" {
+    const saved_version = engine.implementation_version;
+    defer engine.implementation_version = saved_version;
     engine.implementation_version = "preauth-reclaim";
     var backing: [256 * 1024]u8 = undefined;
     var fixed = std.heap.FixedBufferAllocator.init(&backing);

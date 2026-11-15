@@ -17,7 +17,15 @@ pub const provider_dir = ".anthropic";
 const refresh_margin_s = 300;
 var refresh_mutex: Io.Mutex = .init;
 
-pub const Record = struct { access: []const u8, refresh: []const u8, expires_at: i64 };
+pub const Record = struct {
+    access: []const u8,
+    refresh: []const u8,
+    expires_at: i64,
+    email: []const u8 = "",
+    display_name: []const u8 = "",
+    organization: []const u8 = "",
+    plan: []const u8 = "",
+};
 pub const Callback = struct { code: []const u8 = "", state: []const u8 = "", err: []const u8 = "" };
 
 pub fn recordPath(arena: Allocator, home: []const u8) []const u8 {
@@ -34,6 +42,10 @@ pub fn readRecord(io: Io, arena: Allocator, home: []const u8) ?Record {
         .access = access,
         .refresh = util.strFieldObj(v.object, "refresh_token") orelse "",
         .expires_at = util.intFieldObj(v.object, "expires_at", 0),
+        .email = util.strFieldObj(v.object, "email") orelse "",
+        .display_name = util.strFieldObj(v.object, "display_name") orelse "",
+        .organization = util.strFieldObj(v.object, "organization") orelse "",
+        .plan = util.strFieldObj(v.object, "plan") orelse "",
     };
 }
 
@@ -214,6 +226,44 @@ pub fn exchangeCodeAt(io: Io, gpa: Allocator, arena: Allocator, endpoint: []cons
 
 fn save(io: Io, arena: Allocator, home: []const u8, r: Record) !void {
     try store.writeOAuth(io, arena, home, provider_dir, r.access, r.refresh, r.expires_at);
+    if (r.email.len == 0 and r.display_name.len == 0 and r.organization.len == 0 and r.plan.len == 0) return;
+    var obj: std.json.ObjectMap = .empty;
+    try obj.put(arena, "access_token", .{ .string = r.access });
+    try obj.put(arena, "refresh_token", .{ .string = r.refresh });
+    try obj.put(arena, "expires_at", .{ .integer = r.expires_at });
+    if (r.email.len > 0) try obj.put(arena, "email", .{ .string = r.email });
+    if (r.display_name.len > 0) try obj.put(arena, "display_name", .{ .string = r.display_name });
+    if (r.organization.len > 0) try obj.put(arena, "organization", .{ .string = r.organization });
+    if (r.plan.len > 0) try obj.put(arena, "plan", .{ .string = r.plan });
+    const bytes = try std.json.Stringify.valueAlloc(arena, std.json.Value{ .object = obj }, .{});
+    try store.replaceFile(io, Io.Dir.cwd(), recordPath(arena, home), bytes, store.private_file);
+}
+
+/// Persist non-secret profile/plan metadata beside an existing Anthropic login.
+pub fn saveProfileMetadata(io: Io, arena: Allocator, home: []const u8, email: []const u8, display_name: []const u8, organization: []const u8, plan: []const u8) void {
+    refresh_mutex.lockUncancelable(io);
+    defer refresh_mutex.unlock(io);
+    const lock = oauth_lock.acquireFile(io, arena, recordPath(arena, home)) orelse return;
+    defer lock.release();
+    var current = readRecord(io, arena, home) orelse return;
+    var changed = false;
+    if (email.len > 0 and !std.mem.eql(u8, current.email, email)) {
+        current.email = email;
+        changed = true;
+    }
+    if (display_name.len > 0 and !std.mem.eql(u8, current.display_name, display_name)) {
+        current.display_name = display_name;
+        changed = true;
+    }
+    if (organization.len > 0 and !std.mem.eql(u8, current.organization, organization)) {
+        current.organization = organization;
+        changed = true;
+    }
+    if (plan.len > 0 and !std.mem.eql(u8, current.plan, plan)) {
+        current.plan = plan;
+        changed = true;
+    }
+    if (changed) save(io, arena, home, current) catch {};
 }
 
 /// Preserve the shared warning channel: never print a token response.
@@ -253,7 +303,11 @@ pub fn loadAt(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, force:
     const body = json(arena, .{ .grant_type = "refresh_token", .refresh_token = current.refresh, .client_id = client_id }) catch return valid(current, now_locked);
     const shield = oauth_lock.CancelShield.enter(io);
     defer shield.leave();
-    const next = post(io, gpa, arena, endpoint, body, current.refresh) catch return valid(current, @divTrunc(util.unixMs(io), 1000));
+    var next = post(io, gpa, arena, endpoint, body, current.refresh) catch return valid(current, @divTrunc(util.unixMs(io), 1000));
+    if (next.email.len == 0) next.email = current.email;
+    if (next.display_name.len == 0) next.display_name = current.display_name;
+    if (next.organization.len == 0) next.organization = current.organization;
+    if (next.plan.len == 0) next.plan = current.plan;
     persistRefreshed(io, arena, home, next);
     return valid(next, @divTrunc(util.unixMs(io), 1000));
 }

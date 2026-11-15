@@ -271,7 +271,7 @@ fn respondInitialize(w: *Io.Writer, req: proto.Request, can_load: bool) !void {
         .agentCapabilities = .{
             .loadSession = can_load,
             .sessionCapabilities = proto.SessionCapabilities{ .fork = can_load },
-            ._meta = .{ .@"codegraff/usage" = can_load, .@"graff/backgroundSubagents" = true },
+            ._meta = .{ .@"codegraff/usage" = can_load, .@"codegraff/accounts" = can_load, .@"graff/backgroundSubagents" = true },
             .promptCapabilities = proto.PromptCapabilities{ .image = can_load },
             // session/new and session/load connect a client's MCP servers
             // (stdio always; http advertised; sse not run).

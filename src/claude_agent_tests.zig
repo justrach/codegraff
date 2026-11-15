@@ -349,3 +349,21 @@ test "#1870: claude-agent drops inherited CLAUDE_CODE_USER_EMAIL alongside enclo
     try std.testing.expect(wire.dropsEnv("CLAUDECODE"));
     try std.testing.expect(!wire.dropsEnv("CLAUDE_CONFIG_DIR"));
 }
+
+test "claude_agent_wire classifies rate_limit_event into .rate_limit" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const line = try wire.classify(arena.allocator(),
+        \\{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1800000000,"rateLimitType":"fable","utilization":0.95,"overageStatus":"rejected"}}
+    );
+    switch (line) {
+        .rate_limit => |rl| {
+            try std.testing.expectEqualStrings("rejected", rl.status);
+            try std.testing.expectEqual(@as(?i64, 1800000000), rl.resets_at);
+            try std.testing.expectEqualStrings("fable", rl.rate_limit_type);
+            try std.testing.expectApproxEqAbs(@as(f64, 0.95), rl.utilization.?, 0.001);
+            try std.testing.expectEqualStrings("rejected", rl.overage_status.?);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}

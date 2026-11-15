@@ -32,7 +32,48 @@ pub fn enabled(io: Io, arena: Allocator, environ_map: anytype, home: []const u8)
     return "claude";
 }
 
-pub const Status = struct { logged_in: bool, method: []const u8 = "", plan: []const u8 = "" };
+pub const Status = struct {
+    logged_in: bool,
+    method: []const u8 = "",
+    plan: []const u8 = "",
+    email: []const u8 = "",
+    organization: []const u8 = "",
+};
+
+pub const Marker = struct {
+    claude: []const u8 = "claude",
+    email: []const u8 = "",
+    organization: []const u8 = "",
+    plan: []const u8 = "",
+};
+
+pub fn readMarker(io: Io, arena: Allocator, home: []const u8) ?Marker {
+    if (home.len == 0) return null;
+    const data = Io.Dir.cwd().readFileAlloc(io, markerPath(arena, home), arena, .limited(4096)) catch return null;
+    const v = std.json.parseFromSliceLeaky(std.json.Value, arena, data, .{ .allocate = .alloc_always }) catch return .{};
+    if (v != .object) return .{};
+    const util = @import("util.zig");
+    return .{
+        .claude = if (util.strFieldObj(v.object, "claude")) |c| (if (c.len > 0) c else "claude") else "claude",
+        .email = util.strFieldObj(v.object, "email") orelse "",
+        .organization = util.strFieldObj(v.object, "organization") orelse "",
+        .plan = util.strFieldObj(v.object, "plan") orelse "",
+    };
+}
+
+pub fn saveMarker(io: Io, arena: Allocator, home: []const u8, m: Marker) !void {
+    if (home.len == 0) return;
+    const store = @import("credential_store.zig");
+    const path = markerPath(arena, home);
+    if (std.fs.path.dirname(path)) |dir| try Io.Dir.cwd().createDirPath(io, dir);
+    var obj: std.json.ObjectMap = .empty;
+    try obj.put(arena, "claude", .{ .string = if (m.claude.len > 0) m.claude else "claude" });
+    if (m.email.len > 0) try obj.put(arena, "email", .{ .string = m.email });
+    if (m.organization.len > 0) try obj.put(arena, "organization", .{ .string = m.organization });
+    if (m.plan.len > 0) try obj.put(arena, "plan", .{ .string = m.plan });
+    const data = try std.json.Stringify.valueAlloc(arena, std.json.Value{ .object = obj }, .{});
+    try store.replaceFile(io, Io.Dir.cwd(), path, data, store.private_file);
+}
 
 /// `claude auth status` reads Claude Code's own login and prints JSON.
 pub fn status(io: Io, arena: Allocator, exe: []const u8) !Status {
@@ -47,7 +88,17 @@ pub fn status(io: Io, arena: Allocator, exe: []const u8) !Status {
             return if (x == .string) x.string else "";
         }
     }.get;
-    return .{ .logged_in = logged, .method = str(v.object, "authMethod"), .plan = str(v.object, "subscriptionType") };
+    const org = blk: {
+        const a = str(v.object, "orgName");
+        break :blk if (a.len > 0) a else str(v.object, "organizationName");
+    };
+    return .{
+        .logged_in = logged,
+        .method = str(v.object, "authMethod"),
+        .plan = str(v.object, "subscriptionType"),
+        .email = str(v.object, "email"),
+        .organization = org,
+    };
 }
 
 pub fn login(io: Io, arena: Allocator, environ_map: anytype, home: []const u8) !void {
@@ -91,10 +142,12 @@ pub fn login(io: Io, arena: Allocator, environ_map: anytype, home: []const u8) !
             return error.ClaudeLoginIncomplete;
         }
     }
-    const path = markerPath(arena, home);
-    if (std.fs.path.dirname(path)) |dir| try Io.Dir.cwd().createDirPath(io, dir);
-    const data = try std.fmt.allocPrint(arena, "{{\"claude\":{f}}}\n", .{std.json.fmt(exe, .{})});
-    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data });
+    try saveMarker(io, arena, home, .{
+        .claude = exe,
+        .email = st.email,
+        .organization = st.organization,
+        .plan = st.plan,
+    });
     try out.print("{s}✓{s} Claude Agent is ready: graff runs your Claude Code login", .{ style.green, style.reset });
     if (st.method.len > 0) try out.print(" ({s}{s}{s})", .{ st.method, if (st.plan.len > 0) ", " else "", st.plan });
     try out.writeAll(".\n  Claude models now run through it: `graff --model claude-opus-5-5` (or sonnet, haiku, fable), or /model.\n");

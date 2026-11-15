@@ -281,3 +281,46 @@ test "dynamic live-catalog ladder fallback follows rotated Claude/GPT families, 
     const xai_plan: Provider = .{ .id = "xai", .kind = .openai, .auth = .bearer, .url = "", .api_key = "tok", .model = "grok-4.7", .context = 500_000, .source = .login };
     try std.testing.expectEqual(pin_mod.Outcome.unknown_model, pin_mod.forSpawn(xai_plan, obj(a, "{\"tier\":\"frontier\"}"), true).outcome);
 }
+
+test "live rate-limit rejection on Fable proactively steps subagent_pin hard_frontier to opus-5-5" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const saved_table = pricing.active_model_table;
+    const saved_keys = bench.g_keys;
+    defer {
+        pricing.active_model_table = saved_table;
+        bench.g_keys = saved_keys;
+    }
+    pricing.active_model_table = pricing.model_table[0..];
+    bench.g_keys = null;
+
+    const live_usage = @import("plan_usage_live.zig");
+    live_usage.resetForTest();
+    defer live_usage.resetForTest();
+
+    const ant_plan: Provider = .{ .id = "anthropic", .kind = .anthropic, .auth = .bearer, .url = "", .api_key = "tok", .model = "claude-opus-5-5", .context = 1_000_000, .source = .login };
+    try std.testing.expectEqualStrings("claude-fable-5-2", pin_mod.forSpawn(ant_plan, obj(a, "{\"tier\":\"frontier\",\"effort\":\"max\"}"), true).provider.?.model);
+
+    live_usage.noteHeaderList(std.testing.io, "anthropic", "claude-fable-5-2", 429, &.{
+        .{ .name = "anthropic-ratelimit-unified-status", .value = "rejected" },
+        .{ .name = "anthropic-ratelimit-unified-representative-claim", .value = "fable" },
+    });
+    const stepped = pin_mod.forSpawn(ant_plan, obj(a, "{\"tier\":\"frontier\",\"effort\":\"max\"}"), true);
+    try std.testing.expectEqual(pin_mod.Outcome.same, stepped.outcome);
+    try std.testing.expectEqualStrings("claude-opus-5-5", (stepped.provider orelse ant_plan).model);
+
+    const ant_sonnet = ant_plan.withModel("claude-sonnet-5-5");
+    const stepped_pinned = pin_mod.forSpawn(ant_sonnet, obj(a, "{\"tier\":\"frontier\",\"effort\":\"max\"}"), true);
+    try std.testing.expectEqual(pin_mod.Outcome.pinned, stepped_pinned.outcome);
+    try std.testing.expectEqualStrings("claude-opus-5-5", stepped_pinned.provider.?.model);
+
+    // Same proactive stepdown on claude-agent after rate_limit_event rejection.
+    live_usage.noteClaudeRateLimit(std.testing.io, "claude-fable-5-2", .{ .status = "rejected", .rate_limit_type = "fable", .utilization = 1.0, .overage_status = "rejected" });
+    var ca_keys = keysFor(&.{.{ .id = "claude-agent", .val = "claude-agent", .src = .login }});
+    bench.g_keys = &ca_keys;
+    const groq_base: Provider = .{ .id = "groq", .kind = .openai, .auth = .bearer, .url = "", .api_key = "k", .model = "openai/gpt-oss-120b", .context = 131_072, .source = .environment };
+    const sub_ca = pin_mod.forSpawn(groq_base, obj(a, "{\"tier\":\"frontier\",\"effort\":\"max\"}"), true);
+    try std.testing.expectEqualStrings("claude-agent", sub_ca.provider.?.id);
+    try std.testing.expectEqualStrings("claude-opus-5-5", sub_ca.provider.?.model);
+}

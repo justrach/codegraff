@@ -252,7 +252,7 @@ const InitializeResult = struct {
         }
         try s.endObject();
         try s.objectField("_meta");
-        try s.write(.{ .@"codegraff/usage" = self.can_load, .@"graff/backgroundSubagents" = true });
+        try s.write(.{ .@"codegraff/usage" = self.can_load, .@"codegraff/accounts" = self.can_load, .@"graff/backgroundSubagents" = true });
         try s.endObject();
         try s.objectField("info");
         try s.write(self.info);
@@ -309,7 +309,7 @@ test "message IDs change with the message kind and after a tool" {
 }
 
 test "v2 initialize uses info and object-marker capabilities" {
-    var buf: [1024]u8 = undefined;
+    var buf: [4096]u8 = undefined;
     var w: Io.Writer = .fixed(&buf);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
