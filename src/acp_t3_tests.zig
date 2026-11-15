@@ -83,4 +83,12 @@ test "T3 Code profile: first-block slash, model option, trimmed commands; others
     out = try run(&d, a, &buf, pick);
     try std.testing.expectEqualStrings("codex/gpt-b", tee.picked);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"currentValue\":\"codex/gpt-b\"") != null);
+
+    // Zeron: shares the workspace/model-option profile without `/model`.
+    var zeron: Fixture = .{};
+    d = .{ .turn = Fixture.turn, .ctx = &zeron, .seed = 1, .slash = Fixture.slash, .config = Fixture.effort, .set_config = Fixture.setEffort, .model_config = Fixture.model, .set_model = Fixture.setModel };
+    _ = try run(&d, a, &buf, "{\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"zeron\"}}}");
+    out = try run(&d, a, &buf, "{\"id\":2,\"method\":\"session/new\"}");
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"category\":\"model\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"name\":\"model\"") == null);
 }

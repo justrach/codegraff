@@ -1,7 +1,8 @@
-//! ACP client profile for T3 Code (`clientInfo.name` "t3-code…"). T3 owns
-//! the session folder, worktrees, model choice and approval mode, and it
-//! appends its own context block to every prompt. These hooks fit graff's v1
-//! session to that; every other client keeps the default behavior.
+//! ACP client profile for workspace-owning hosts (`clientInfo.name`
+//! `"t3-code…"` or `"zeron…"`). Those hosts own the session folder, diff pane,
+//! model choice (`configOptions` `category: "model"`), and approval mode, and
+//! append their own context block to prompts. Every other client keeps the
+//! default behavior.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -11,7 +12,8 @@ const proto = @import("acp_protocol.zig");
 
 var on: bool = false;
 
-/// Read once per `initialize`; T3's probes use suffixed names ("t3-code-provider-test").
+/// Read once per `initialize`; hosts' probes may append suffixes
+/// (for example `"t3-code-provider-test"`).
 pub fn note(params: ?Value) void {
     on = isT3(params);
 }
@@ -26,7 +28,7 @@ fn isT3(params: ?Value) bool {
     const info = p.object.get("clientInfo") orelse return false;
     if (info != .object) return false;
     const name = util.strFieldObj(info.object, "name") orelse return false;
-    return std.mem.startsWith(u8, name, "t3-code");
+    return std.mem.startsWith(u8, name, "t3-code") or std.mem.startsWith(u8, name, "zeron");
 }
 
 /// T3 sends a slash command as the first text block and appends a context
@@ -74,7 +76,7 @@ test "profile turns on only for T3 Code's client names" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
     defer on = false;
-    for ([_][]const u8{ "{\"clientInfo\":{\"name\":\"t3-code\"}}", "{\"clientInfo\":{\"name\":\"t3-code-provider-test\"}}" }) |json| {
+    for ([_][]const u8{ "{\"clientInfo\":{\"name\":\"t3-code\"}}", "{\"clientInfo\":{\"name\":\"t3-code-provider-test\"}}", "{\"clientInfo\":{\"name\":\"zeron\"}}" }) |json| {
         note(try std.json.parseFromSliceLeaky(Value, a, json, .{}));
         try std.testing.expect(active());
     }

@@ -181,6 +181,32 @@ test "homeEnv: missing homes stay absent and Unix ignores USERPROFILE" {
     }
 }
 
+fn readKeysJson(io: Io, arena: Allocator, home: []const u8) ?std.json.ObjectMap {
+    if (home.len == 0) return null;
+    const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ home, keys_file }) catch return null;
+    const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch return null;
+    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return null;
+    return if (v == .object) v.object else null;
+}
+
+fn loadFileKey(io: Io, arena: Allocator, home: []const u8, provider: []const u8) ?[]const u8 {
+    const obj = readKeysJson(io, arena, home) orelse return null;
+    if (obj.get(provider)) |k| if (k == .string and k.string.len > 0) return k.string;
+    return null;
+}
+
+fn loadKeychainKey(io: Io, arena: Allocator, provider: []const u8) ?[]const u8 {
+    // A transient miss drops a stored key for the whole session, so retry
+    // once. Only errSecItemNotFound is a definite absence; it costs one
+    // lookup, keeping keyless providers as cheap as before.
+    for (0..2) |_| switch (keychainLookup(io, arena, provider)) {
+        .found => |key| return key,
+        .missing => return null,
+        .transient => {},
+    };
+    return null;
+}
+
 pub fn storeKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, provider: []const u8, key: []const u8) bool {
     if (builtin.os.tag == .macos) {
         var child = std.process.spawn(io, .{
@@ -196,12 +222,7 @@ pub fn storeKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, prov
     // the home directory ACL because Io.File.Permissions has no ACL semantics.
     _ = gpa;
     const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ home, keys_file }) catch return false;
-    var obj: std.json.ObjectMap = .empty;
-    if (Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024))) |data| {
-        if (std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always })) |v| {
-            if (v == .object) obj = v.object;
-        } else |_| {}
-    } else |_| {}
+    var obj: std.json.ObjectMap = readKeysJson(io, arena, home) orelse .empty;
     obj.put(arena, provider, .{ .string = key }) catch return false;
     var aw: Io.Writer.Allocating = .init(arena);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
@@ -215,22 +236,8 @@ pub fn storeKey(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, prov
 }
 
 pub fn loadStoredKey(io: Io, arena: Allocator, home: []const u8, provider: []const u8) ?[]const u8 {
-    if (builtin.os.tag == .macos) {
-        // A transient miss drops a stored key for the whole session, so retry
-        // once. Only errSecItemNotFound is a definite absence; it costs one
-        // lookup, keeping keyless providers as cheap as before.
-        for (0..2) |_| switch (keychainLookup(io, arena, provider)) {
-            .found => |key| return key,
-            .missing => return null,
-            .transient => {},
-        };
-        return null;
-    }
-    const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ home, keys_file }) catch return null;
-    const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch return null;
-    const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return null;
-    if (v != .object) return null;
-    if (v.object.get(provider)) |k| if (k == .string and k.string.len > 0) return k.string;
+    if (loadFileKey(io, arena, home, provider)) |key| return key;
+    if (builtin.os.tag == .macos) return loadKeychainKey(io, arena, provider);
     return null;
 }
 
@@ -314,36 +321,44 @@ pub const StoredKeyScope = union(enum) {
     }
 };
 
-test "StoredKeyScope selects all, one provider, or an exact mask" {
-    const all: StoredKeyScope = .all;
-    try std.testing.expect(all.includes(0, provider_specs[0].id));
-    const one: StoredKeyScope = .{ .provider = "deepseek" };
-    try std.testing.expect(one.includes(2, "deepseek"));
-    try std.testing.expect(!one.includes(1, "codegraff"));
-    var mask: [provider_specs.len]bool = @splat(false);
-    mask[1] = true;
-    const selected: StoredKeyScope = .{ .mask = mask };
-    try std.testing.expect(selected.includes(1, "codegraff"));
-    try std.testing.expect(!selected.includes(2, "deepseek"));
-}
-
-fn loadStoredKeyTask(io: Io, gpa: Allocator, home: []const u8, provider_id: []const u8) ?[]u8 {
+fn loadStoredKeyTask(io: Io, gpa: Allocator, provider_id: []const u8) ?[]u8 {
     var task_arena = std.heap.ArenaAllocator.init(gpa);
     defer task_arena.deinit();
-    const key = loadStoredKey(io, task_arena.allocator(), home, provider_id) orelse return null;
+    const key = loadKeychainKey(io, task_arena.allocator(), provider_id) orelse return null;
     return gpa.dupe(u8, key) catch null;
 }
 
-/// Fill selected missing credential slots. macOS stores one Keychain item per
-/// provider, so its independent `security` processes run concurrently with
-/// task-local arenas. Other platforms keep all keys in one JSON file: read and
-/// parse it once, then fill every selected slot from that single object.
+fn fillFromKeysFile(io: Io, arena: Allocator, home: []const u8, keys: *provider_mod.Keys, scope: StoredKeyScope) void {
+    const obj = readKeysJson(io, arena, home) orelse return;
+    for (provider_specs, &keys.values, &keys.sources, 0..) |spec, *value, *source, i| {
+        if (value.* != null or !scope.includes(i, spec.id)) continue;
+        const stored = obj.get(spec.id) orelse continue;
+        if (stored != .string or stored.string.len == 0) continue;
+        value.* = stored.string;
+        source.* = .stored;
+    }
+    if (provider_mod.additional_router) |spec| {
+        if (keys.router_value == null and scope.includesRouter(spec.id)) {
+            const stored = obj.get(spec.id) orelse return;
+            if (stored == .string and stored.string.len > 0) {
+                keys.router_value = stored.string;
+                keys.router_source = .stored;
+            }
+        }
+    }
+}
+
+/// Fill selected missing credential slots. Checks `~/.simple-harness-keys.json`
+/// first across all platforms (for non-macOS installs and ACP hosts writing
+/// `0600` key files), then on macOS concurrently fills remaining gaps from
+/// per-provider Keychain items.
 pub fn loadMissingStoredKeys(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, keys: *provider_mod.Keys, scope: StoredKeyScope) void {
+    fillFromKeysFile(io, arena, home, keys, scope);
     if (builtin.os.tag == .macos) {
         var futures: [provider_specs.len]?Io.Future(?[]u8) = @splat(null);
         for (provider_specs, keys.values, 0..) |spec, value, i| {
             if (value != null or !scope.includes(i, spec.id)) continue;
-            const task_args = .{ io, gpa, home, spec.id };
+            const task_args = .{ io, gpa, spec.id };
             futures[i] = io.concurrent(loadStoredKeyTask, task_args) catch
                 io.async(loadStoredKeyTask, task_args);
         }
@@ -355,33 +370,39 @@ pub fn loadMissingStoredKeys(io: Io, gpa: Allocator, arena: Allocator, home: []c
         }
         if (provider_mod.additional_router) |spec| {
             if (keys.router_value == null and scope.includesRouter(spec.id)) {
-                keys.router_value = loadStoredKey(io, arena, home, spec.id);
+                keys.router_value = loadKeychainKey(io, arena, spec.id);
                 if (keys.router_value != null) keys.router_source = .stored;
             }
         }
-        return;
     }
+}
 
-    const path = std.fmt.allocPrint(arena, "{s}/{s}", .{ home, keys_file }) catch return;
-    const data = Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024)) catch return;
-    const parsed = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return;
-    if (parsed != .object) return;
-    for (provider_specs, &keys.values, &keys.sources, 0..) |spec, *value, *source, i| {
-        if (value.* != null or !scope.includes(i, spec.id)) continue;
-        const stored = parsed.object.get(spec.id) orelse continue;
-        if (stored != .string or stored.string.len == 0) continue;
-        value.* = stored.string;
-        source.* = .stored;
-    }
-    if (provider_mod.additional_router) |spec| {
-        if (keys.router_value == null and scope.includesRouter(spec.id)) {
-            const stored = parsed.object.get(spec.id) orelse return;
-            if (stored == .string and stored.string.len > 0) {
-                keys.router_value = stored.string;
-                keys.router_source = .stored;
-            }
-        }
-    }
+test "StoredKeyScope selects all, one provider, or an exact mask and reads keys file on all platforms" {
+    const all: StoredKeyScope = .all;
+    try std.testing.expect(all.includes(0, provider_specs[0].id));
+    const one: StoredKeyScope = .{ .provider = "deepseek" };
+    try std.testing.expect(one.includes(2, "deepseek"));
+    try std.testing.expect(!one.includes(1, "codegraff"));
+    var mask: [provider_specs.len]bool = @splat(false);
+    mask[1] = true;
+    const selected: StoredKeyScope = .{ .mask = mask };
+    try std.testing.expect(selected.includes(1, "codegraff"));
+    try std.testing.expect(!selected.includes(2, "deepseek"));
+
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    try tmp.dir.writeFile(io, .{ .sub_path = keys_file, .data = "{\"openai\":\"sk-file-openai\",\"deepseek\":\"sk-file-ds\"}" });
+    var home_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const home = home_buf[0..try tmp.dir.realPath(io, &home_buf)];
+    try std.testing.expectEqualStrings("sk-file-openai", loadStoredKey(io, arena, home, "openai").?);
+    var keys: provider_mod.Keys = .{ .values = @splat(null) };
+    fillFromKeysFile(io, arena, home, &keys, one);
+    try std.testing.expectEqualStrings("sk-file-ds", keys.get("deepseek").?);
+    try std.testing.expect(keys.get("openai") == null);
 }
 
 /// `harness key set <provider> <key>` / `harness key list` — manage the safe
