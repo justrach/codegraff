@@ -173,12 +173,12 @@ def exercise(root, binary, name, cert, host, success):
             created, _ = call('session/new', {'cwd': str(case), 'mcpServers': []}, 2)
             sid = created['result']['sessionId']
             initial = created['result']['configOptions']
-            assert len(initial) == 1 and initial[0]['category'] == 'thought_level', initial
+            assert [o['id'] for o in initial] == ['thought_level', 'unharnessed'] and initial[0]['category'] == 'thought_level', initial
             assert initial[0]['currentValue'] == 'medium', initial
             selected, _ = call('session/set_config_option', {
                 'sessionId': sid, 'configId': 'thought_level', 'value': 'high'}, 8)
             options = selected['result']['configOptions']
-            assert len(options) == 1 and options[0]['currentValue'] == 'high', selected
+            assert [o['id'] for o in options] == ['thought_level', 'unharnessed'] and options[0]['currentValue'] == 'high', selected
             assert not [r for r in (json.loads(line) for line in log.read_text().splitlines())
                         if r['event'] == 'request'], 'Effort selection made a network request'
             for number in range(1, 3 if success else 2):

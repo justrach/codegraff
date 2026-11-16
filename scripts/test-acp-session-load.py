@@ -351,7 +351,7 @@ def run(binary):
             assert selected["model"] == "alibaba/qwen3.8-27b", selected
             created_config = created["configOptions"]
             loaded_config = loaded["result"]["configOptions"]
-            assert len(created_config) == len(loaded_config) == 1, (created, loaded)
+            assert [o["id"] for o in created_config] == [o["id"] for o in loaded_config] == ["thought_level", "unharnessed"], (created, loaded)
             assert created_config[0]["category"] == loaded_config[0]["category"] == "thought_level"
             assert created_config[0]["currentValue"] == "high", created_config
             assert loaded_config[0]["currentValue"] == "low", loaded_config

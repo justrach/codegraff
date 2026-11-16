@@ -195,7 +195,11 @@ fn handleWithWait(self: *Agent, final_text: []const u8, hist_len: usize, comptim
     if (!PendingWork.canRequest(self)) return false;
     if (!shouldBounce(main_mod.unattended, no_local_tools.lean, self.text_only, self.review_mode, self.sub, self.tool_calls_this_turn, self.model_calls_this_turn, final_text))
         return false;
-    try self.messages.append(try messages.userNote(self.arena, self.provider.kind, bounce_note));
+    const note = if (@import("unharnessed_mode.zig").enabled())
+        "If the user requested a change, a description alone is not completion: inspect, update, and verify the workspace using `python` instead of claiming it is already updated. If the request is informational, answer cleanly without making unrequested changes."
+    else
+        bounce_note;
+    try self.messages.append(try messages.userNote(self.arena, self.provider.kind, note));
     try self.say("[described a change with no tool call — asking once more]\n", .{});
     if (self.tracer) |tr| tr.note("fake_done", "lean -p text-only; bounced");
     return true;

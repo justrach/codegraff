@@ -299,6 +299,7 @@ pub fn applyEnvKnobs(arena: Allocator, environ_map: anytype) !void {
         @import("turn_chrome.zig").max_turn_model_calls = @import("turn_chrome.zig").parseMaxTurnCalls(v);
     }
     @import("orchestrator_mode.zig").applyEnv(environ_map.get("GRAFF_ORCHESTRATOR"));
+    @import("unharnessed_mode.zig").applyEnv(environ_map.get("GRAFF_UNHARNESSED"));
 }
 
 fn codegraffLoginKey(io: Io, arena: Allocator, environ_map: anytype) ?[]const u8 {
@@ -319,6 +320,7 @@ pub fn setupSkillsAndTheme(io: Io, arena: Allocator, environ_map: anytype, out: 
     anim.loadThemeSetting(io, arena); // {"theme": "<name>"} → opt-in terminal color theme
     @import("followups.zig").load(io, arena); // {"followups": "queue"|"immediate"} → Codex/ChatGPT delivery
     @import("orchestrator_mode.zig").loadSettings(io, arena); // {"orchestrator": "off"|"auto"|"on"} → same-chat baton handoff
+    @import("unharnessed_mode.zig").loadSettings(io, arena); // {"unharnessed": true|false} → 1-tool python REPL mode
     const theme_on = anim.g_theme != null and use_color and !json_mode;
     if (theme_on) {
         out.writeAll(anim.themes[anim.g_theme.?].seq) catch {};

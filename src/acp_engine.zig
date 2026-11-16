@@ -90,6 +90,8 @@ pub const Dispatch = struct {
     set_model: ?SetConfigFn = null,
     orchestrator_config: ?ConfigFn = null,
     set_orchestrator: ?SetConfigFn = null,
+    unharnessed_config: ?ConfigFn = null,
+    set_unharnessed: ?SetConfigFn = null,
     mcp_servers: ?McpServersFn = null,
     error_message: ?*const fn (ctx: *anyopaque, err: anyerror) []const u8 = null,
     cancel_info: ?*const fn (ctx: *anyopaque) ?Cancellation = null,
@@ -132,11 +134,12 @@ pub fn configOptions(d: *Dispatch, arena: Allocator) ![]const ConfigOption {
     if (d.model_config) |model| if (try model(d.ctx, arena)) |option| try items.append(arena, option);
     if (d.config) |config| if (try config(d.ctx, arena)) |option| try items.append(arena, option);
     if (d.orchestrator_config) |orch_cfg| if (try orch_cfg(d.ctx, arena)) |option| try items.append(arena, option);
+    if (d.unharnessed_config) |unh_cfg| if (try unh_cfg(d.ctx, arena)) |option| try items.append(arena, option);
     return items.items;
 }
 
 pub fn emitConfigChange(d: *Dispatch, arena: Allocator, w: *Io.Writer, sid: []const u8, before: []const ConfigOption) !void {
-    if (d.config == null and d.model_config == null and d.orchestrator_config == null) return;
+    if (d.config == null and d.model_config == null and d.orchestrator_config == null and d.unharnessed_config == null) return;
     const after = try configOptions(d, arena);
     if (@import("acp_model_option.zig").same(before, after)) return;
     try proto.writeNotification(w, "session/update", .{ .sessionId = sid, .update = .{
@@ -323,7 +326,7 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
         if (d.mcp_servers) |attach| attach(d.ctx, arena, req.params) catch {};
         d.created += 1;
         d.session_id = d.durable_session_id orelse (std.fmt.bufPrint(&d.fallback_id_buf, "acp-{x}-{d}", .{ d.seed, d.created }) catch "acp-0");
-        if (d.config != null or d.model_config != null or d.orchestrator_config != null) {
+        if (d.config != null or d.model_config != null or d.orchestrator_config != null or d.unharnessed_config != null) {
             const options = configOptions(d, arena) catch |err| return respondError(w, req, err_internal, @errorName(err));
             if (d.workspace) |env|
                 try respond(w, req, .{ .sessionId = d.session_id.?, .configOptions = options, ._meta = acp_workspace.meta(env, arena) })
@@ -337,7 +340,7 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
         return;
     }
     if ((d.load_session != null and (std.mem.eql(u8, req.method, "session/prompt") or std.mem.eql(u8, req.method, "session/cancel") or std.mem.eql(u8, req.method, "session/close") or std.mem.eql(u8, req.method, "_session/steering"))) or
-        ((d.set_config != null or d.set_orchestrator != null) and std.mem.eql(u8, req.method, "session/set_config_option")))
+        ((d.set_config != null or d.set_orchestrator != null or d.set_unharnessed != null) and std.mem.eql(u8, req.method, "session/set_config_option")))
     {
         const params = req.params orelse return respondError(w, req, -32602, "Invalid session ID");
         if (params != .object) return respondError(w, req, -32602, "Invalid session ID");
@@ -358,7 +361,7 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
             return load(d.ctx, arena, w, req);
         }
     }
-    if (std.mem.eql(u8, req.method, "session/set_config_option") and (d.set_config != null or d.set_orchestrator != null)) {
+    if (std.mem.eql(u8, req.method, "session/set_config_option") and (d.set_config != null or d.set_orchestrator != null or d.set_unharnessed != null)) {
         const params = req.params orelse return respondError(w, req, -32602, "Invalid configuration option");
         if (params != .object) return respondError(w, req, -32602, "Invalid configuration option");
         const id = util.strFieldObj(params.object, "configId") orelse return respondError(w, req, -32602, "Invalid configuration option");
@@ -369,6 +372,8 @@ pub fn handleLine(d: *Dispatch, arena: Allocator, w: *Io.Writer, line: []const u
             (d.set_model orelse return respondError(w, req, -32602, "Invalid configuration value"))
         else if (std.mem.eql(u8, id, "orchestrator"))
             (d.set_orchestrator orelse return respondError(w, req, -32602, "Invalid configuration value"))
+        else if (std.mem.eql(u8, id, "unharnessed"))
+            (d.set_unharnessed orelse return respondError(w, req, -32602, "Invalid configuration value"))
         else
             return respondError(w, req, -32602, "Invalid configuration value");
         const accepted = setter(d.ctx, value) catch |err| return respondError(w, req, err_internal, @errorName(err));

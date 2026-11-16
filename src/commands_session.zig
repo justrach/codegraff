@@ -80,6 +80,7 @@ pub fn resetConversationSteering(root: *Agent) void {
     // attempt_completion ended their steering - #318 through the /clear door.
     if (root.goal_flag) |g| root.goal = goal_flow.standingGoalFromFlag(g, null, root.todos.items, 0);
     @import("rlm_spec.zig").resetBindsSession(root.io);
+    @import("python_repl.zig").resetSession(root.io);
     @import("native_fold.zig").resetSession();
     root.invalidateRootTools();
     @import("subagent_ledger.zig").reset(root.gpa); // #753: handles belong to the conversation

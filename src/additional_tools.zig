@@ -140,7 +140,7 @@ fn announced(arena: Allocator, messages: []const Value, name: []const u8) bool {
 /// itself carries the loaded entry (#492), so rebuild whenever any loaded
 /// tool is missing from the root's cached catalog.
 pub fn staleCatalog(self: *Agent) bool {
-    if (self.sub) return false;
+    if (self.sub or @import("unharnessed_mode.zig").enabled()) return false;
     const arena = self.scratchAlloc();
     const catalog = self.toolsJson();
     for (tailEntries(self, arena) catch return false) |t| {
@@ -159,7 +159,7 @@ fn inTail(tail: []const Value, name: []const u8) bool {
 /// On any other route, remove the announcements instead. Other wires do not
 /// know them, and there the catalog tail carries the loaded tools.
 pub fn sync(self: *Agent) void {
-    if (self.sub) return;
+    if (self.sub or @import("unharnessed_mode.zig").enabled()) return;
     if (!active(self.provider)) return dropItems(&self.messages);
     const arena = self.messageMutationAlloc();
     const tail = tailEntries(self, arena) catch return;

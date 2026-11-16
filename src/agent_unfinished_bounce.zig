@@ -156,7 +156,8 @@ fn hasWorkspaceMutation(self: *const Agent) bool {
         if (e.err) continue;
         if (std.mem.eql(u8, e.name, "edit_file") or
             std.mem.eql(u8, e.name, "write_file") or
-            std.mem.eql(u8, e.name, "apply_patch")) return true;
+            std.mem.eql(u8, e.name, "apply_patch") or
+            @import("python_repl.zig").isTool(e.name)) return true;
     }
     return false;
 }
@@ -177,7 +178,11 @@ pub fn maybeBounceUnfinishedStop(self: *Agent, final_text: []const u8, bounced_o
     if (!@import("agent_empty_completion.zig").PendingWork.canRequest(self)) return false;
 
     bounced_once.* = true;
-    try self.messages.append(try messages.userNote(self.arena, self.provider.kind, unfinished_action_note));
+    const note = if (@import("unharnessed_mode.zig").enabled())
+        "Unfinished-action check: your reply ended the turn in plain text while stating that work or edits remain pending. If changes remain, apply and verify them using `python` before concluding; otherwise state any concrete blocker explicitly."
+    else
+        unfinished_action_note;
+    try self.messages.append(try messages.userNote(self.arena, self.provider.kind, note));
     try self.say("[stopped with unfinished-work prose and zero edits — asking once more]\n", .{});
     if (self.tracer) |tr| tr.note("unfinished_stop", "unattended action turn stopped without edits; bounced once (#1879)");
     return true;

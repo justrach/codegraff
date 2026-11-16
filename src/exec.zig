@@ -117,7 +117,7 @@ pub fn execTool(ctx: ToolCtx, call: ToolCall) ToolOutput {
     // read-only streaks skew, append the edge-triggered nudge cleanly while
     // freeing the superseded gpa-owned slice (`ToolOutput.text` is `[]u8`,
     // `&.{}` when empty).
-    const allow_write_nudge = ctx.tools_used != null and !main_mod.plan_mode and !ctx.read_only_shell and !ctx.synthesis and !no_local_tools.enabled;
+    const allow_write_nudge = ctx.tools_used != null and !main_mod.plan_mode and !ctx.read_only_shell and !ctx.synthesis and !no_local_tools.enabled and !@import("unharnessed_mode.zig").enabled();
     if (tool_balance.recordWithMode(ctx.gpa, call, out.is_error, allow_write_nudge)) |nudge| {
         defer ctx.gpa.free(nudge);
         if (std.fmt.allocPrint(ctx.gpa, "{s}\n\n[{s}]", .{ out.text, nudge })) |combined| {
@@ -149,7 +149,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     // Plan mode backstop: the root gate already denies these with a nicer
     // message; this catches subagents (which skip the gate entirely).
     if (main_mod.plan_mode) {
-        if (local_tools.isLocal(call.name) or std.mem.eql(u8, call.name, "learn_candidate") or std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or std.mem.eql(u8, call.name, imagegen.tool_name) or mcp.Registry.isMcp(call.name)) return .{
+        if (local_tools.isLocal(call.name) or @import("python_repl.zig").isTool(call.name) or std.mem.eql(u8, call.name, "learn_candidate") or std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or std.mem.eql(u8, call.name, imagegen.tool_name) or mcp.Registry.isMcp(call.name)) return .{
             .text = try gpa.dupe(u8, "plan mode is on — read-only; describe the change instead of making it"),
             .is_error = true,
         };
@@ -353,6 +353,14 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     }
     if (std.mem.eql(u8, call.name, "write_file")) return write_file.exec(ctx, input); // ADR 0231
     if (std.mem.eql(u8, call.name, "lsp")) return @import("lsp.zig").execute(ctx, input);
+    if (@import("python_repl.zig").isTool(call.name)) {
+        const unharnessed = @import("unharnessed_mode.zig").enabled();
+        if (std.mem.eql(u8, call.name, "python") and !unharnessed)
+            return .{ .text = try gpa.dupe(u8, "`python` requires --unharnessed mode; load `python_repl` or use `shell` instead"), .is_error = true };
+        if (std.mem.eql(u8, call.name, "python_repl") and unharnessed)
+            return .{ .text = try gpa.dupe(u8, "`python_repl` is unavailable in --unharnessed mode; use `python` instead"), .is_error = true };
+        return @import("python_repl.zig").execute(ctx, call.name, input);
+    }
     // Loads one SKILL.md body (or lists them). Rescans on every call, so a
     // skill written this session is loadable without a restart.
     if ((comptime @import("build_options").extras) and std.mem.eql(u8, call.name, html_view.tool_name)) return html_view.exec(ctx, input);

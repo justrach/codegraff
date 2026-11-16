@@ -55,6 +55,7 @@ test "spec/tool_catalog: implementation matches executable semantics" {
 
     const rlm = @import("rlm.zig");
     const orch_mode = @import("orchestrator_mode.zig");
+    const unharnessed = @import("unharnessed_mode.zig");
     const saved_local = no_local_tools.enabled;
     const saved_lean = no_local_tools.lean;
     const saved_img = imagegen.available;
@@ -62,6 +63,7 @@ test "spec/tool_catalog: implementation matches executable semantics" {
     const saved_learn = learn_store.active_agent_loaded;
     const saved_rlm = rlm.available;
     const saved_orch = orch_mode.handoff_active;
+    const saved_unharnessed = unharnessed.g_enabled;
     defer {
         no_local_tools.enabled = saved_local;
         no_local_tools.lean = saved_lean;
@@ -71,12 +73,14 @@ test "spec/tool_catalog: implementation matches executable semantics" {
         rlm.available = saved_rlm;
         rlm.sync();
         orch_mode.handoff_active = saved_orch;
+        unharnessed.g_enabled = saved_unharnessed;
     }
     // The 64-cell kernel is the structured catalog (`--old`). rlm is a
     // session overlay (ADR 0022) and must not grow this cube.
     rlm.available = false;
     rlm.sync();
     orch_mode.handoff_active = false;
+    unharnessed.g_enabled = false;
 
     const cases = parsed.value.object.get("cases").?.array.items;
     try std.testing.expect(cases.len == 64);

@@ -15,7 +15,7 @@ ScriptedModel = load_test.ScriptedModel
 
 def option(response):
     options = response["result"]["configOptions"]
-    assert len(options) == 1, options
+    assert [o["id"] for o in options] == ["thought_level", "unharnessed"], options
     selected = options[0]
     assert selected["id"] == selected["category"] == "thought_level", selected
     assert selected["type"] == "select", selected

@@ -191,7 +191,7 @@ pub fn buildSystemPrompt(
     // sys_base so a later playbook refresh cannot drop it.
     if (if (comptime build_options.learn) @import("experiment_pool.zig").directive() else null) |d|
         sys_normal = try std.fmt.allocPrint(arena, "{s}\n\n{s}", .{ sys_normal, d });
-    return sys_normal;
+    return @import("unharnessed_mode.zig").applyStartupPrompt(io, arena, sys_normal, system_prompt_flag, append_system_flag);
 }
 
 const args = @import("args.zig");

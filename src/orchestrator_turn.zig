@@ -92,7 +92,7 @@ fn isAutonomousOrNoticeTurn(items: []const std.json.Value, raw_user_text: []cons
 pub fn run(root: *Agent, keys: *Keys, arena: Allocator, out: ?*Io.Writer, singlePhase: SinglePhaseFn) anyerror![]const u8 {
     if (root.fallback_blocked or root.sub or main_mod.plan_mode or root.text_only or
         root.output_schema != null or root.review_mode or orchestrator.g_mode == .off or
-        activeAutonomousGoal(root))
+        activeAutonomousGoal(root) or @import("unharnessed_mode.zig").enabled())
     {
         return singlePhase(root, keys, arena, out);
     }

@@ -65,6 +65,7 @@ pub const folded = [_][]const u8{
     "subagent_resume",
     "schedule_task",
     "lsp",
+    "python_repl",
     // ADR 0022 / 0140: isFolded is false under --old so the structured-only
     // catalog stays byte-stable. While available, rlm is on the catalog
     // from turn one — no batch-size or compactAt gate.

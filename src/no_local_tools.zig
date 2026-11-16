@@ -56,11 +56,14 @@ pub const gated_tools = [_][]const u8{
     "render_html",
 };
 
-/// Pre-unification names. Still dispatched, still blocked by --no-local-tools.
+/// Pre-unification aliases and runtime-extra / mode-specific local tools
+/// (`python_repl`, `python`). Blocked by --no-local-tools.
 pub const gated_aliases = [_][]const u8{
     "bash",
     "bash_output",
     "bash_kill",
+    "python_repl",
+    "python",
 };
 
 /// A name test only, independent of whether the gate is on, so the comptime
@@ -225,6 +228,7 @@ test "#330: the gated set is exactly the host-touching built-ins; webfetch, meta
     for (gated_tools) |tool| try std.testing.expect(isLocalTool(tool));
     try std.testing.expectEqual(@as(usize, 9), gated_tools.len);
     try std.testing.expect(isLocalTool("bash") and isLocalTool("bash_output") and isLocalTool("bash_kill"));
+    try std.testing.expect(isLocalTool("python_repl") and isLocalTool("python"));
     try std.testing.expect(isLocalTool("imagegen")); // #352: optional, but still a local spawn+write
     try std.testing.expect(isLocalTool("render_html")); // writes the snapshot under the host's own $HOME
     for ([_][]const u8{ "webfetch", "skill", "subagent", "workflow", "todo_write", "eval", "mcp__sandbox__exec", "mcp__sandbox__bash" }) |tool|
@@ -236,6 +240,7 @@ test "#330: the gated set is exactly the host-touching built-ins; webfetch, meta
     enabled = true;
     for (gated_tools) |tool| try std.testing.expect(blocks(tool));
     try std.testing.expect(blocks("bash") and blocks("bash_output") and blocks("bash_kill"));
+    try std.testing.expect(blocks("python_repl") and blocks("python"));
     try std.testing.expect(!blocks("webfetch"));
     try std.testing.expect(!blocks("mcp__sandbox__bash"));
 }
