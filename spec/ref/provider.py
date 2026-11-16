@@ -57,6 +57,7 @@ SPECS: list[dict] = [
     row("chatgpt-new", "responses", "bearer", login="chatgpt_browser", catalog="openai", sub_login=True),
     row("codex", "responses", "bearer", login="codex_device", catalog="codex", sub_login=True),
     row("claude-agent", "anthropic", "bearer", login="claude_cli", sub_login=True, takes_effort=True),
+    row("nanoattention", "openai", "bearer", catalog="openai"),
 ]
 
 

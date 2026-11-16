@@ -278,11 +278,11 @@ pub fn main(init: std.process.Init) !void {
     learning_privacy.init(flags.learning_privacy_flag, init.environ_map.get("GRAFF_LEARNING_PRIVACY"));
     var invocation_budget: run_budget_mod.RunBudget = .{ .max_model_calls = max_model_calls, .max_tool_calls = run_budget_mod.cli_max_tool_calls };
     boot.mark(init.io, "args");
-    // GRAFF_CODEX_URL: codex endpoint override (localhost mocks), set BEFORE runSubcommand (`graff models [refresh]`) and resolveKeys (the
-    // initial Keys.build). environ_map slices are process-lifetime (resolveKeys stores them into Keys the same way): kept without duping.
+    // GRAFF_CODEX_URL: set before subcommands and resolveKeys; env slices are process-lifetime.
     if (init.environ_map.get("GRAFF_CODEX_URL")) |cu| {
         if (cu.len > 0) provider_mod.g_codex_url_override = cu;
     }
+    if (init.environ_map.get("GRAFF_NANOATTENTION_URL")) |url| if (url.len > 0 and !@import("provider_nanoattention.zig").configureUrl(url)) std.process.fatal("GRAFF_NANOATTENTION_URL must be an HTTP loopback /v1/chat/completions URL with an explicit nonzero port", .{});
     // --help / --version: handled before any subcommand dispatch, so `harness login --help` prints usage instead of starting an OAuth flow.
     if (try startup.runSubcommand(io, gpa, arena, init, flags)) return;
     // Credentials/model (env > on-disk logins > `harness key set` store; then --model or the last-saved model): startup.zig resolveKeys().
@@ -564,6 +564,7 @@ test { // ── Unit tests (`zig build test`): pull in tests from imported modu
     _ = .{ @import("session_catalog.zig"), @import("session_size_tests.zig"), @import("session_version.zig"), @import("session_version_tests.zig"), @import("session_prompt.zig"), @import("session_discovery.zig"), @import("session_workspaces.zig"), @import("commands_resume.zig"), @import("peer_live.zig"), @import("presence_tests.zig"), @import("presence_ack.zig"), @import("mcp_rpc_tests.zig") };
     _ = .{ @import("prompt_astra.zig"), @import("prompt_guidance.zig"), @import("oauth_chatgpt.zig"), @import("chatgpt_reauth.zig"), @import("oauth_anthropic.zig"), @import("anthropic_oauth_wire.zig"), @import("anthropic_login_tests.zig") };
     _ = .{ @import("agent_empty_completion.zig"), @import("agent_unfinished_bounce.zig"), @import("agent_length_cutoff.zig"), @import("agent_model_loop.zig"), @import("publication_policy_tests.zig"), @import("jobs_completion_tests.zig"), @import("headless_result.zig"), @import("oneshot.zig"), @import("agent_length.zig"), @import("agent_length_tests.zig") };
+    _ = .{ @import("provider_nanoattention.zig"), @import("provider_nanoattention_tests.zig") };
     _ = .{ @import("provider_routing_tests.zig"), @import("codegraff_messages_tests.zig"), @import("tool_result_empty_tests.zig"), @import("history_wire.zig"), @import("path_lookup.zig"), @import("agents_prepare.zig"), @import("catalog_price.zig"), @import("readline_paste_number_tests.zig"), @import("test_hooks.zig"), @import("peer_wake_loop.zig") };
     _ = .{ @import("list_dir_nearmiss.zig"), @import("tool_preview_tests.zig"), @import("stream_reconnect.zig"), @import("oauth_kimi.zig"), @import("signin_link.zig"), @import("followups.zig") };
     _ = .{ @import("repo_map.zig"), @import("cli_text.zig"), @import("boot_prewarm.zig") };

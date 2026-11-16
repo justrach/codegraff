@@ -235,6 +235,15 @@
       "catalog": "baked",
       "sub_login": true,
       "takes_effort": true
+    },
+    {
+      "id": "nanoattention",
+      "kind": "openai",
+      "auth": "bearer",
+      "login": "api_key",
+      "catalog": "openai",
+      "sub_login": false,
+      "takes_effort": false
     }
   ]
 }
