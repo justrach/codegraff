@@ -5,6 +5,14 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.72
+    \\  • Keep Orchestrator phase directives turn-scoped and allow quoted `rg` alternations, read-only `gh`, stdout `pdftotext`, and `readOnlyHint` MCP tools in plan mode (#1908).
+    \\  • Skip Auto Orchestrator planning on informational `?` questions or compacted histories, and settle expanded Phase 2 compaction inside `compactAt()` (#1906).
+    \\  • Strip Codex `tool_search_*` items on non-Codex Responses failover with local unfolding, and avoid auth-refresh loops on `subscription_sharing_unsupported_capability` (#1907).
+    \\
+    \\0.302.74.71
+    \\  • Add Orchestrator Mode (`off | auto | on`) same-chat read-only planning and KV-identical executor handoffs with short follow-up and wake bypasses (ADR 0347).
+    \\
     \\0.302.74.69
     \\  • Track live rate-limit headers, WebSocket `codex.rate_limits`, and `claude-agent` events, and bypass exhausted `claude-fable-5-2` pools onto `claude-opus-5-5` (ADR 0346).
     \\  • Surface signed-in account identities, plan credits, and remaining usage windows across `/usage`, `/cost`, ACP `graff/accounts`, and `_codegraff/usage.planWindows`.

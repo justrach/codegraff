@@ -10,6 +10,16 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.72
+
+- Scope Orchestrator Mode phase and replan directives to the active turn, block `enter_plan_mode` once replan-exhausted, and allow quoted regex alternations, read-only `gh` queries, stdout `pdftotext`, and `readOnlyHint` MCP tools under plan/read-only mode while preserving user consent (#1908).
+- Gate Auto Orchestrator Mode off on informational `?` questions (including attachment trailers and action-word substring collisions) and pre-existing opaque compaction state, and prune/settle expanded Phase 2 compaction checkpoints back inside `compactAt()` on planner restore (#1906, ADR 0347).
+- Sanitize Codex-hosted `tool_search_call` / `tool_search_output` items when switching onto non-Codex Responses routes while unfolding matched folded/MCP tools locally, and classify `subscription_sharing_unsupported_capability` as an invalid-request error without triggering auth refresh (#1907).
+
+## v0.302.74.71
+
+- Add Orchestrator Mode (`off | auto | on`, defaulting to `auto` on multi-rung seats) for same-chat read-only planning and KV-identical executor handoffs with bounded `[plan review]` escalations, keeping short follow-ups, Q&A, `/goal` continuations, and notice wakes single-phase (ADR 0347).
+
 ## v0.302.74.69
 
 - Track live provider rate-limit headers, Responses WebSocket `codex.rate_limits` frames, and Claude Agent `rate_limit_event` updates in `plan_usage_live`, and bypass exhausted `claude-fable-5-2` separate quota pools onto `claude-opus-5-5` before issuing a failing turn (ADR 0346).
