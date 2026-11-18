@@ -70,6 +70,7 @@ pub var g_phase: Phase = .none;
 pub var handoff_active: bool = false;
 pub var g_handoff_plan: ?[]const u8 = null;
 pub var g_replan_reason: ?[]const u8 = null;
+pub var g_replan_exhausted: bool = false;
 
 pub fn setFromCli(mode: Mode) void {
     g_mode = mode;
@@ -190,6 +191,9 @@ pub fn handleMeta(self: *Agent, call: tools.ToolCall) !tools.ExecResult {
     if (!handoff_active or g_phase != .executing) {
         return .{ .text = "enter_plan_mode is only active during Phase 2 execution in orchestrator mode", .is_error = true };
     }
+    if (g_replan_exhausted) {
+        return .{ .text = "replan limit reached for this turn; finish or report exact blockers directly on this seat.", .is_error = true };
+    }
     const obj = tools.json_args.object(call.input) orelse return .{ .text = "enter_plan_mode requires a nonempty reason", .is_error = true };
     const raw = tools.json_args.str(obj, "reason") orelse return .{ .text = "enter_plan_mode requires a nonempty reason", .is_error = true };
     if (std.mem.trim(u8, raw, " \t\r\n").len == 0) return .{ .text = "enter_plan_mode requires a nonempty reason", .is_error = true };
@@ -286,16 +290,6 @@ fn containsFold(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
-fn hasActionVerb(text: []const u8) bool {
-    const verbs = [_][]const u8{
-        "fix",    "edit",   "implement", "refactor", "write",   "create",
-        "add",    "update", "remove",    "delete",   "migrate", "convert",
-        "rename", "build",  "wire",      "patch",    "change",  "modify",
-    };
-    for (verbs) |v| if (containsFold(text, v)) return true;
-    return false;
-}
-
 fn hasMultiStepCue(text: []const u8) bool {
     const cues = [_][]const u8{
         "across ",  "all ",    "refactor",   "architect",
@@ -322,6 +316,9 @@ pub fn stripHarnessNotes(text: []const u8) []const u8 {
         "\n\n[harness note:",
         "\n\n[pace:",
         "\n\nAttached images (",
+        "\n\nAttached files (",
+        "\n\nAttached documents (",
+        "\n\nAttached PDFs (",
     };
     for (markers) |m| {
         if (std.mem.indexOf(u8, text, m)) |idx| cut = @min(cut, idx);
@@ -332,8 +329,12 @@ pub fn stripHarnessNotes(text: []const u8) []const u8 {
 pub fn shouldPlanAuto(root: *const Agent, user_text: []const u8) bool {
     const trimmed = std.mem.trim(u8, stripHarnessNotes(user_text), " \t\r\n");
     if (trimmed.len == 0) return false;
-    if (task_intent.classify(trimmed) == .informational and !hasActionVerb(trimmed)) return false;
+    // Never auto-enter a two-seat baton when history holds opaque server compaction
+    // state: switching seats would expand the ciphertext back into raw history (#1906).
+    if (@import("compaction_window.zig").latestBlob(root.messages.items) != null) return false;
+    if (task_intent.classify(trimmed) == .informational) return false;
     const task_class = shapes.classOf(trimmed);
+    if (!task_intent.requestsAction(trimmed) and task_class != .bugfix and task_class != .feature and task_class != .refactor) return false;
     const trivial = trimmed.len < 60 and !hasMultiStepCue(trimmed) and task_class != .refactor;
     const heuristic: orch.Rung = if (trivial and (task_class != .feature or !hasMultiStepCue(trimmed))) .R0 else .baton;
     const remaining = if (root.run_budget) |b| b.remaining() else std.math.maxInt(u64);

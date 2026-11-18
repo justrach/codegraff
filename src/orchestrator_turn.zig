@@ -44,10 +44,10 @@ fn switchSeatInPlace(root: *Agent, arena: Allocator, target: Provider, saved_fal
     root.fallback_active = saved_fallback_active;
 }
 
-fn isOrchestratorNotice(item: std.json.Value) bool {
-    if (item != .object) return false;
-    const content = item.object.get("content") orelse return false;
-    const text: []const u8 = switch (content) {
+fn noticeText(item: std.json.Value) ?[]const u8 {
+    if (!session_wake.isNotice(item) or item != .object) return null;
+    const content = item.object.get("content") orelse return null;
+    return switch (content) {
         .string => |s| s,
         .array => |arr| blk: {
             for (arr.items) |blk_val| {
@@ -55,12 +55,151 @@ fn isOrchestratorNotice(item: std.json.Value) bool {
                 const tx = blk_val.object.get("text") orelse continue;
                 if (tx == .string) break :blk tx.string;
             }
-            return false;
+            break :blk null;
         },
-        else => return false,
+        else => null,
     };
+}
+
+fn isOrchestratorNotice(item: std.json.Value) bool {
+    const text = noticeText(item) orelse return false;
     return std.mem.startsWith(u8, text, "[orchestrator mode ") or
+        std.mem.startsWith(u8, text, "[orchestrator history ") or
         std.mem.startsWith(u8, text, "[plan review]");
+}
+
+fn replaceNotice(root: *Agent, idx: usize, retired: []const u8) bool {
+    const alloc = root.historyAlloc();
+    var msg = named_work.userNudge(alloc, root.provider.kind, retired) catch return false;
+    msg.object.put(alloc, session_wake.origin_key, .{ .string = "notification" }) catch return false;
+    root.messages.items[idx] = msg;
+    return true;
+}
+
+/// Remove or rewrite obsolete orchestrator phase directives outside an active
+/// baton so later single-phase turns or forked children never treat Phase 1
+/// read-only rules or `exit_plan_mode`/`enter_plan_mode` prompts as live.
+pub fn retireDirectives(root: *Agent) void {
+    const min_idx: usize = if (@import("compaction_window.zig").latestBlob(root.messages.items)) |b| b + 1 else 0;
+    const alloc = root.historyAlloc();
+    var changed = false;
+    var i: usize = min_idx;
+    while (i < root.messages.items.len) {
+        const text = noticeText(root.messages.items[i]) orelse {
+            i += 1;
+            continue;
+        };
+        if (std.mem.startsWith(u8, text, "[orchestrator mode — phase 1: plan]") or
+            std.mem.startsWith(u8, text, "[orchestrator mode - phase 1: plan]"))
+        {
+            _ = root.messages.orderedRemove(i);
+            changed = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, text, "[orchestrator mode — phase 2: execute]") or
+            std.mem.startsWith(u8, text, "[orchestrator mode - phase 2: execute]"))
+        {
+            const marker = "\n\nApproved plan:\n";
+            const plan = if (std.mem.indexOf(u8, text, marker)) |pos|
+                text[pos + marker.len ..]
+            else if (std.mem.indexOfScalar(u8, text, '\n')) |nl|
+                std.mem.trim(u8, text[nl + 1 ..], " \t\r\n")
+            else
+                "";
+            const retired = std.fmt.allocPrint(
+                alloc,
+                "[orchestrator history — prior plan context]\nHistorical plan from an earlier turn (planning mode and handoff tools are inactive; handle the latest user request directly with current tools):\n{s}",
+                .{plan},
+            ) catch {
+                i += 1;
+                continue;
+            };
+            if (replaceNotice(root, i, retired)) changed = true;
+            i += 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, text, "[plan review]")) {
+            const start_marker = "Execution escalated back with blocker:\n";
+            const end_marker = "\nInspect the current workspace state read-only";
+            const start = if (std.mem.indexOf(u8, text, start_marker)) |pos|
+                pos + start_marker.len
+            else if (std.mem.indexOfScalar(u8, text, '\n')) |nl|
+                nl + 1
+            else
+                text.len;
+            const end = std.mem.indexOfPos(u8, text, start, end_marker) orelse text.len;
+            const blocker = std.mem.trim(u8, text[start..end], " \t\r\n");
+            const retired = std.fmt.allocPrint(
+                alloc,
+                "[orchestrator history — prior escalation context]\nEarlier turn noted blocker (planning mode and handoff tools are inactive; handle the latest user request directly):\n{s}",
+                .{blocker},
+            ) catch {
+                i += 1;
+                continue;
+            };
+            if (replaceNotice(root, i, retired)) changed = true;
+            i += 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, text, "[orchestrator mode — final pass]") or
+            std.mem.startsWith(u8, text, "[orchestrator mode - final pass]"))
+        {
+            const hdr_end = std.mem.indexOfScalar(u8, text, '\n') orelse text.len;
+            const body_raw = std.mem.trim(u8, text[hdr_end..], " \t\r\n");
+            const end_marker = "\nFinish or report exact blockers";
+            const body = if (std.mem.indexOf(u8, body_raw, end_marker)) |pos|
+                std.mem.trim(u8, body_raw[0..pos], " \t\r\n")
+            else
+                body_raw;
+            const retired = std.fmt.allocPrint(
+                alloc,
+                "[orchestrator history — prior escalation context]\n{s}",
+                .{body},
+            ) catch {
+                i += 1;
+                continue;
+            };
+            if (replaceNotice(root, i, retired)) changed = true;
+            i += 1;
+            continue;
+        }
+        i += 1;
+    }
+    if (changed) root.history_rewrites +%= 1;
+}
+
+fn restorePlannerSeat(
+    root: *Agent,
+    arena: Allocator,
+    saved_planner: Provider,
+    saved_fallback_active: bool,
+    retire_all: bool,
+    allow_live_compact: bool,
+) void {
+    const same_seat = std.mem.eql(u8, root.provider.id, saved_planner.id) and
+        std.mem.eql(u8, root.provider.model, saved_planner.model);
+    if (same_seat) {
+        if (retire_all) retireDirectives(root);
+        return;
+    }
+    const had_blob = @import("compaction_window.zig").latestBlob(root.messages.items) != null;
+    root.closeCodexWs();
+    _ = providers.applyProviderInner(root, arena, saved_planner, false) catch {};
+    root.fallback_active = saved_fallback_active;
+    if (retire_all) retireDirectives(root);
+    if (had_blob and @import("compaction_window.zig").latestBlob(root.messages.items) == null) {
+        const threshold = root.provider.compactAt();
+        if (threshold > 0 and root.effectiveContextTokens() >= threshold) {
+            _ = @import("compact_prune.zig").pruneOldToolResults(root, 6, 4096);
+            root.rebaseContextMeter();
+            if (allow_live_compact and root.effectiveContextTokens() >= threshold and
+                !Agent.esc_cancel.load(.acquire) and !@import("acp_engine.zig").cancel_flag.load(.acquire))
+            {
+                root.compactOrRecover(root.provider.nearContextLimit(root.effectiveContextTokens()));
+                root.rebaseContextMeter();
+            }
+        }
+    }
 }
 
 fn isWakeOrSteerOrigin(item: std.json.Value) bool {
@@ -90,7 +229,9 @@ fn isAutonomousOrNoticeTurn(items: []const std.json.Value, raw_user_text: []cons
 }
 
 pub fn run(root: *Agent, keys: *Keys, arena: Allocator, out: ?*Io.Writer, singlePhase: SinglePhaseFn) anyerror![]const u8 {
-    if (root.fallback_blocked or root.sub or main_mod.plan_mode or root.text_only or
+    if (root.fallback_blocked) return singlePhase(root, keys, arena, out);
+    if (!root.sub and !orchestrator.handoff_active) retireDirectives(root);
+    if (root.sub or main_mod.plan_mode or root.text_only or
         root.output_schema != null or root.review_mode or orchestrator.g_mode == .off or
         activeAutonomousGoal(root))
     {
@@ -133,13 +274,9 @@ pub fn run(root: *Agent, keys: *Keys, arena: Allocator, out: ?*Io.Writer, single
         orchestrator.handoff_active = false;
         orchestrator.g_handoff_plan = null;
         orchestrator.g_replan_reason = null;
+        orchestrator.g_replan_exhausted = false;
         main_mod.plan_mode = saved_plan_mode;
-        if (!std.mem.eql(u8, root.provider.id, saved_planner.id) or
-            !std.mem.eql(u8, root.provider.model, saved_planner.model))
-        {
-            root.closeCodexWs();
-            _ = providers.applyProviderInner(root, arena, saved_planner, false) catch {};
-        }
+        restorePlannerSeat(root, arena, saved_planner, saved_fallback_active, true, false);
         root.fallback_active = saved_fallback_active;
         root.subagent_provider = saved_subagent_provider;
         root.invalidateRootTools();
@@ -150,6 +287,7 @@ pub fn run(root: *Agent, keys: *Keys, arena: Allocator, out: ?*Io.Writer, single
     orchestrator.g_phase = .planning;
     orchestrator.g_handoff_plan = null;
     orchestrator.g_replan_reason = null;
+    orchestrator.g_replan_exhausted = false;
     main_mod.plan_mode = true;
     root.invalidateRootTools();
 
@@ -177,24 +315,32 @@ pub fn run(root: *Agent, keys: *Keys, arena: Allocator, out: ?*Io.Writer, single
 
     var replans_used: u8 = 0;
     while (true) {
-        // Phase 2: hand execution baton to cheaper seat in-place.
+        // Phase 2: hand execution baton to cheaper seat in-place, unless
+        // history already carries opaque server compaction state (#1906).
         orchestrator.g_phase = .executing;
         orchestrator.g_replan_reason = null;
         main_mod.plan_mode = false;
-        try switchSeatInPlace(root, arena, exec_provider, saved_fallback_active);
+        const preserve_compacted = @import("compaction_window.zig").latestBlob(root.messages.items) != null;
+        const active_exec = if (preserve_compacted) saved_planner else exec_provider;
+        if (!std.mem.eql(u8, root.provider.id, active_exec.id) or
+            !std.mem.eql(u8, root.provider.model, active_exec.model))
+        {
+            try switchSeatInPlace(root, arena, active_exec, saved_fallback_active);
+        } else {
+            root.invalidateRootTools();
+        }
 
-        const p2_banner = try std.fmt.allocPrint(
-            arena,
-            "[orchestrator] handing off plan -> {s}",
-            .{exec_provider.model},
-        );
+        const p2_banner = if (preserve_compacted)
+            try std.fmt.allocPrint(arena, "[orchestrator] phase 2: executing on {s} to preserve compacted context", .{active_exec.model})
+        else
+            try std.fmt.allocPrint(arena, "[orchestrator] handing off plan -> {s}", .{active_exec.model});
         emitStatus(root, out, p2_banner);
         if (root.tracer) |tr| tr.note("orchestrator_handoff", p2_banner);
 
         const exec_note = try std.fmt.allocPrint(
             arena,
             \\[orchestrator mode — phase 2: execute]
-            \\Carry out the approved plan below verbatim, make the edits, and verify with the relevant tests/commands.
+            \\Phase 1 planning is complete and read-only mode is now OFF. Carry out the approved plan below verbatim, make the edits, and verify with the relevant tests/commands.
             \\If a step fails repeatedly or hits an unresolvable missing assumption, call `enter_plan_mode(reason)` alone to escalate back for replanning.
             \\
             \\Approved plan:
@@ -212,13 +358,20 @@ pub fn run(root: *Agent, keys: *Keys, arena: Allocator, out: ?*Io.Writer, single
                 orch_rows.clearPending();
             }
             outcome_flushed = true;
+            orchestrator.g_phase = .none;
+            orchestrator.handoff_active = false;
+            orchestrator.g_replan_exhausted = false;
+            main_mod.plan_mode = saved_plan_mode;
+            root.invalidateRootTools();
+            restorePlannerSeat(root, arena, saved_planner, saved_fallback_active, true, singlePhase == &providers.runSinglePhaseWithFallback);
             return phase2_text;
         };
 
         if (replans_used >= max_replans) {
-            try switchSeatInPlace(root, arena, saved_planner, saved_fallback_active);
             orchestrator.g_phase = .executing;
+            orchestrator.g_replan_exhausted = true;
             main_mod.plan_mode = false;
+            restorePlannerSeat(root, arena, saved_planner, saved_fallback_active, false, singlePhase == &providers.runSinglePhaseWithFallback);
             emitStatus(root, out, "[orchestrator] replan cap reached; finishing on planner seat");
             const cap_note = try std.fmt.allocPrint(
                 arena,
@@ -237,6 +390,12 @@ pub fn run(root: *Agent, keys: *Keys, arena: Allocator, out: ?*Io.Writer, single
                 orch_rows.clearPending();
             }
             outcome_flushed = true;
+            orchestrator.g_phase = .none;
+            orchestrator.handoff_active = false;
+            orchestrator.g_replan_exhausted = false;
+            main_mod.plan_mode = saved_plan_mode;
+            root.invalidateRootTools();
+            retireDirectives(root);
             return final_text;
         }
 
@@ -244,7 +403,7 @@ pub fn run(root: *Agent, keys: *Keys, arena: Allocator, out: ?*Io.Writer, single
         orchestrator.g_phase = .planning;
         orchestrator.g_handoff_plan = null;
         main_mod.plan_mode = true;
-        try switchSeatInPlace(root, arena, saved_planner, saved_fallback_active);
+        restorePlannerSeat(root, arena, saved_planner, saved_fallback_active, false, singlePhase == &providers.runSinglePhaseWithFallback);
 
         const esc_banner = try std.fmt.allocPrint(
             arena,

@@ -257,7 +257,7 @@ pub fn classify(in: Input) Classification {
         if (g_session_cyber_policy) return .{ .kind = .cyber_policy, .sub = .cyber_policy, .attribution = base_attr };
         return .{ .kind = .invalid_request, .sub = .request_rejected, .attribution = if (is_gw) .gateway else base_attr };
     }
-    if (in.http_status == 400 or fieldContainsAnyCI(in.etype, code, in.message, &.{ "invalid_request", "bad_request", "unsupported_parameter", "unknown_parameter", "malformed" }))
+    if (in.http_status == 400 or fieldContainsAnyCI(in.etype, code, in.message, &.{ "invalid_request", "bad_request", "unsupported_parameter", "unknown_parameter", "unsupported_capability", "unsupported input", "malformed" }))
         return .{ .kind = .invalid_request, .sub = .invalid_request, .attribution = base_attr };
     if (is_gw and (util.indexOfIgnoreCase(in.etype, "gateway") != null or util.indexOfIgnoreCase(in.message, "codegraff") != null))
         return .{ .kind = .provider_error, .sub = .gateway_internal, .attribution = .gateway };

@@ -76,6 +76,7 @@ pub const Approvals = struct {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         if (self.yolo) return true;
+        if (@import("plan_read_cmd.zig").isStdoutPdfToTextInCwd(c)) return true;
         if (!isSimple(c)) return false;
         // Auto-allow only when every path argument stays in the cwd subtree;
         // a command touching outside (e.g. `cat /etc/passwd`) falls through to
@@ -176,7 +177,7 @@ pub const Approvals = struct {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
         if (self.yolo) return true;
-        return planReadMatch(cmd, self.plan_read_roots.items);
+        return planReadMatch(cmd, self.plan_read_roots.items) or @import("plan_read_cmd.zig").planReadMatch(cmd, self.plan_read_roots.items);
     }
 
     /// Record every escaping path in `cmd` as an approved read root for the rest
@@ -184,6 +185,10 @@ pub const Approvals = struct {
     pub fn approvePlanRead(self: *Approvals, io: Io, gpa: Allocator, cmd: []const u8) !void {
         self.mutex.lockUncancelable(io);
         defer self.mutex.unlock(io);
+        if (@import("plan_read_cmd.zig").externalAllowed(cmd)) {
+            try @import("plan_read_cmd.zig").collectEscapingPaths(gpa, cmd, &self.plan_read_roots);
+            return;
+        }
         var it = std.mem.tokenizeAny(u8, cmd, " \t");
         outer: while (it.next()) |tok| {
             const p = flaggedPath(tok) orelse continue;

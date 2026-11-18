@@ -158,6 +158,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     // #95: scrub any malformed function_call_output before it hits the wire.
     const message_arena = self.messageMutationAlloc();
     @import("history_wire.zig").prepare(message_arena, self.provider.kind, &self.messages);
+    if (self.sub or !@import("orchestrator_mode.zig").handoff_active) @import("orchestrator_turn.zig").retireDirectives(self);
+    if (@import("codex_tool_search.zig").sanitizeForProvider(self)) self.closeCodexWs();
     // ADR 0221: on the ChatGPT plan route loaded tools ride additional_tools items, so `tools` never changes.
     if (!self.compaction_request or self.server_compaction_request) @import("additional_tools.zig").sync(self);
     // #193/#440: window-proportional backstop for resumed legacy or externally

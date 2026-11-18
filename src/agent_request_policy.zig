@@ -13,14 +13,7 @@ const telemetry = @import("telemetry.zig");
 const util = @import("util.zig");
 
 pub fn isAuthError(msg: []const u8) bool {
-    return util.indexOfIgnoreCase(msg, "api key") != null or
-        util.indexOfIgnoreCase(msg, "unauthorized") != null or
-        util.indexOfIgnoreCase(msg, "expired") != null or
-        util.indexOfIgnoreCase(msg, "authentication") != null or
-        util.indexOfIgnoreCase(msg, "invalid_api_key") != null or
-        util.indexOfIgnoreCase(msg, "invalid_token") != null or // OAuth bearer error (RFC 6750), the ChatGPT plan route's 401
-        util.indexOfIgnoreCase(msg, "subscription_sharing_invalid_user") != null or // the plan route's other 401: sign in again
-        util.indexOfIgnoreCase(msg, "subscription_sharing_v2_invalid_user") != null; // its older name
+    return quota.isAuthenticationFailure(msg);
 }
 
 test "isAuthError (#148): auth failures only, not credits/rate/other" {
@@ -37,6 +30,7 @@ test "isAuthError (#148): auth failures only, not credits/rate/other" {
     try std.testing.expect(!isAuthError("rate limit exceeded"));
     try std.testing.expect(!isAuthError("model not found"));
     try std.testing.expect(!isAuthError("context length exceeded"));
+    try std.testing.expect(!isAuthError("Remove unsupported input items or use an API key instead."));
 }
 
 /// Bind a refreshed credential to the LIVE provider. The ChatGPT account id

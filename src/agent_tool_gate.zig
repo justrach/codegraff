@@ -21,6 +21,12 @@ const telemetry = @import("telemetry.zig");
 const learning_privacy = @import("learning_privacy.zig");
 const presence = @import("presence.zig");
 const publish_gate = @import("publish_gate.zig");
+const plan_read_cmd = @import("plan_read_cmd.zig");
+
+fn mcpReadOnly(registry: ?*mcp.Registry, call: ToolCall) bool {
+    return companionReadOnly(call.name, call.input) or
+        (if (registry) |reg| reg.declaresReadOnly(call.name) else false);
+}
 
 const TemplateCandidates = struct {
     items: [16][]const u8 = undefined,
@@ -152,14 +158,13 @@ pub fn gateHarnessPolicyWrite(self: *Agent, call: ToolCall) !?ExecResult {
 fn readOnlyChildAllows(registry: ?*mcp.Registry, call: ToolCall) bool {
     for ([_][]const u8{ "write_file", "edit_file", "imagegen", "peer_message", "learn_candidate" }) |name|
         if (std.mem.eql(u8, call.name, name)) return false;
-    if (mcp.Registry.isMcp(call.name)) return companionReadOnly(call.name, call.input) or
-        (if (registry) |reg| reg.declaresReadOnly(call.name) else false);
+    if (mcp.Registry.isMcp(call.name)) return mcpReadOnly(registry, call);
     if (!shell_tool.runsCommand(call.name)) return true;
     const args = json_args.object(call.input) orelse return true;
     const cmd_val = args.get("command") orelse return true; // action=output / kill
     if (cmd_val != .string) return true;
     const cmd = std.mem.trim(u8, cmd_val.string, " \t");
-    return Approvals.readOnlyAllowed(cmd) or Approvals.readOnlyExternal(cmd) or @import("readonly_sandbox.zig").admits(call.input); // ADR 0232
+    return Approvals.readOnlyAllowed(cmd) or Approvals.readOnlyExternal(cmd) or plan_read_cmd.inCwdAllowed(cmd) or plan_read_cmd.externalAllowed(cmd) or @import("readonly_sandbox.zig").admits(call.input); // ADR 0232
 }
 
 test "a read-only child keeps reads and read-only shell, not writes (#1360)" {
@@ -225,7 +230,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
             std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or
             std.mem.eql(u8, call.name, "imagegen") or // #352: writes a file and spawns a workspace-write child
             std.mem.eql(u8, call.name, "peer_message") or // #469: appends to a peer's inbox — a side effect
-            (mcp.Registry.isMcp(call.name) and !companionReadOnly(call.name, call.input)))
+            (mcp.Registry.isMcp(call.name) and !mcpReadOnly(self.registry, call)))
         {
             const msg = if (@import("orchestrator_mode.zig").g_phase == .planning)
                 "orchestrator Phase 1 planning is read-only — include this edit in exit_plan_mode(plan) so the executor runs it in Phase 2."
@@ -244,8 +249,8 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
             const cmd_val = args.get("command") orelse return null;
             if (cmd_val != .string) return null;
             const cmd = std.mem.trim(u8, cmd_val.string, " \t");
-            if (Approvals.readOnlyAllowed(cmd)) return null;
-            if (Approvals.readOnlyExternal(cmd)) {
+            if (Approvals.readOnlyAllowed(cmd) or plan_read_cmd.inCwdAllowed(cmd)) return null;
+            if (Approvals.readOnlyExternal(cmd) or plan_read_cmd.externalAllowed(cmd)) {
                 if (approvals.planReadAllowed(self.io, cmd)) return null;
                 if (self.permission) |handler| {
                     const description = try std.fmt.allocPrint(self.arena, "plan mode — read outside the project: {s}", .{cmd});

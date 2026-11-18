@@ -53,6 +53,7 @@ fn oneOf(word: []const u8, choices: []const []const u8) bool {
 /// not a natural-language permission boundary or an enforced tool allowlist.
 pub fn classify(text: []const u8) Intent {
     var informational = false;
+    var saw_interrogative = false;
     // "file an issue", "open a GitHub issue", "report it": publishing is work
     // to do, so an explanation that also asks for one stays general (#1581).
     var publish_window: u8 = 0;
@@ -70,24 +71,29 @@ pub fn classify(text: []const u8) Intent {
         if (oneOf(word, &.{ "file", "open", "raise", "post", "submit", "publish", "report" })) publish_window = 3;
         if (actionWord(word, previous)) return .general;
         if (oneOf(word, &.{ "summarize", "summarise", "summary", "explain", "describe", "overview", "map", "research", "investigate", "lookup" })) informational = true;
+        if (oneOf(word, &.{ "why", "what", "how", "which", "where", "when", "who", "whose", "whom", "is", "are", "was", "were", "can", "could", "does", "do", "did", "should", "would" })) saw_interrogative = true;
         if (std.ascii.eqlIgnoreCase(word, "read-only")) informational = true;
         previous = word;
     }
-    return if (informational) .informational else .general;
+    if (informational) return .informational;
+    if (saw_interrogative and std.mem.indexOfScalar(u8, text, '?') != null) return .informational;
+    return .general;
 }
 
 const action_words = [_][]const u8{
-    "fix",        "fixing",       "fixes",      "edit",      "editing",    "edited",    "edits",
-    "implement",  "implementing", "add",        "adding",    "remove",     "removing",  "delete",
-    "deleting",   "rename",       "refactor",   "write",     "writing",    "create",    "creating",
-    "created",    "update",       "updating",   "updated",   "updates",    "patch",     "patching",
-    "build",      "test",         "lint",       "run",       "merge",      "push",      "deploy",
-    "commit",     "change",       "changing",   "changes",   "modify",     "modifying", "modified",
-    "make",       "resolve",      "apply",      "applying",  "replace",    "replacing", "rewrite",
-    "rewriting",  "generate",     "generating", "generated", "generation", "produce",   "producing",
-    "render",     "rendering",    "save",       "saving",    "draft",      "document",  "documenting",
-    "append",     "insert",       "install",    "upgrade",   "revert",     "restore",   "regenerate",
-    "write_file", "edit_file",    "imagegen",
+    "fix",       "fixing",       "fixes",      "edit",       "editing",    "edited",    "edits",
+    "implement", "implementing", "add",        "adding",     "remove",     "removing",  "delete",
+    "deleting",  "rename",       "refactor",   "write",      "writing",    "create",    "creating",
+    "created",   "update",       "updating",   "updated",    "updates",    "patch",     "patching",
+    "build",     "test",         "lint",       "run",        "merge",      "push",      "deploy",
+    "commit",    "change",       "changing",   "changes",    "modify",     "modifying", "modified",
+    "make",      "resolve",      "apply",      "applying",   "replace",    "replacing", "rewrite",
+    "rewriting", "generate",     "generating", "generated",  "generation", "produce",   "producing",
+    "render",    "rendering",    "save",       "saving",     "draft",      "document",  "documenting",
+    "append",    "insert",       "install",    "upgrade",    "revert",     "restore",   "regenerate",
+    "migrate",   "migrating",    "convert",    "converting", "wire",       "wiring",    "port",
+    "porting",   "scaffold",     "extract",    "extracting", "split",      "splitting", "write_file",
+    "edit_file", "imagegen",
 };
 
 fn actionWord(word: []const u8, previous: []const u8) bool {

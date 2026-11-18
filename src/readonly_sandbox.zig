@@ -271,8 +271,9 @@ pub fn build(io: Io, cwd: ?[]const u8, cmd: []const u8, out: *Argv) ?[]const []c
 /// predicates plan mode and the read-only gate use).
 pub fn allowlisted(cmd: []const u8) bool {
     const policy = @import("harness_policy.zig");
+    const plan_read_cmd = @import("plan_read_cmd.zig");
     const c = std.mem.trim(u8, cmd, " \t");
-    return policy.readOnlyAllowed(c) or policy.readOnlyExternal(c);
+    return policy.readOnlyAllowed(c) or policy.readOnlyExternal(c) or plan_read_cmd.inCwdAllowed(c) or plan_read_cmd.externalAllowed(c);
 }
 
 pub const refusal = "this subagent is read-only (an informational task) and its shell sandbox is unavailable — run read-only commands from the allowlist (ls, cat, head, tail, wc, grep, rg, git status/diff/log/show), and report the change instead of making it";

@@ -8,6 +8,8 @@ const ToolCall = tools_mod.ToolCall;
 const Approvals = @import("approvals.zig").Approvals;
 const learning_privacy = @import("learning_privacy.zig");
 const presence = @import("presence.zig");
+const mcp = @import("mcp.zig");
+const plan_read_cmd = @import("plan_read_cmd.zig");
 const gate = @import("agent_tool_gate.zig");
 
 const firstWord = gate.firstWord;
@@ -183,4 +185,138 @@ test "approval gate asks for shell commands under the advertised name and the ba
         try std.testing.expect(results[0].is_error);
         try std.testing.expect(std.mem.indexOf(u8, results[0].text, "declined") != null);
     }
+}
+
+test "plan_mode allows stdout pdftotext, quoted rg alternation, read-only gh, and external approvals (#1906, #1908)" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try std.testing.expect(plan_read_cmd.inCwdAllowed("pdftotext lecture.pdf - | head -n 40"));
+    try std.testing.expect(plan_read_cmd.inCwdAllowed("rg 'foo|bar' src"));
+    try std.testing.expect(plan_read_cmd.inCwdAllowed("gh issue list --limit 5"));
+    try std.testing.expect(!plan_read_cmd.inCwdAllowed("pdftotext lecture.pdf"));
+    try std.testing.expect(!plan_read_cmd.inCwdAllowed("pdftotext lecture.pdf out.txt"));
+    try std.testing.expect(!plan_read_cmd.inCwdAllowed("gh issue create --title x"));
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "ext dir");
+    try tmp.dir.writeFile(io, .{ .sub_path = "ext dir/doc.pdf", .data = "%PDF-1.4\n" });
+    const ext_path = try tmp.dir.realPathFileAlloc(io, "ext dir/doc.pdf", a);
+    const ext_cmd = try std.fmt.allocPrint(a, "pdftotext \"{s}\" -", .{ext_path});
+    try std.testing.expect(!plan_read_cmd.inCwdAllowed(ext_cmd));
+    try std.testing.expect(plan_read_cmd.externalAllowed(ext_cmd));
+
+    const Fixture = struct {
+        calls: usize = 0,
+        decision: @import("engine_permission.zig").Decision = .allow_once,
+        fn ask(ptr: *anyopaque, _: std.Io, _: @import("engine_permission.zig").Request) @import("engine_permission.zig").Decision {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.calls += 1;
+            return self.decision;
+        }
+    };
+    var fixture: Fixture = .{};
+    var approvals: Approvals = .{};
+    defer {
+        for (approvals.plan_read_roots.items) |r| gpa.free(r);
+        approvals.plan_read_roots.deinit(gpa);
+        for (approvals.prefixes.items) |p| gpa.free(p);
+        approvals.prefixes.deinit(gpa);
+    }
+    const saved_plan = main_mod.plan_mode;
+    defer main_mod.plan_mode = saved_plan;
+    main_mod.plan_mode = true;
+
+    var agent: Agent = .{ .gpa = gpa, .arena = a, .io = io, .client = undefined, .provider = .{ .id = "fixture", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "fixture", .context = 1000 }, .messages = .init(a), .sub = false, .label = "root", .out = null, .approvals = &approvals, .permission = .{ .ctx = &fixture, .request = Fixture.ask } };
+    defer agent.tools_used.deinit(gpa);
+
+    // Allowed in-cwd commands need no prompt even when not in plain simple allowlist.
+    for ([_][]const u8{ "pdftotext lecture.pdf - | head -n 40", "rg 'foo|bar' src", "gh issue list --limit 5" }) |cmd| {
+        var obj: std.json.ObjectMap = .empty;
+        try obj.put(a, "command", .{ .string = cmd });
+        try std.testing.expect((try gate.gateTool(&agent, .{ .id = "in1", .name = "bash", .input = .{ .object = obj } })) == null);
+    }
+    try std.testing.expectEqual(@as(usize, 0), fixture.calls);
+    try std.testing.expect(approvals.allowed(io, "pdftotext lecture.pdf -"));
+    try std.testing.expect(!approvals.allowed(io, "pdftotext lecture.pdf"));
+
+    // File-writing pdftotext and mutating gh stay denied in plan_mode.
+    for ([_][]const u8{ "pdftotext lecture.pdf out.txt", "gh issue create --title x" }) |cmd| {
+        var obj: std.json.ObjectMap = .empty;
+        try obj.put(a, "command", .{ .string = cmd });
+        const denied = (try gate.gateTool(&agent, .{ .id = "d1", .name = "bash", .input = .{ .object = obj } })).?;
+        try std.testing.expect(denied.is_error);
+        try std.testing.expect(std.mem.indexOf(u8, denied.text, "read-only") != null);
+    }
+
+    // External pdftotext prompts for permission once, then sticky approvePlanRead skips prompting.
+    var ext_obj: std.json.ObjectMap = .empty;
+    try ext_obj.put(a, "command", .{ .string = ext_cmd });
+    const ext_call: ToolCall = .{ .id = "ext1", .name = "bash", .input = .{ .object = ext_obj } };
+    try std.testing.expect((try gate.gateTool(&agent, ext_call)) == null);
+    try std.testing.expectEqual(@as(usize, 1), fixture.calls);
+    try std.testing.expect(approvals.consumePlanReadOnce(io, &agent, ext_call.id, ext_cmd));
+    try approvals.approvePlanRead(io, gpa, ext_cmd);
+    try std.testing.expect((try gate.gateTool(&agent, ext_call)) == null);
+    try std.testing.expectEqual(@as(usize, 1), fixture.calls);
+}
+
+test "plan_mode permits declared read_only MCP tools with normal consent and blocks non-read-only MCP tools (#1908)" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var reg: mcp.Registry = .{ .gpa = gpa, .io = io, .home = "", .arena_state = .init(gpa) };
+    defer reg.arena_state.deinit();
+    const ro_tools = try a.alloc(mcp.Tool, 2);
+    ro_tools[0] = .{ .server_index = 0, .original_name = "read_info", .qualified_name = "mcp__srv__read_info", .description = "", .input_schema = .{ .object = .empty }, .read_only = true };
+    ro_tools[1] = .{ .server_index = 0, .original_name = "mutate_state", .qualified_name = "mcp__srv__mutate_state", .description = "", .input_schema = .{ .object = .empty }, .read_only = false };
+    reg.tools = ro_tools;
+
+    const Fixture = struct {
+        calls: usize = 0,
+        decision: @import("engine_permission.zig").Decision = .deny,
+        fn ask(ptr: *anyopaque, _: std.Io, _: @import("engine_permission.zig").Request) @import("engine_permission.zig").Decision {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.calls += 1;
+            return self.decision;
+        }
+    };
+    var fixture: Fixture = .{};
+    var approvals: Approvals = .{};
+    const saved_plan = main_mod.plan_mode;
+    defer main_mod.plan_mode = saved_plan;
+    main_mod.plan_mode = true;
+
+    var agent: Agent = .{ .gpa = gpa, .arena = a, .io = io, .client = undefined, .provider = .{ .id = "fixture", .kind = .openai, .auth = .bearer, .url = "", .api_key = "", .model = "fixture", .context = 1000 }, .messages = .init(a), .registry = &reg, .sub = false, .label = "root", .out = null, .approvals = &approvals, .permission = .{ .ctx = &fixture, .request = Fixture.ask } };
+    defer agent.tools_used.deinit(gpa);
+
+    // Non-read-only MCP tool is blocked by plan_mode without reaching consent prompt.
+    const blocked = (try gate.gateTool(&agent, .{ .id = "m-rw", .name = "mcp__srv__mutate_state", .input = .{ .object = .empty } })).?;
+    try std.testing.expect(blocked.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, blocked.text, "plan mode") != null);
+    try std.testing.expectEqual(@as(usize, 0), fixture.calls);
+
+    // Declared read_only MCP tool passes plan_mode and reaches user consent, respecting .deny vs .allow_once.
+    const declined = (try gate.gateTool(&agent, .{ .id = "m-ro-1", .name = "mcp__srv__read_info", .input = .{ .object = .empty } })).?;
+    try std.testing.expect(declined.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, declined.text, "declined") != null);
+    try std.testing.expectEqual(@as(usize, 1), fixture.calls);
+
+    fixture.decision = .allow_once;
+    try std.testing.expect((try gate.gateTool(&agent, .{ .id = "m-ro-2", .name = "mcp__srv__read_info", .input = .{ .object = .empty } })) == null);
+    try std.testing.expectEqual(@as(usize, 2), fixture.calls);
+
+    // Read-only subagent also allows read_only MCP tools and blocks non-read-only ones.
+    agent.sub = true;
+    agent.read_only = true;
+    try std.testing.expect((try gate.gateTool(&agent, .{ .id = "m-sub-ro", .name = "mcp__srv__read_info", .input = .{ .object = .empty } })) == null);
+    const sub_blocked = (try gate.gateTool(&agent, .{ .id = "m-sub-rw", .name = "mcp__srv__mutate_state", .input = .{ .object = .empty } })).?;
+    try std.testing.expect(sub_blocked.is_error);
 }

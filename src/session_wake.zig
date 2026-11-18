@@ -88,6 +88,21 @@ pub fn writeWireInput(s: *std.json.Stringify, m: std.json.Value, model: []const 
     try writeWire(s, m);
 }
 
+/// Filters hosted-only search items (Codex `tool_search_*`, xAI `x_search_*`)
+/// when serializing onto any other Responses provider route (#1907).
+pub fn writeResponsesInput(s: *std.json.Stringify, m: std.json.Value, provider_id: []const u8, model: []const u8) !void {
+    if (dropReasoningFor(model, m)) return;
+    if (!std.mem.eql(u8, provider_id, "codex") and @import("codex_tool_search.zig").isHostedSearchItem(m)) return;
+    if (!std.mem.eql(u8, provider_id, "xai") and isXaiSearchItem(m)) return;
+    try writeWire(s, m);
+}
+
+fn isXaiSearchItem(m: std.json.Value) bool {
+    if (m != .object) return false;
+    const t = m.object.get("type") orelse return false;
+    return t == .string and (std.mem.eql(u8, t.string, "x_search_call") or std.mem.eql(u8, t.string, "x_search_output"));
+}
+
 fn dropReasoningFor(model: []const u8, m: std.json.Value) bool {
     if (!@import("effort_route.zig").grokFamily(model)) return false;
     if (m != .object) return false;

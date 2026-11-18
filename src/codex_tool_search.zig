@@ -17,6 +17,12 @@ const Io = std.Io;
 
 const Provider = @import("provider.zig").Provider;
 const native_fold = @import("native_fold.zig");
+const mcp = @import("mcp.zig");
+const mcp_schema_gate = @import("mcp_schema_gate.zig");
+const named_work = @import("named_work.zig");
+const session_wake = @import("session_wake.zig");
+const compaction_window = @import("compaction_window.zig");
+const additional_tools = @import("additional_tools.zig");
 
 pub fn modelSupports(model: []const u8) bool {
     return std.mem.startsWith(u8, model, "gpt-5.4") or
@@ -30,6 +36,14 @@ pub fn active(provider_id: []const u8, kind: Provider.Kind, model: []const u8) b
 }
 
 pub var web_search: bool = true;
+
+pub fn isHostedSearchItem(m: Value) bool {
+    if (m != .object) return false;
+    const t = m.object.get("type") orelse return false;
+    if (t != .string) return false;
+    return std.mem.eql(u8, t.string, "tool_search_call") or
+        std.mem.eql(u8, t.string, "tool_search_output");
+}
 
 pub fn isServerSideItem(itype: []const u8) bool {
     return std.mem.eql(u8, itype, "tool_search_call") or
@@ -200,4 +214,140 @@ test "spliceWebSearch appends hosted web_search once" {
     defer web_search = saved;
     web_search = false;
     try std.testing.expectEqualStrings("[{\"type\":\"function\",\"name\":\"bash\"}]", try spliceWebSearch(a, "[{\"type\":\"function\",\"name\":\"bash\"}]"));
+}
+
+fn hasConnectedMcp(connected: []const mcp.Tool, name: []const u8) bool {
+    for (connected) |t| if (std.mem.eql(u8, t.qualified_name, name)) return true;
+    return false;
+}
+
+fn appendUniqueName(alloc: Allocator, list: *std.ArrayList([]const u8), name: []const u8) void {
+    for (list.items) |existing| if (std.mem.eql(u8, existing, name)) return;
+    list.append(alloc, name) catch {};
+}
+
+fn formatUnmatchedContext(alloc: Allocator, names: []const []const u8) ![]u8 {
+    var aw: Io.Writer.Allocating = .init(alloc);
+    try aw.writer.writeAll("[tool search context: matched tools: ");
+    for (names, 0..) |name, idx| {
+        if (idx > 0) try aw.writer.writeAll(", ");
+        try aw.writer.writeAll(name);
+    }
+    try aw.writer.writeByte(']');
+    return aw.writer.buffered();
+}
+
+/// Sanitize Codex-hosted `tool_search_call` / `tool_search_output` items before
+/// sending Responses history to any non-`codex` route such as `chatgpt-new`.
+/// Folded native tools and connected MCP tools are unfolded locally so later
+/// `additional_tools` / catalog serialization preserves access; unmatched names
+/// become a plain user notification so context survives without hosted items (#1907).
+pub fn sanitizeForProvider(self: *@import("agent.zig").Agent) bool {
+    if (self.provider.kind != .responses or std.mem.eql(u8, self.provider.id, "codex")) return false;
+    const min_idx: usize = if (compaction_window.latestBlob(self.messages.items)) |b| b + 1 else 0;
+    var has_hosted = false;
+    for (self.messages.items[min_idx..]) |m| {
+        if (isHostedSearchItem(m)) {
+            has_hosted = true;
+            break;
+        }
+    }
+    if (!has_hosted) return false;
+
+    const alloc = self.historyAlloc();
+    const connected: []const mcp.Tool = if (self.registry) |reg| (reg.snapshotTools(alloc) catch &.{}) else &.{};
+    var changed = false;
+    var loaded_any = false;
+    var i: usize = min_idx;
+    while (i < self.messages.items.len) {
+        const m = self.messages.items[i];
+        if (!isHostedSearchItem(m)) {
+            i += 1;
+            continue;
+        }
+        const itype = m.object.get("type").?.string;
+        if (std.mem.eql(u8, itype, "tool_search_call")) {
+            _ = self.messages.orderedRemove(i);
+            changed = true;
+            continue;
+        }
+        var unmatched: std.ArrayList([]const u8) = .empty;
+        if (m.object.get("tools")) |tools_v| if (tools_v == .array) {
+            for (tools_v.array.items) |entry| {
+                const name = if (entry == .string) entry.string else toolName(entry);
+                if (name.len == 0) continue;
+                if (!self.sub and native_fold.isFolded(name)) {
+                    native_fold.markLoaded(name);
+                    loaded_any = true;
+                } else if (!self.sub and std.mem.startsWith(u8, name, "mcp__") and hasConnectedMcp(connected, name)) {
+                    mcp_schema_gate.autoLoad(alloc, connected, name);
+                    loaded_any = true;
+                } else {
+                    appendUniqueName(alloc, &unmatched, name);
+                }
+            }
+        };
+        if (unmatched.items.len > 0) {
+            const note = formatUnmatchedContext(alloc, unmatched.items) catch {
+                _ = self.messages.orderedRemove(i);
+                changed = true;
+                continue;
+            };
+            const msg = session_wake.mark(alloc, named_work.responsesUserMessage(alloc, note) catch {
+                _ = self.messages.orderedRemove(i);
+                changed = true;
+                continue;
+            }) catch {
+                _ = self.messages.orderedRemove(i);
+                changed = true;
+                continue;
+            };
+            self.messages.items[i] = msg;
+            i += 1;
+        } else {
+            _ = self.messages.orderedRemove(i);
+        }
+        changed = true;
+    }
+    if (loaded_any) self.invalidateRootTools();
+    if (changed) self.history_rewrites +%= 1;
+    return changed;
+}
+
+test "sanitizeForProvider strips Codex tool_search_* on chatgpt-new, unfolds tools, and preserves codex replay (#1907)" {
+    native_fold.clearLoadedSession();
+    defer native_fold.clearLoadedSession();
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    var agent = try @import("agent_request_body_responses.zig").testAgentFor(a, "codex", .responses, "gpt-5.6-sol");
+    const call_item = try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"tool_search_call\",\"id\":\"tsc_1\",\"call_id\":\"c_1\",\"arguments\":{\"paths\":[\"webfetch\"]}}", .{});
+    const out_item = try std.json.parseFromSliceLeaky(Value, a, "{\"type\":\"tool_search_output\",\"id\":\"tso_1\",\"call_id\":\"c_1\",\"tools\":[{\"type\":\"function\",\"name\":\"webfetch\"},{\"type\":\"function\",\"name\":\"mcp__offline__search\"}]}", .{});
+    try agent.messages.append(call_item);
+    try agent.messages.append(out_item);
+
+    // On codex, hosted tool_search_* items remain replayable on the wire.
+    const codex_body = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(codex_body);
+    try std.testing.expect(std.mem.indexOf(u8, codex_body, "\"type\":\"tool_search_call\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, codex_body, "\"type\":\"tool_search_output\"") != null);
+
+    // Switching onto chatgpt-new sanitizes hosted search items and unfolds matches locally.
+    agent.provider.id = "chatgpt-new";
+    agent.provider.model = "gpt-5.4";
+    try std.testing.expect(sanitizeForProvider(&agent));
+    try std.testing.expect(native_fold.isLoaded("webfetch"));
+    additional_tools.sync(&agent);
+
+    const chatgpt_body = try agent.buildBody(null, false, true, true);
+    defer std.testing.allocator.free(chatgpt_body);
+    try std.testing.expect(std.mem.indexOf(u8, chatgpt_body, "tool_search_call") == null);
+    try std.testing.expect(std.mem.indexOf(u8, chatgpt_body, "tool_search_output") == null);
+    try std.testing.expect(std.mem.indexOf(u8, chatgpt_body, "tsc_1") == null);
+    try std.testing.expect(std.mem.indexOf(u8, chatgpt_body, "tso_1") == null);
+    try std.testing.expect(std.mem.indexOf(u8, chatgpt_body, "\"type\":\"additional_tools\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, chatgpt_body, "\"name\":\"webfetch\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, chatgpt_body, "[tool search context: matched tools: mcp__offline__search]") != null);
 }

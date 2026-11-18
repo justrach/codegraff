@@ -86,6 +86,7 @@ pub fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: 
     const gemini = @import("gemini_turns.zig");
     if (gemini.family(root.provider.model) != gemini.family(p.model)) root.invalidateRootTools();
     @import("jev_tool.zig").updateProvider(root, p);
+    if (same_format and p.kind == .responses) _ = @import("codex_tool_search.zig").sanitizeForProvider(root);
     if (root.reasoning == .none and !@import("effort_route.zig").mimoRoute(p.id, p.model)) {
         root.reasoning = .medium;
         if (persist) _ = @import("repl_glue.zig").saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);

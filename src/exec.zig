@@ -149,7 +149,9 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     // Plan mode backstop: the root gate already denies these with a nicer
     // message; this catches subagents (which skip the gate entirely).
     if (main_mod.plan_mode) {
-        if (local_tools.isLocal(call.name) or std.mem.eql(u8, call.name, "learn_candidate") or std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or std.mem.eql(u8, call.name, imagegen.tool_name) or mcp.Registry.isMcp(call.name)) return .{
+        const mcp_ro = mcp.Registry.isMcp(call.name) and
+            (@import("skills.zig").companionReadOnly(call.name, call.input) or (if (ctx.registry) |reg| reg.declaresReadOnly(call.name) else false));
+        if (local_tools.isLocal(call.name) or std.mem.eql(u8, call.name, "learn_candidate") or std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or std.mem.eql(u8, call.name, imagegen.tool_name) or (mcp.Registry.isMcp(call.name) and !mcp_ro)) return .{
             .text = try gpa.dupe(u8, "plan mode is on — read-only; describe the change instead of making it"),
             .is_error = true,
         };
@@ -159,7 +161,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
                 .is_error = true,
             };
         }
-        if (shell_tool.runCommand(call)) |cmd| if (!Approvals.readOnlyAllowed(cmd)) {
+        if (shell_tool.runCommand(call)) |cmd| if (!Approvals.readOnlyAllowed(cmd) and !@import("plan_read_cmd.zig").inCwdAllowed(cmd)) {
             // The root may have approved this external read-only path this
             // session (#64); subagents (from_sub) never get the external hatch.
             const ext_ok = !ctx.from_sub and if (ctx.approvals) |ap| ((if (ctx.plan_read_owner) |owner| ap.consumePlanReadOnce(ctx.io, owner, call.id, cmd) else false) or ap.planReadAllowed(ctx.io, cmd)) else false;

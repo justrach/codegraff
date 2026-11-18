@@ -59,14 +59,15 @@ pub fn classify(etype: []const u8, code: ?[]const u8, msg: []const u8) ?Fault {
     return null;
 }
 
-fn isAuthenticationFailure(text: []const u8) bool {
-    // "expired" alone may describe an upstream request, not a credential.
+pub fn isAuthenticationFailure(text: []const u8) bool {
+    // "expired" or "api key" alone may describe non-auth rejections (#1907).
     for ([_][]const u8{
-        "authentication",      "unauthorized",                      "invalid_api_key",                      "invalid_token",
-        "invalid api key",     "invalid token",                     "incorrect api key",                    "missing api key",
-        "api key is invalid",  "api key appears to be invalid",     "expired api key",                      "api key expired",
-        "api key has expired", "token is expired",                  "token has expired",                    "token expired",
-        "expired token",       "subscription_sharing_invalid_user", "subscription_sharing_v2_invalid_user",
+        "authentication",                "unauthorized",                      "invalid_api_key",                      "invalid_token",
+        "invalid api key",               "invalid x-api-key",                 "invalid token",                        "incorrect api key",
+        "missing api key",               "api key is invalid",                "api key not valid",                    "api key was rejected",
+        "api key appears to be invalid", "expired api key",                   "api key expired",                      "api key has expired",
+        "token is expired",              "token has expired",                 "token expired",                        "expired token",
+        "re-authenticate",               "subscription_sharing_invalid_user", "subscription_sharing_v2_invalid_user",
     }) |needle| if (util.indexOfIgnoreCase(text, needle) != null) return true;
     return false;
 }
@@ -350,4 +351,11 @@ test "terminal provider faults: hard caps and env auth stop without a refresh or
     self.provider.source = .login;
     try std.testing.expectError(error.ProviderQuotaExceeded, handle(&self, "", null, "API key: exhausted credit", &refreshed));
     try std.testing.expect(!refreshed); // even a login credential must not refresh for a billing cap
+}
+
+test "classify does not mistake subscription_sharing_unsupported_capability for authentication (#1907)" {
+    const msg = "Remove unsupported input items or use an API key instead.";
+    try std.testing.expect(!isAuthenticationFailure(msg));
+    try std.testing.expect(classify("invalid_request_error", "subscription_sharing_unsupported_capability", msg) == null);
+    try std.testing.expect(classify("invalid_request_error", "subscription_sharing_v2_unsupported_capability", msg) == null);
 }

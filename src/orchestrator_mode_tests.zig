@@ -33,6 +33,7 @@ const SavedState = struct {
     handoff: bool,
     plan: ?[]const u8,
     reason: ?[]const u8,
+    replan_exhausted: bool,
     plan_mode: bool,
     arms: []const orch.ArmObs,
 
@@ -45,6 +46,7 @@ const SavedState = struct {
             .handoff = orchestrator.handoff_active,
             .plan = orchestrator.g_handoff_plan,
             .reason = orchestrator.g_replan_reason,
+            .replan_exhausted = orchestrator.g_replan_exhausted,
             .plan_mode = main_mod.plan_mode,
             .arms = orch.g_arms,
         };
@@ -58,6 +60,7 @@ const SavedState = struct {
         orchestrator.handoff_active = self.handoff;
         orchestrator.g_handoff_plan = self.plan;
         orchestrator.g_replan_reason = self.reason;
+        orchestrator.g_replan_exhausted = self.replan_exhausted;
         main_mod.plan_mode = self.plan_mode;
         orch.g_arms = self.arms;
         orch_rows.clearPending();

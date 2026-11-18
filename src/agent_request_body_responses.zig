@@ -50,7 +50,7 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
     if (!chain and oai_cache.active(self)) try oai_cache.writeAnchor(s);
     const from = if (chain) self.codex_sent_upto else 0;
     if (from == 0 and !self.ws_prewarm and repo.context.len != 0) try @import("repo_context.zig").writeItem(s, repo.context);
-    if (!self.ws_prewarm) for (self.messages.items[from..]) |m| try @import("session_wake.zig").writeWireInput(s, m, self.provider.model); // prewarm: NO input items; turn 1 chains onto the warmup id
+    if (!self.ws_prewarm) for (self.messages.items[from..]) |m| try @import("session_wake.zig").writeResponsesInput(s, m, self.provider.id, self.provider.model); // prewarm: NO input items; turn 1 chains onto the warmup id
     try s.endArray();
     if (tools) |t| {
         const payload = blk: {

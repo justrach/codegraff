@@ -19,10 +19,23 @@ pub const ResponsesFailure = struct {
     etype: []const u8 = "",
 
     /// The text to test for an auth failure. The ChatGPT plan route's
-    /// subscription_sharing_invalid_user 401 names it only in the code.
+    /// subscription_sharing_invalid_user 401 names it only in the code;
+    /// structured request rejections such as unsupported capabilities never ask
+    /// for a login even if their message mentions API keys (#1907).
     pub fn authText(f: ResponsesFailure) []const u8 {
-        const c = f.code orelse return f.message;
-        return if (policy.isAuthError(c)) c else f.message;
+        if (f.code) |c| {
+            if (policy.isAuthError(c)) return c;
+            if (std.mem.eql(u8, c, "subscription_sharing_unsupported_capability") or
+                std.mem.eql(u8, c, "subscription_sharing_v2_unsupported_capability") or
+                std.mem.eql(u8, c, "invalid_value") or
+                std.mem.eql(u8, c, "unsupported_parameter") or
+                std.mem.eql(u8, c, "context_length_exceeded") or
+                std.mem.eql(u8, c, "rate_limit_exceeded") or
+                std.mem.eql(u8, c, "model_not_found") or
+                std.mem.eql(u8, c, "invalid_request_error")) return "";
+        }
+        if (std.mem.eql(u8, f.etype, "invalid_request_error")) return "";
+        return f.message;
     }
 };
 
@@ -194,6 +207,21 @@ test "failureDiagnostic points a spent ChatGPT plan at its usage page, a rejecte
     // A message that already reads as auth keeps it; a plan limit is no sign-in.
     try std.testing.expectEqualStrings("Unauthorized", (ResponsesFailure{ .message = "Unauthorized", .code = "server_error" }).authText());
     try std.testing.expectEqualStrings("Usage limit reached.", (ResponsesFailure{ .message = "Usage limit reached.", .code = "subscription_sharing_usage_limit_exceeded" }).authText());
+
+    // Unsupported capability recommending an API key is a request rejection, never a sign-out (#1907).
+    const unsup: ResponsesFailure = .{
+        .message = "Remove unsupported input items or use an API key instead.",
+        .code = "subscription_sharing_unsupported_capability",
+        .etype = "invalid_request_error",
+    };
+    try std.testing.expectEqualStrings("", unsup.authText());
+    const unsup_diag = try failureDiagnostic(a, "chatgpt-new", unsup);
+    defer a.free(unsup_diag);
+    try std.testing.expect(std.mem.indexOf(u8, unsup_diag, "sign in again") == null);
+    const p: @import("provider.zig").Provider = .{ .id = "chatgpt-new", .kind = .responses, .auth = .bearer, .url = "", .api_key = "k", .model = "gpt-5.4", .context = 500_000, .source = .login };
+    try std.testing.expect(@import("auth_recovery.zig").forFailure(p, unsup.code, unsup.message) == null);
+    const copy = @import("provider_error_copy.zig").classify(.{ .provider = p, .http_status = 400, .etype = unsup.etype, .code = unsup.code, .message = unsup.message });
+    try std.testing.expectEqual(@import("provider_error_copy.zig").Kind.invalid_request, copy.kind);
 }
 
 test "failureDiagnostic makes rejected encrypted state terminal and history-preserving" {
