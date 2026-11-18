@@ -5,7 +5,7 @@
 pub const changelog_text =
     \\What's new
     \\──────────
-    \\0.302.74.72
+    \\0.302.74.73
     \\  • Keep Orchestrator phase directives turn-scoped and allow quoted `rg` alternations, read-only `gh`, stdout `pdftotext`, and `readOnlyHint` MCP tools in plan mode (#1908).
     \\  • Skip Auto Orchestrator planning on informational `?` questions or compacted histories, and settle expanded Phase 2 compaction inside `compactAt()` (#1906).
     \\  • Strip Codex `tool_search_*` items on non-Codex Responses failover with local unfolding, and avoid auth-refresh loops on `subscription_sharing_unsupported_capability` (#1907).

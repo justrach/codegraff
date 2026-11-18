@@ -5,6 +5,7 @@
 //! quoted search patterns (e.g. `rg 'a|b'`), and pure read-only pipelines.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const policy = @import("harness_policy.zig");
 
@@ -30,6 +31,14 @@ const Parsed = struct {
     }
 };
 
+fn allowBackslash(cmd: []const u8, idx: usize) bool {
+    const next = if (idx + 1 < cmd.len) cmd[idx + 1] else return false;
+    return switch (next) {
+        0, '"', '\'', '\\', '$', '`', ';', '&', '|', '>', '<', '(', ')', '\n', '\r', '\t' => false,
+        else => true,
+    };
+}
+
 fn parse(raw: []const u8, out: *Parsed) bool {
     const cmd = std.mem.trim(u8, raw, " \t");
     if (cmd.len == 0) return false;
@@ -47,7 +56,7 @@ fn parse(raw: []const u8, out: *Parsed) bool {
     out.token_len = 0;
     out.seg_len = 0;
 
-    for (cmd) |ch| {
+    for (cmd, 0..) |ch, idx| {
         if (in_single) {
             if (ch == '\'') {
                 in_single = false;
@@ -60,7 +69,13 @@ fn parse(raw: []const u8, out: *Parsed) bool {
         }
         if (in_double) {
             switch (ch) {
-                '`', '$', '\\' => return false,
+                '`', '$' => return false,
+                '\\' => {
+                    if (!allowBackslash(cmd, idx)) return false;
+                    if (buf_len >= out.buf.len) return false;
+                    out.buf[buf_len] = ch;
+                    buf_len += 1;
+                },
                 '"' => in_double = false,
                 else => {
                     if (buf_len >= out.buf.len) return false;
@@ -72,7 +87,17 @@ fn parse(raw: []const u8, out: *Parsed) bool {
         }
 
         switch (ch) {
-            ';', '&', '>', '<', '`', '$', '\\', '(', ')' => return false,
+            ';', '&', '>', '<', '`', '$', '(', ')' => return false,
+            '\\' => {
+                if (builtin.os.tag != .windows or !allowBackslash(cmd, idx)) return false;
+                if (!tok_active) {
+                    tok_start = buf_len;
+                    tok_active = true;
+                }
+                if (buf_len >= out.buf.len) return false;
+                out.buf[buf_len] = ch;
+                buf_len += 1;
+            },
             '|' => {
                 if (tok_active) {
                     if (out.token_len >= max_tokens) return false;
@@ -295,6 +320,11 @@ test "pdftotext stdout-only forms pass in cwd/external while file-writing forms 
     try std.testing.expect(!isStdoutPdfToTextInCwd("pdftotext -layout /tmp/doc.pdf -"));
     try std.testing.expect(externalAllowed("pdftotext -layout \"/tmp/My Doc.pdf\" -"));
     try std.testing.expect(!inCwdAllowed("pdftotext -layout \"/tmp/My Doc.pdf\" -"));
+    try std.testing.expect(externalAllowed("pdftotext \"D:\\a\\codegraff\\.zig-cache\\tmp\\ext dir\\doc.pdf\" -"));
+    try std.testing.expect(!inCwdAllowed("pdftotext \"D:\\a\\codegraff\\.zig-cache\\tmp\\ext dir\\doc.pdf\" -"));
+    try std.testing.expect(!externalAllowed("pdftotext \"foo\\\"bar.pdf\" -"));
+    try std.testing.expect(!externalAllowed("pdftotext \"D:\\dir\\\\\" -"));
+    try std.testing.expect(!externalAllowed("pdftotext \"\\$HOME/a.pdf\" -"));
 
     // Output-writing, missing-dash, redirection, and unsafe pipelines stay denied.
     for ([_][]const u8{
@@ -353,4 +383,11 @@ test "collectEscapingPaths and planReadMatch handle quoted external paths with s
     // Traversal tokens cannot be approved or matched.
     try collectEscapingPaths(gpa, "pdftotext \"/tmp/docs/../../etc/passwd\" -", &roots);
     try std.testing.expectEqual(@as(usize, 1), roots.items.len);
+
+    // Windows drive-letter backslashes inside quotes round-trip through approval matching.
+    const win_cmd = "pdftotext \"D:\\docs\\My Notes.pdf\" -";
+    try collectEscapingPaths(gpa, win_cmd, &roots);
+    try std.testing.expectEqual(@as(usize, 2), roots.items.len);
+    try std.testing.expectEqualStrings("D:\\docs\\My Notes.pdf", roots.items[1]);
+    try std.testing.expect(planReadMatch(win_cmd, roots.items));
 }

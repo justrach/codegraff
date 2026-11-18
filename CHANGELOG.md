@@ -10,7 +10,7 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
-## v0.302.74.72
+## v0.302.74.73
 
 - Scope Orchestrator Mode phase and replan directives to the active turn, block `enter_plan_mode` once replan-exhausted, and allow quoted regex alternations, read-only `gh` queries, stdout `pdftotext`, and `readOnlyHint` MCP tools under plan/read-only mode while preserving user consent (#1908).
 - Gate Auto Orchestrator Mode off on informational `?` questions (including attachment trailers and action-word substring collisions) and pre-existing opaque compaction state, and prune/settle expanded Phase 2 compaction checkpoints back inside `compactAt()` on planner restore (#1906, ADR 0347).
