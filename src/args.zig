@@ -209,6 +209,15 @@ pub fn parse(init: std.process.Init) !Flags {
                     const mode = @import("orchestrator_mode.zig").Mode.parse(val) orelse
                         std.process.fatal("--orchestrator needs off, auto, or on, got '{s}'", .{val});
                     @import("orchestrator_mode.zig").setFromCli(mode);
+                } else if (std.mem.eql(u8, arg, "--unharnessed")) {
+                    @import("unharnessed_mode.zig").setFromCli(true);
+                } else if (std.mem.eql(u8, arg, "--no-unharnessed")) {
+                    @import("unharnessed_mode.zig").setFromCli(false);
+                } else if (std.mem.startsWith(u8, arg, "--unharnessed=")) {
+                    const val = arg["--unharnessed=".len..];
+                    const on = @import("unharnessed_mode.zig").parse(val) orelse
+                        std.process.fatal("--unharnessed needs on or off, got '{s}'", .{val});
+                    @import("unharnessed_mode.zig").setFromCli(on);
                 } else if (std.mem.eql(u8, arg, "--no-autocommit")) {
                     main_mod.g_worktree_autocommit = false;
                 } else if (std.mem.eql(u8, arg, "--schema")) {

@@ -335,6 +335,14 @@ pub fn ultracodeActive(agent: *const Agent) bool {
 /// by setRootSystemPrompts below) so this stays a pure string funnel for the
 /// tests and for every non-root agent.
 pub fn setSystemPrompts(agent: *Agent, base: []const u8, arena: Allocator) !void {
+    if (@import("unharnessed_mode.zig").enabled() and !agent.sub) {
+        agent.sys_base = base;
+        agent.sys_normal = base;
+        agent.sys_strict = base;
+        agent.sys_ultra = base;
+        agent.sys_ultra_strict = base;
+        return;
+    }
     // #1701: custom/learned root personas and later replacements retain the
     // same publication policy as workers. Keep sys_base verbatim for refreshes.
     const protected = if (playbook.g_root_inject) text.withAuthority(arena, base) else base;

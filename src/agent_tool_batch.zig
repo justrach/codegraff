@@ -30,6 +30,7 @@ pub const skipped_text = "tool execution skipped because the operation was abort
 /// serializes, because write/edit do. Shell-only batches stay parallel
 /// (#266); the parent joins all results before converting/freeing them (#1166).
 pub fn isSequential(name: []const u8) bool {
+    if (@import("python_repl.zig").isTool(name)) return true;
     if (std.mem.eql(u8, name, @import("jev_tool.zig").name)) return true;
     if (std.mem.eql(u8, name, "write_file")) return true;
     if (std.mem.eql(u8, name, "edit_file")) return true;

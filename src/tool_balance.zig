@@ -212,7 +212,8 @@ fn classifyActivity(call: tools.ToolCall, class: Class) ToolActivity {
     const name = call.name;
     if (std.mem.eql(u8, name, "edit_file") or
         std.mem.eql(u8, name, "write_file") or
-        std.mem.eql(u8, name, "apply_patch")) return .write_or_exec;
+        std.mem.eql(u8, name, "apply_patch") or
+        @import("python_repl.zig").isTool(name)) return .write_or_exec;
     if (std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "shell")) {
         const cmd = tools.strField(call.input, "command") orelse return .neutral;
         return classifyShellCommand(cmd);

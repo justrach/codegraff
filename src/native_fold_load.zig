@@ -36,6 +36,7 @@ fn bareNativeName(raw: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, raw, schedule.tool_name)) return schedule.tool_name;
     if (std.mem.eql(u8, raw, jev_tool.name)) return jev_tool.name;
     if (std.mem.eql(u8, raw, "lsp")) return "lsp";
+    if (std.mem.eql(u8, raw, "python_repl")) return "python_repl";
     return null;
 }
 
@@ -79,6 +80,9 @@ pub fn findSessionSpec(arena: Allocator, name: []const u8, maybe_provider: ?Prov
     for (@import("lsp_catalog.zig").rootExtras()) |spec| {
         if (std.mem.eql(u8, spec.name, name)) return spec;
     }
+    for (@import("python_repl.zig").catalogExtras()) |spec| {
+        if (std.mem.eql(u8, spec.name, name)) return spec;
+    }
     if (maybe_provider) |p| {
         for (jev_tool.catalogExtras(p)) |spec| {
             if (std.mem.eql(u8, spec.name, name)) return spec;
@@ -112,6 +116,10 @@ pub fn canLoadFoldedSpec(arena: Allocator, name: []const u8) !?schema.ToolSpec {
         if (std.mem.eql(u8, name, "lsp")) {
             if (!@import("lsp_config.zig").root_enabled) return null;
             break :blk @import("lsp.zig").spec;
+        }
+        if (std.mem.eql(u8, name, "python_repl")) {
+            if (@import("unharnessed_mode.zig").enabled()) return null;
+            break :blk @import("python_repl.zig").spec;
         }
         return null;
     };
@@ -155,6 +163,8 @@ pub fn unavailableReason(name: []const u8) []const u8 {
         return "not enabled for the active provider or model.";
     if (std.mem.eql(u8, name, "lsp") and !@import("lsp_config.zig").root_enabled)
         return "no lsp.servers configured in .harness/settings.json.";
+    if (std.mem.eql(u8, name, "python_repl") and @import("unharnessed_mode.zig").enabled())
+        return "unharnessed mode is active (exposed as `python` instead of `python_repl`).";
     if (tool_surface.hideBuiltin(name))
         return "superseded by the connected companion MCP surface in this session.";
     if (no_local_tools.lean and !no_local_tools.leanKeeps(name))
@@ -264,6 +274,12 @@ pub fn fallbackNativeQuery(agent: anytype, query: []const u8) !?ExecResult {
         try active_aw.writer.print("{s}: {s}\n", .{ s.name, s.schema });
         active_count += 1;
     }
+    for (@import("python_repl.zig").catalogExtras()) |s| {
+        if (native_fold.blocked(s.name) or scoreSpec(s.name, s.desc, query) == 0) continue;
+        if (!agentCatalogHasTool(agent, s.name)) continue;
+        try active_aw.writer.print("{s}: {s}\n", .{ s.name, s.schema });
+        active_count += 1;
+    }
     if (active_count > 0) {
         const head = try std.fmt.allocPrint(
             agent.arena,
@@ -279,7 +295,7 @@ pub fn fallbackNativeQuery(agent: anytype, query: []const u8) !?ExecResult {
             if (std.mem.eql(u8, s.name, name)) break s.desc;
         } else for (schema.optional_specs) |s| {
             if (std.mem.eql(u8, s.name, name)) break s.desc;
-        } else if (std.mem.eql(u8, name, "lsp")) @import("lsp.zig").spec.desc else "";
+        } else if (std.mem.eql(u8, name, "lsp")) @import("lsp.zig").spec.desc else if (std.mem.eql(u8, name, "python_repl")) @import("python_repl.zig").spec.desc else "";
         if (scoreSpec(name, desc, query) == 0) continue;
         const rest = (try listDeferredNative(agent.arena)) orelse "";
         const sep = if (rest.len > 0) "\n" else "";

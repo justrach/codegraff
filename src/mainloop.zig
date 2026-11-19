@@ -261,6 +261,10 @@ pub fn run(ctx: *Ctx) !void {
                 @import("commands_orchestrator.zig").handleJson(ctx.root, ctx.arena, parsed.object);
                 continue;
             }
+            if (std.mem.eql(u8, rtype, "set_unharnessed")) {
+                @import("commands_unharnessed.zig").handleJson(ctx.root, ctx.arena, parsed.object);
+                continue;
+            }
             if (std.mem.eql(u8, rtype, "score")) {
                 mainloop_score.handle(ctx.root, parsed.object);
                 continue;

@@ -52,6 +52,7 @@ fn namedDetailField(name: []const u8, input: std.json.Value) ?[]const u8 {
         std.mem.eql(u8, name, "write_file") or
         std.mem.eql(u8, name, "edit_file")) return "path";
     if (std.mem.eql(u8, name, "webfetch")) return "url";
+    if (@import("python_repl.zig").isTool(name)) return "code";
     if (std.mem.eql(u8, name, "subagent")) return "description";
     if (std.mem.eql(u8, name, "imagegen")) return "prompt";
     if (std.mem.eql(u8, name, "peer_message")) {
@@ -169,6 +170,7 @@ pub fn verb(name: []const u8, input: std.json.Value, buf: []u8) []const u8 {
     if (std.mem.eql(u8, name, "edit_file")) return "edit";
     if (std.mem.eql(u8, name, "write_file")) return "write";
     if (std.mem.eql(u8, name, "read_file")) return "read";
+    if (@import("python_repl.zig").isTool(name)) return "python";
     if (std.mem.eql(u8, name, "webfetch")) return "fetch";
     if (std.mem.eql(u8, name, "codedb")) {
         const cmd = stringField(input, "command") orelse return "search";

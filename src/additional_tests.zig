@@ -96,5 +96,10 @@ test {
         @import("plan_accounts_probe.zig"),
         @import("plan_accounts.zig"),
         @import("acp_accounts.zig"),
+        @import("python_repl.zig"),
+        @import("unharnessed_mode.zig"),
+        @import("commands_unharnessed.zig"),
+        @import("acp_unharnessed.zig"),
+        @import("python_repl_tests.zig"),
     };
 }

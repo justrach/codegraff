@@ -156,7 +156,7 @@ pub fn gateHarnessPolicyWrite(self: *Agent, call: ToolCall) !?ExecResult {
 /// is a read when it is a companion read or its server declares it read-only
 /// (ADR 0228).
 fn readOnlyChildAllows(registry: ?*mcp.Registry, call: ToolCall) bool {
-    for ([_][]const u8{ "write_file", "edit_file", "imagegen", "peer_message", "learn_candidate" }) |name|
+    for ([_][]const u8{ "write_file", "edit_file", "imagegen", "peer_message", "learn_candidate", "python_repl", "python" }) |name|
         if (std.mem.eql(u8, call.name, name)) return false;
     if (mcp.Registry.isMcp(call.name)) return mcpReadOnly(registry, call);
     if (!shell_tool.runsCommand(call.name)) return true;
@@ -228,6 +228,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
     if (main_mod.plan_mode) {
         if (std.mem.eql(u8, call.name, "learn_candidate") or
             std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or
+            @import("python_repl.zig").isTool(call.name) or
             std.mem.eql(u8, call.name, "imagegen") or // #352: writes a file and spawns a workspace-write child
             std.mem.eql(u8, call.name, "peer_message") or // #469: appends to a peer's inbox — a side effect
             (mcp.Registry.isMcp(call.name) and !mcpReadOnly(self.registry, call)))
@@ -328,6 +329,20 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         if (approvals.allowedExact(self.io, call.name)) return null;
         key = call.name;
         prompt_line = std.fmt.bufPrint(&line_buf, "{s} {s}", .{ call.name, path }) catch call.name;
+    } else if (@import("python_repl.zig").isTool(call.name)) {
+        if (presence.gateCheck(self.io, self.arena)) |text| return .{ .text = text, .is_error = true };
+        if (approvals.allowedExact(self.io, call.name)) return null;
+        key = call.name;
+        const code = if (call.input == .object)
+            (if (call.input.object.get("code")) |c| (if (c == .string) c.string else "") else "")
+        else
+            "";
+        const first_nl = std.mem.indexOfScalar(u8, code, '\n') orelse code.len;
+        const snippet = std.mem.trim(u8, code[0..@min(first_nl, 80)], " \t\r");
+        prompt_line = if (snippet.len > 0)
+            std.fmt.bufPrint(&line_buf, "run python: {s}", .{snippet}) catch call.name
+        else
+            "run python REPL";
     } else if (std.mem.eql(u8, call.name, "learn_candidate")) {
         if (!learning_privacy.allowsAggregate()) {
             const in = self.in orelse return .{
@@ -403,7 +418,7 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
         'y', 'Y' => return null,
         'a', 'A' => {
             try approvals.approve(self.io, self.gpa, key);
-            if (shell_tool.runsCommand(call.name) and Approvals.isInterpreter(key)) {
+            if ((shell_tool.runsCommand(call.name) and Approvals.isInterpreter(key)) or @import("python_repl.zig").isTool(key)) {
                 try w.print("  note: \"{s}\" can execute arbitrary code (e.g. {s} -c '…'); approving it is effectively unrestricted.\n", .{ key, key });
                 try w.flush();
             }

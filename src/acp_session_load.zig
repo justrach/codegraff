@@ -26,6 +26,8 @@ pub fn configure(d: *engine.Dispatch, live: *LiveTurn) void {
     d.set_model = @import("acp_model_option.zig").set;
     d.orchestrator_config = @import("acp_orchestrator.zig").option;
     d.set_orchestrator = @import("acp_orchestrator.zig").set;
+    d.unharnessed_config = @import("acp_unharnessed.zig").option;
+    d.set_unharnessed = @import("acp_unharnessed.zig").set;
     d.durable_session_id = if (session.validSessionName(live.root.session_name)) live.root.session_name else null;
     d.durable_name = durableName;
     live.dispatch = d;
@@ -90,6 +92,7 @@ pub fn load(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request
     session.loadSession(live.root, live.keys, live.root.arena, sid) catch |err| {
         return proto.writeError(w, req.id, invalid_params, loadErrorText(arena, err, provider));
     };
+    @import("python_repl.zig").resetSession(live.root.io);
     // Same precedence as CLI resume: the host respawns with --model to switch.
     if (live.model_override) |p| @import("session_branch.zig").applyModelOverride(live.root, live.root.arena, p);
     live.root.session_name = try live.root.arena.dupe(u8, sid);

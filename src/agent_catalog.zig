@@ -18,13 +18,15 @@ fn withExtras(arena: Allocator, base: []const schema.ToolSpec, provider: Provide
     const b = schedule.catalogExtras(arena);
     const c = jev_tool.catalogExtras(provider);
     const d = @import("lsp_catalog.zig").extras(lsp);
-    if (a.len == 0 and b.len == 0 and c.len == 0 and d.len == 0) return base;
-    const out = try arena.alloc(schema.ToolSpec, base.len + a.len + b.len + c.len + d.len);
+    const e = @import("python_repl.zig").catalogExtras();
+    if (a.len == 0 and b.len == 0 and c.len == 0 and d.len == 0 and e.len == 0) return base;
+    const out = try arena.alloc(schema.ToolSpec, base.len + a.len + b.len + c.len + d.len + e.len);
     @memcpy(out[0..base.len], base);
     @memcpy(out[base.len..][0..a.len], a);
     @memcpy(out[base.len + a.len ..][0..b.len], b);
     @memcpy(out[base.len + a.len + b.len ..][0..c.len], c);
-    @memcpy(out[base.len + a.len + b.len + c.len ..], d);
+    @memcpy(out[base.len + a.len + b.len + c.len ..][0..d.len], d);
+    @memcpy(out[base.len + a.len + b.len + c.len + d.len ..], e);
     return out;
 }
 
@@ -85,6 +87,11 @@ pub fn ensureRootTools(self: *Agent, kind: Provider.Kind) !void {
         .interactions => &self.tools_interactions,
     };
     if (dest.*.len != 0) return;
+    if (!self.sub and @import("unharnessed_mode.zig").enabled()) {
+        dest.* = try schema.renderRootTools(self.arena, kind, &@import("unharnessed_mode.zig").specs, &.{});
+        self.tools_epoch = @import("native_fold.zig").catalogEpoch();
+        return;
+    }
     const specs = if (self.sub)
         try surface.filterSpecs(@TypeOf(schema.base_specs[0]), self.arena, schema.base_specs[0..])
     else blk: {

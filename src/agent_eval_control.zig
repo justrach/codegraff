@@ -57,6 +57,7 @@ pub fn batchBlocksCompletionFor(calls: []const ToolCall, writes_complete: bool) 
     for (calls) |call| {
         if ((!writes_complete and (std.mem.eql(u8, call.name, "edit_file") or
             std.mem.eql(u8, call.name, "write_file"))) or
+            @import("python_repl.zig").isTool(call.name) or
             std.mem.eql(u8, call.name, "rlm") or
             std.mem.eql(u8, call.name, "subagent")) return true;
         if (std.mem.startsWith(u8, call.name, "mcp__") and !companionReadOnly(call.name, call.input)) return true;

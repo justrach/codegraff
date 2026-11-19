@@ -265,7 +265,7 @@ pub fn renderRootTools(
     // GRAFF_STABLE_CATALOG (#476): loaded tools append in LOAD ORDER after the
     // stable head, so loads change only tail bytes (see renderLoadedTail for
     // why that alone does not keep an OpenAI cache hit).
-    if (mcp_schema_gate.g_stable_catalog) try native_fold.renderLoadedTail(&s, kind, out, mcp_tools);
+    if (mcp_schema_gate.g_stable_catalog and !@import("unharnessed_mode.zig").enabled()) try native_fold.renderLoadedTail(&s, kind, out, mcp_tools);
     try s.endArray();
     return aw.toOwnedSlice();
 }
@@ -276,6 +276,7 @@ pub fn renderRootTools(
 /// optional tool whose backing capability startup found. MCP tools are
 /// appended afterwards by renderRootTools and stay untouched.
 pub fn effectiveRootSpecs(arena: Allocator) ![]const ToolSpec {
+    if (@import("unharnessed_mode.zig").enabled()) return &@import("unharnessed_mode.zig").specs;
     const chosen: []const ToolSpec = if (root.g_clock_sleep)
         (if (learn_store.active_agent_loaded) &root_specs else &root_specs_without_learning)
     else
@@ -472,7 +473,7 @@ pub fn emitSchema(w: *Io.Writer) !void {
     try s.objectField("tools");
     try s.beginArray();
     // Optionals + rlm: SDK dump is unconditional (#352, #868).
-    for (root_specs ++ optional_specs ++ [_]ToolSpec{ @import("lsp.zig").spec, .{ .name = rlm.tool_name, .desc = rlm.tool_desc, .schema = rlm.tool_schema } }) |t| {
+    for (root_specs ++ optional_specs ++ [_]ToolSpec{ @import("lsp.zig").spec, @import("python_repl.zig").spec, .{ .name = rlm.tool_name, .desc = rlm.tool_desc, .schema = rlm.tool_schema } }) |t| {
         try s.beginObject();
         try s.objectField("name");
         try s.write(t.name);

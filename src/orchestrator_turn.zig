@@ -233,7 +233,7 @@ pub fn run(root: *Agent, keys: *Keys, arena: Allocator, out: ?*Io.Writer, single
     if (!root.sub and !orchestrator.handoff_active) retireDirectives(root);
     if (root.sub or main_mod.plan_mode or root.text_only or
         root.output_schema != null or root.review_mode or orchestrator.g_mode == .off or
-        activeAutonomousGoal(root))
+        activeAutonomousGoal(root) or @import("unharnessed_mode.zig").enabled())
     {
         return singlePhase(root, keys, arena, out);
     }
