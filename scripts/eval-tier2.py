@@ -222,10 +222,12 @@ def execute(case: dict[str, Any], graff: str, port: int,
                     time.sleep(0.1)
                 if peer.poll() is not None or not live_dir.is_dir() or not any(live_dir.glob("*.json")):
                     raise RuntimeError("Live-peer fixture did not announce before the deadline")
-            argv = [graff, "--json", "--yolo", "--model", selected_model]
+            extra_args = list(case.get("args", []))
+            plain_oneshot = "-p" in extra_args and "--json" not in extra_args
+            argv = [graff] + ([] if plain_oneshot else ["--json"]) + ["--yolo", "--model", selected_model]
             if provider:
                 argv += ["--subagent-provider", provider]
-            argv += list(case.get("args", []))
+            argv += extra_args
 
             stdin_lines = [json.dumps(control) for control in case.get("controls_before_prompt", [])]
             stdin_lines.append(json.dumps({"type": "user", "text": case["prompt"], **case.get("prompt_options", {})}))
@@ -397,8 +399,10 @@ def main() -> None:
             sys.exit(f"eval-tier2: no case named {', '.join(sorted(missing))} (try --list)")
         cases = [case for case in cases if case["id"] in wanted]
 
-    if not pathlib.Path(args.graff).exists():
+    graff_path = pathlib.Path(args.graff)
+    if not graff_path.exists():
         sys.exit(f"eval-tier2: {args.graff} does not exist - run `zig build` first")
+    args.graff = str(graff_path.resolve())
 
     if args.provider:
         skipped = [case["id"] for case in cases if case.get("scripted_only")]

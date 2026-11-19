@@ -517,3 +517,26 @@ test "#1775: root imagegen after workspace chdir stages relative references as c
         try std.testing.expect(Inspector.saw_abs_image_flag);
     }
 }
+
+test "codex newestFresh absorbs Linux CLOCK_REALTIME_COARSE lag across a second boundary" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
+    const file_path = try std.fmt.allocPrint(arena, "{s}/gen.png", .{root});
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = file_path, .data = "\x89PNG\r\n\x1a\n" ++ "payload" });
+
+    const st = try Io.Dir.cwd().statFile(io, file_path, .{});
+    // Simulate started_ns landing 10 ms ahead of filesystem coarse mtime across a second edge.
+    const slightly_ahead = st.mtime.nanoseconds + 10 * std.time.ns_per_ms;
+    const picked = @import("imagegen_codex.zig").newestFresh(io, arena, root, slightly_ahead);
+    try std.testing.expect(picked != null);
+    // Files predating the run by 1 second remain stale.
+    try std.testing.expect(@import("imagegen_codex.zig").newestFresh(io, arena, root, st.mtime.nanoseconds + std.time.ns_per_s) == null);
+}

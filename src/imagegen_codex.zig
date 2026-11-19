@@ -264,6 +264,13 @@ pub fn newestFresh(io: Io, arena: Allocator, root: []const u8, since_ns: i128) ?
     return best;
 }
 
+/// Linux ext4/tmpfs timestamps files from `CLOCK_REALTIME_COARSE`, which can lag
+/// `CLOCK_REALTIME` (`Io.Timestamp.now`) by a kernel tick (~4-10 ms). Across a
+/// whole-second boundary, a freshly written file can land a few milliseconds
+/// below `freshnessFloor(started_ns)`. Keeping slack well below 1s absorbs that
+/// kernel tick without admitting genuinely stale files.
+pub const coarse_clock_slack_ns: i128 = 250 * std.time.ns_per_ms;
+
 fn scan(io: Io, arena: Allocator, dir_path: []const u8, since_ns: i128, depth: u8, best: *?Artifact) void {
     if (depth > max_scan_depth) return;
     var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
@@ -283,7 +290,7 @@ fn scan(io: Io, arena: Allocator, dir_path: []const u8, since_ns: i128, depth: u
                     continue;
                 }
                 if (st.kind != .file) continue;
-                if (st.mtime.nanoseconds < since_ns) continue; // predates this run
+                if (st.mtime.nanoseconds + coarse_clock_slack_ns < since_ns) continue; // predates this run
                 if (best.*) |cur| {
                     if (st.mtime.nanoseconds <= cur.mtime_ns) continue;
                 }
