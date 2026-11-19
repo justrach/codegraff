@@ -233,16 +233,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         return true;
     }
     if (try @import("commands_edit.zig").tryHandle(root, line, out)) return true;
-    if (std.mem.eql(u8, line, "/fast") or std.mem.eql(u8, line, "/fast on") or std.mem.eql(u8, line, "/fast off")) {
-        root.fast = if (std.mem.eql(u8, line, "/fast on")) true else if (std.mem.eql(u8, line, "/fast off")) false else !root.fast;
-        _ = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
-        try out.print("fast mode: {s}{s}\n", .{
-            if (root.fast) "on" else "off",
-            if (!std.mem.eql(u8, root.provider.id, "codex")) " (codex only — current model ignores it)" else "",
-        });
-        try out.flush();
-        return true;
-    }
+    if (try @import("service_tier.zig").tryHandleCommand(root, line, out)) return true;
     if (std.mem.eql(u8, line, "/thinking") or std.mem.eql(u8, line, "/thinking on") or std.mem.eql(u8, line, "/thinking off")) {
         root.show_thinking = if (std.mem.eql(u8, line, "/thinking on")) true else if (std.mem.eql(u8, line, "/thinking off")) false else !root.show_thinking;
         const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);

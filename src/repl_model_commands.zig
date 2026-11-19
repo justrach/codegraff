@@ -58,6 +58,8 @@ pub fn runCommand(self: *Model, line: []const u8) void {
         } else self.push(.info, "model switching isn't available (offline mode)") catch {};
     } else if (std.mem.eql(u8, cmd, "/models")) {
         if (repl.g_models.len > 0) self.pushFmt(.info, "available models:\n  {s}\nswitch with /model <name>", .{repl.g_models}) catch {} else self.push(.info, "no model table (offline mode)") catch {};
+    } else if (std.mem.eql(u8, cmd, "/refresh")) {
+        self.push(.info, "run `graff refresh` or use `/refresh` in the main `graff` session to pull live provider model catalogs") catch {};
     } else if (eqlAny(cmd, &.{ "/effort", "/reasoning" })) {
         const normalized = if (std.mem.eql(u8, arg, "med")) "medium" else if (std.mem.eql(u8, arg, "extra") or std.mem.eql(u8, arg, "extra-high") or std.mem.eql(u8, arg, "extra high")) "xhigh" else arg;
         self.effort = std.meta.stringToEnum(repl.Effort, normalized) orelse {
@@ -68,6 +70,8 @@ pub fn runCommand(self: *Model, line: []const u8) void {
     } else if (std.mem.eql(u8, cmd, "/fast")) {
         self.fast = parseToggle(arg, self.fast);
         self.pushFmt(.info, "fast mode: {s}", .{onOff(self.fast)}) catch {};
+    } else if (std.mem.eql(u8, cmd, "/ultrafast")) {
+        self.push(.info, "use `/ultrafast` or `/fast ultrafast` in the main `graff` session (codex/chatgpt-new gpt-6.2-sol / gpt-6.2-astra)") catch {};
     } else if (std.mem.eql(u8, cmd, "/thinking")) {
         self.thinking_show = parseToggle(arg, self.thinking_show);
         self.pushFmt(.info, "show thinking: {s}", .{onOff(self.thinking_show)}) catch {};

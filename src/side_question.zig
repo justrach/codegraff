@@ -118,6 +118,7 @@ pub fn build(self: *Agent, arena: Allocator, question: []const u8) !Agent {
         .run_budget = self.run_budget,
         .reasoning = self.reasoning,
         .fast = self.fast,
+        .service_tier = self.service_tier,
         .stream_quiet = true,
         .call_kind = .judge, // an auxiliary, bounded, non-recursive call
         .responses_output_limit = output_limit,

@@ -63,6 +63,7 @@ pub fn suggest(word: []const u8) ?[]const u8 {
 pub const commands = [_]Item{
     .{ .name = "/model", .usage = "/model [<provider>] <name>", .desc = "switch model/provider, fuzzy match (e.g. \"sonnet\", \"opus\"); name a provider to pin the seat" },
     .{ .name = "/models", .usage = "/models [health]", .desc = "list known models: context window, compaction point, provider and what that seat costs (plan/credits/api/local); health shows live state" },
+    .{ .name = "/refresh", .usage = "/refresh [models]", .desc = "refresh live model catalogs for all signed-in providers without restarting" },
     .{ .name = "/clear", .desc = "wipe the conversation and start fresh" },
     .{ .name = "/new", .desc = "start a fresh autosaved session" },
     .{ .name = "/rename", .usage = "/rename <title>", .desc = "set the current session title" },
@@ -87,7 +88,8 @@ pub const commands = [_]Item{
     .{ .name = "/effort", .desc = "reasoning depth: low|medium|high|... (codex, deepseek, codegraff; persists)" },
     .{ .name = "/reasoning", .desc = "alias for /effort" },
     .{ .name = "/compact-at", .usage = "/compact-at [10-95|default]", .desc = "where automatic compaction starts, as % of the context window (default 80; persists)" },
-    .{ .name = "/fast", .desc = "codex only: priority service tier for lower latency (toggle, persists)" },
+    .{ .name = "/fast", .usage = "/fast [on|off|ultrafast]", .desc = "codex/chatgpt-new: fast (priority) or ultrafast service tier (persists)" },
+    .{ .name = "/ultrafast", .usage = "/ultrafast [on|off]", .desc = "codex/chatgpt-new: ultrafast service tier on gpt-6.2-sol / gpt-6.2-astra (toggle, persists)" },
     .{ .name = "/thinking", .desc = "stream reasoning live vs spinner only (toggle, persists)" },
     .{ .name = "/followups", .usage = "/followups [queue|immediate]", .desc = "send OpenAI-model follow-ups into the live turn now (default) or queue them for the next turn; persists" },
     .{ .name = "/title", .desc = "name the tab from your first prompt (AI session title; toggle, persists)" },

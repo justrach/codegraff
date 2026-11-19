@@ -152,7 +152,8 @@ fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
     const avail = cols -| 1;
     var used: usize = st.model.len;
     const folder = cwdName(st.cwd);
-    const show_fast = st.fast and fitsSegment(&used, avail, 3 + "Fast".len);
+    const speed_label: []const u8 = if (st.ultrafast) "Ultrafast" else if (st.fast) "Fast" else "";
+    const show_speed = speed_label.len > 0 and fitsSegment(&used, avail, 3 + speed_label.len);
     const show_effort = st.effort != null and
         fitsSegment(&used, avail, 3 + reasoningLabel(st.effort.?).len);
     const show_fallback = st.fallback and
@@ -171,7 +172,7 @@ fn line(w: *Io.Writer, st: PromptStatus, cols: usize) !void {
         fitsSegment(&used, avail, 3 + st.standing.session.len);
 
     try w.print("{s}{s}{s}{s}{s}", .{ style.bold, style.accent, st.model, style.reset, style.muted });
-    if (show_fast) try modeSegment(w, "Fast");
+    if (show_speed) try modeSegment(w, speed_label);
     if (show_effort) try w.print(" · {s}", .{reasoningLabel(st.effort.?)});
     if (show_fallback) try modeSegment(w, "Fallback");
     if (show_plan) try modeSegment(w, "Plan");

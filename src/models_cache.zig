@@ -22,13 +22,13 @@ const credential_store = @import("credential_store.zig");
 
 const models_dev_url = "https://models.dev/api.json";
 const codex_models_url = "https://chatgpt.com/backend-api/codex/models";
-const codex_cache_ttl_ms: i64 = 5 * 60 * 1000;
+pub const codex_cache_ttl_ms: i64 = 5 * 60 * 1000;
 // The Codex backend filters /models by client_version. Official openai/codex
 // sends its compiled package version, not another Codex installation on PATH.
 // This is the newest protocol Graff has verified; a newer installed/native version
 // may raise it, but an older one must never hide models Graff supports.
-// gpt-6-astra's minimal_client_version is 0.153.0 (probed live 2026-09-04).
-const codex_client_version_floor = "0.153.0";
+// Verified through gpt-6.2-sol and gpt-6.2-astra.
+pub const codex_client_version_floor = "0.170.0";
 pub var codex_catalog_source: []const u8 = "baked offline fallback";
 
 /// Session-owned cache-first loader, invalidated after in-session login.
@@ -95,17 +95,17 @@ fn flatPath(arena: Allocator, home: []const u8) []const u8 {
     return std.fmt.allocPrint(arena, "{s}/.codegraff-models.json", .{home}) catch "";
 }
 
-fn codexDirPath(arena: Allocator, home: []const u8) []const u8 {
+pub fn codexDirPath(arena: Allocator, home: []const u8) []const u8 {
     return std.fmt.allocPrint(arena, "{s}/.codegraff/codex-models.json", .{home}) catch "";
 }
-fn codexFlatPath(arena: Allocator, home: []const u8) []const u8 {
+pub fn codexFlatPath(arena: Allocator, home: []const u8) []const u8 {
     return std.fmt.allocPrint(arena, "{s}/.codegraff-codex-models.json", .{home}) catch "";
 }
-fn nativeCodexPath(arena: Allocator, codex_home: []const u8) []const u8 {
+pub fn nativeCodexPath(arena: Allocator, codex_home: []const u8) []const u8 {
     return std.fmt.allocPrint(arena, "{s}/models_cache.json", .{codex_home}) catch "";
 }
 
-const CodexSnapshot = struct {
+pub const CodexSnapshot = struct {
     models: []const pricing.ModelInfo,
     client_version: []const u8 = "",
     fetched_at_ms: i64 = 0,
@@ -120,7 +120,7 @@ fn validModelSlug(slug: []const u8) bool {
 /// Accepts both Codex's native cache/remote shape (`slug`, `context_window`)
 /// and graff's compact cache shape (`name`, `context`). Hidden models stay out
 /// of user-facing routing and pickers, matching Codex's ModelPreset behavior.
-fn parseCodexSnapshot(arena: Allocator, data: []const u8) ?CodexSnapshot {
+pub fn parseCodexSnapshot(arena: Allocator, data: []const u8) ?CodexSnapshot {
     const v = std.json.parseFromSliceLeaky(Value, arena, data, .{ .allocate = .alloc_always }) catch return null;
     if (v != .object) return null;
     const arr = v.object.get("models") orelse return null;
@@ -146,6 +146,7 @@ fn parseCodexSnapshot(arena: Allocator, data: []const u8) ?CodexSnapshot {
             .context = context,
             .default_effort = @import("effort_route.zig").catalogLevel(arena, item.object, &.{ "default_effort", "default_reasoning_level" }, &@import("effort_route.zig").effort_levels),
             .default_verbosity = @import("effort_route.zig").catalogLevel(arena, item.object, &.{"default_verbosity"}, &@import("effort_route.zig").verbosity_levels),
+            .supports_ultrafast = @import("service_tier.zig").jsonAdvertisesUltrafast(item.object),
         }) catch continue;
     }
     const models = rows.toOwnedSlice(arena) catch return null;
@@ -157,12 +158,12 @@ fn parseCodexSnapshot(arena: Allocator, data: []const u8) ?CodexSnapshot {
     };
 }
 
-fn readSmall(io: Io, arena: Allocator, path: []const u8) ?[]const u8 {
+pub fn readSmall(io: Io, arena: Allocator, path: []const u8) ?[]const u8 {
     if (path.len == 0) return null;
     return Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(4 * 1024 * 1024)) catch null;
 }
 
-fn installedCodexVersion(io: Io, arena: Allocator) ?[]const u8 {
+pub fn installedCodexVersion(io: Io, arena: Allocator) ?[]const u8 {
     var child = std.process.spawn(io, .{
         .argv = &.{ "codex", "--version" },
         .stdin = .ignore,
@@ -191,7 +192,7 @@ fn codexVersionParts(version: []const u8) ?[3]u32 {
     return .{ major, minor, patch };
 }
 
-fn newerCodexVersion(candidate: []const u8, current: []const u8) []const u8 {
+pub fn newerCodexVersion(candidate: []const u8, current: []const u8) []const u8 {
     const a = codexVersionParts(candidate) orelse return current;
     const b = codexVersionParts(current) orelse return candidate;
     for (a, b) |av, bv| {
@@ -201,14 +202,14 @@ fn newerCodexVersion(candidate: []const u8, current: []const u8) []const u8 {
     return current;
 }
 
-fn effectiveCodexVersion(installed: ?[]const u8, native: ?CodexSnapshot) []const u8 {
+pub fn effectiveCodexVersion(installed: ?[]const u8, native: ?CodexSnapshot) []const u8 {
     var version: []const u8 = codex_client_version_floor;
     if (installed) |candidate| version = newerCodexVersion(candidate, version);
     if (native) |snapshot| version = newerCodexVersion(snapshot.client_version, version);
     return version;
 }
 
-fn snapshotMatchesVersion(snapshot: CodexSnapshot, version: []const u8) bool {
+pub fn snapshotMatchesVersion(snapshot: CodexSnapshot, version: []const u8) bool {
     return std.mem.eql(u8, snapshot.client_version, version);
 }
 
@@ -224,7 +225,7 @@ fn codexModelsUrl(arena: Allocator) []const u8 {
     return std.fmt.allocPrint(arena, "{s}/backend-api/codex/models", .{override[0..path_start]}) catch codex_models_url;
 }
 
-fn fetchCodexSnapshot(io: Io, gpa: Allocator, arena: Allocator, token: []const u8, account: []const u8, version: []const u8) ?CodexSnapshot {
+pub fn fetchCodexSnapshot(io: Io, gpa: Allocator, arena: Allocator, token: []const u8, account: []const u8, version: []const u8) ?CodexSnapshot {
     if (token.len == 0 or account.len == 0 or version.len == 0) return null;
     const url = std.fmt.allocPrint(arena, "{s}?client_version={s}", .{ codexModelsUrl(arena), version }) catch return null;
     const bearer = std.fmt.allocPrint(arena, "Bearer {s}", .{token}) catch return null;
@@ -249,36 +250,34 @@ fn fetchCodexSnapshot(io: Io, gpa: Allocator, arena: Allocator, token: []const u
     return parseCodexSnapshot(arena, aw.writer.buffered());
 }
 
-fn writeCodexCache(io: Io, arena: Allocator, home: []const u8, version: []const u8, models: []const pricing.ModelInfo) void {
+pub fn writeCodexCache(io: Io, arena: Allocator, home: []const u8, version: []const u8, models: []const pricing.ModelInfo) bool {
     var aw: Io.Writer.Allocating = .init(arena);
-    aw.writer.writeAll("{\"source\":\"chatgpt.com/backend-api/codex/models\",\"fetched_at_ms\":") catch return;
-    aw.writer.print("{d},\"client_version\":", .{util.unixMs(io)}) catch return;
+    aw.writer.writeAll("{\"source\":\"chatgpt.com/backend-api/codex/models\",\"fetched_at_ms\":") catch return false;
+    aw.writer.print("{d},\"client_version\":", .{util.unixMs(io)}) catch return false;
     var version_stringify: std.json.Stringify = .{ .writer = &aw.writer };
-    version_stringify.write(version) catch return;
-    aw.writer.writeAll(",\"models\":[") catch return;
+    version_stringify.write(version) catch return false;
+    aw.writer.writeAll(",\"models\":[") catch return false;
     for (models, 0..) |model, i| {
-        if (i > 0) aw.writer.writeByte(',') catch return;
-        aw.writer.writeAll("{\"name\":") catch return;
+        if (i > 0) aw.writer.writeByte(',') catch return false;
+        aw.writer.writeAll("{\"name\":") catch return false;
         var name_stringify: std.json.Stringify = .{ .writer = &aw.writer };
-        name_stringify.write(model.name) catch return;
-        aw.writer.print(",\"context\":{d}", .{model.context}) catch return;
-        if (model.default_effort) |v| aw.writer.print(",\"default_effort\":\"{s}\"", .{v}) catch return;
-        if (model.default_verbosity) |v| aw.writer.print(",\"default_verbosity\":\"{s}\"", .{v}) catch return;
-        aw.writer.writeByte('}') catch return;
+        name_stringify.write(model.name) catch return false;
+        aw.writer.print(",\"context\":{d}", .{model.context}) catch return false;
+        if (model.default_effort) |v| aw.writer.print(",\"default_effort\":\"{s}\"", .{v}) catch return false;
+        if (model.default_verbosity) |v| aw.writer.print(",\"default_verbosity\":\"{s}\"", .{v}) catch return false;
+        if (model.supports_ultrafast) aw.writer.writeAll(",\"supports_ultrafast\":true") catch return false;
+        aw.writer.writeByte('}') catch return false;
     }
-    aw.writer.writeAll("]}\n") catch return;
+    aw.writer.writeAll("]}\n") catch return false;
     for ([_][]const u8{ codexDirPath(arena, home), codexFlatPath(arena, home) }) |path| {
         if (path.len == 0) continue;
         credential_store.replaceFile(io, Io.Dir.cwd(), path, aw.writer.buffered(), .default_file) catch continue;
-        return;
+        return true;
     }
+    return false;
 }
 
-/// Activate an account-scoped Codex catalog. Match openai/codex's policy:
-/// a client-version-keyed cache is fresh for five minutes, then remote refresh.
-/// Graff identifies with its own supported Codex protocol version; compatible
-/// stale/native caches may cover a network failure, while older caches never
-/// replace the baked rows. Tokens are never persisted.
+/// Activate an account-scoped Codex catalog (5-minute TTL, client-version-keyed).
 pub fn loadCodexCatalog(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, codex_home: []const u8, token: []const u8, account: []const u8, force_refresh: bool, allow_network: bool) void {
     // Account catalogs are meaningful only with the account that produced
     // them. Logged-out sessions use the current baked picker instead of an
@@ -296,12 +295,10 @@ pub fn loadCodexCatalog(io: Io, gpa: Allocator, arena: Allocator, home: []const 
     // caller controls that path explicitly.
     const cached_data = if (provider.g_codex_url_override != null) null else readSmall(io, arena, codexDirPath(arena, home)) orelse readSmall(io, arena, codexFlatPath(arena, home));
     const cached = if (cached_data) |data| parseCodexSnapshot(arena, data) else null;
-    const version = if (allow_network)
-        effectiveCodexVersion(installedCodexVersion(io, arena), native)
-    else if (cached) |snapshot|
-        newerCodexVersion(snapshot.client_version, codex_client_version_floor)
-    else
-        effectiveCodexVersion(null, native);
+    var version = effectiveCodexVersion(if (allow_network) installedCodexVersion(io, arena) else null, native);
+    if (!allow_network) if (cached) |snapshot| {
+        version = newerCodexVersion(snapshot.client_version, version);
+    };
     const now = util.unixMs(io);
     if (!force_refresh) if (cached) |snapshot| {
         const age = now - snapshot.fetched_at_ms;
@@ -316,7 +313,7 @@ pub fn loadCodexCatalog(io: Io, gpa: Allocator, arena: Allocator, home: []const 
             if (pricing.activateCodexModels(arena, snapshot.models)) {
                 codex_catalog_source = "live account catalog";
                 // Never persist an override-origin snapshot into the real cache.
-                if (provider.g_codex_url_override == null) writeCodexCache(io, arena, home, version, snapshot.models);
+                if (provider.g_codex_url_override == null) _ = writeCodexCache(io, arena, home, version, snapshot.models);
                 return;
             }
         }

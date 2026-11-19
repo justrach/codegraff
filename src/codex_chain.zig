@@ -32,7 +32,9 @@ const Agent = @import("agent.zig").Agent;
 pub fn propsFor(self: *const Agent) u64 {
     var arena_state = std.heap.ArenaAllocator.init(self.gpa);
     defer arena_state.deinit();
-    return propsFp(self.provider.model, @tagName(self.reasoning), self.fast, wireTools(self, arena_state.allocator()), self.systemPrompt());
+    const st = @import("service_tier.zig");
+    const wire = st.wireValue(self.provider.id, self.provider.model, st.effective(self));
+    return propsFpTier(self.provider.model, @tagName(self.reasoning), wire, wireTools(self, arena_state.allocator()), self.systemPrompt());
 }
 
 /// The `tools` a request carries. Where loads ride additional_tools items
@@ -124,14 +126,17 @@ pub fn record(self: *Agent) void {
 /// reasoning effort silently mixes two configurations into one conversation -
 /// and `/model` and `/effort` can both change mid-session.
 pub fn propsFp(model: []const u8, effort: []const u8, fast: bool, tools: []const u8, instructions: []const u8) u64 {
+    return propsFpTier(model, effort, if (fast) "priority" else null, tools, instructions);
+}
+
+pub fn propsFpTier(model: []const u8, effort: []const u8, service_tier: ?[]const u8, tools: []const u8, instructions: []const u8) u64 {
     var h = std.hash.Wyhash.init(0);
     // Length-prefixed rather than delimiter-joined: a model or effort name
     // containing the delimiter would otherwise alias onto another pairing.
-    for ([_][]const u8{ model, effort, tools, instructions }) |part| {
+    for ([_][]const u8{ model, effort, service_tier orelse "", tools, instructions }) |part| {
         h.update(std.mem.asBytes(&part.len));
         h.update(part);
     }
-    h.update(&[_]u8{@intFromBool(fast)});
     return h.final();
 }
 
@@ -168,6 +173,7 @@ test "propsFp: model, effort, fast, tools and instructions each break the chain"
     try std.testing.expect(base != propsFp("gpt-5.6-codex", "medium", false, "[]", "sys"));
     try std.testing.expect(base != propsFp("gpt-5.6", "high", false, "[]", "sys"));
     try std.testing.expect(base != propsFp("gpt-5.6", "medium", true, "[]", "sys")); // /fast
+    try std.testing.expect(propsFpTier("gpt-6.2-sol", "low", "priority", "[]", "sys") != propsFpTier("gpt-6.2-sol", "low", "ultrafast", "[]", "sys")); // /ultrafast
     try std.testing.expect(base != propsFp("gpt-5.6", "medium", false, "[{}]", "sys")); // MCP server connected
     try std.testing.expect(base != propsFp("gpt-5.6", "medium", false, "[]", "sys2")); // /ultracode
     // Length-prefixing: "ab"+"c" must not collide with "a"+"bc".

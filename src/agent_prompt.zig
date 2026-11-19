@@ -31,6 +31,8 @@ pub fn prompt(self: *Agent) !void {
 /// Snapshot the session as the status line describes it. Every field is
 /// semantic: no widths, no colors, no assembled segments.
 fn status(self: *Agent) engine_events.PromptStatus {
+    const st = @import("service_tier.zig");
+    const tier = st.normalizedForModel(self.provider.id, self.provider.model, st.effective(self));
     return .{
         .model = self.provider.model,
         .provider_id = self.provider.id,
@@ -48,9 +50,10 @@ fn status(self: *Agent) engine_events.PromptStatus {
         } else null,
         .cache_read = self.last_cache_read,
         .cost = cost(self),
-        // Fast priority is exclusive to the ChatGPT/Codex route; the official
-        // OpenAI Platform Responses provider does not inherit that contract.
-        .fast = self.fast and std.mem.eql(u8, self.provider.id, "codex"),
+        // Fast/Ultrafast service tiers belong to the ChatGPT/Codex routes;
+        // direct API and third-party providers do not inherit that contract.
+        .fast = tier == .fast,
+        .ultrafast = tier == .ultrafast,
         .fallback = self.fallback_active,
         .plan = main_mod.plan_mode,
         .strict = self.strict,

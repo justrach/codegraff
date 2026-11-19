@@ -53,6 +53,8 @@ pub const rows = [_]ModelInfo{
     .{ .provider = "deepseek", .name = "deepseek-v4-flash", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-chat", .context = 1_000_000 },
     .{ .provider = "deepseek", .name = "deepseek-reasoner", .context = 1_000_000 },
+    .{ .provider = "openai", .name = "gpt-6.2-astra", .context = 1_050_000 },
+    .{ .provider = "openai", .name = "gpt-6.2-sol", .context = 1_050_000 },
     .{ .provider = "openai", .name = "gpt-6-astra", .context = 1_050_000 },
     .{ .provider = "openai", .name = "gpt-6-sol", .context = 1_050_000 },
     .{ .provider = "openai", .name = "gpt-6.1-sol", .context = 1_050_000 },
@@ -80,6 +82,8 @@ pub const rows = [_]ModelInfo{
     // Codex slice from the account-scoped /models response (5-minute cache).
     // These rows keep Codex usable when auth or discovery is unavailable.
     .{ .provider = "codex", .name = "gpt-6-astra", .context = 272_000, .default_effort = "medium", .default_verbosity = "low" },
+    .{ .provider = "codex", .name = "gpt-6.2-sol", .context = 500_000, .default_effort = "low", .default_verbosity = "low", .supports_ultrafast = true },
+    .{ .provider = "codex", .name = "gpt-6.2-astra", .context = 272_000, .default_effort = "low", .default_verbosity = "low", .supports_ultrafast = true },
     .{ .provider = "codex", .name = "gpt-6-sol", .context = 272_000, .default_effort = "medium", .default_verbosity = "low" },
     .{ .provider = "codex", .name = "gpt-6.1-sol", .context = 500_000, .default_effort = "low", .default_verbosity = "low" },
     .{ .provider = "codex", .name = "gpt-6-luna", .context = 272_000 },
@@ -96,6 +100,8 @@ pub const rows = [_]ModelInfo{
     .{ .provider = "codex", .name = "gpt-5.3-codex-spark", .context = 128_000 },
     // The ChatGPT plan through the new sign-in (ADR 0221): subscription
     // defaults, with GPT-6.1 Sol at 500k (ADR 0292). Offline fallback rows.
+    .{ .provider = "chatgpt-new", .name = "gpt-6.2-sol", .context = 500_000, .supports_ultrafast = true },
+    .{ .provider = "chatgpt-new", .name = "gpt-6.2-astra", .context = 272_000, .supports_ultrafast = true },
     .{ .provider = "chatgpt-new", .name = "gpt-6.1-sol", .context = 500_000 },
     .{ .provider = "chatgpt-new", .name = "gpt-6-astra", .context = 272_000 },
     .{ .provider = "chatgpt-new", .name = "gpt-6-sol", .context = 272_000 },
@@ -141,6 +147,8 @@ pub const rows = [_]ModelInfo{
     .{ .provider = "codegraff", .name = "deepseek-v4-pro", .context = 1_000_000 },
     .{ .provider = "codegraff", .name = "deepseek-v4-flash", .context = 1_000_000 },
     .{ .provider = "codegraff", .name = "minimax-m3", .context = 1_000_000 },
+    .{ .provider = "codegraff", .name = "gpt-6.2-astra", .context = 1_050_000 },
+    .{ .provider = "codegraff", .name = "gpt-6.2-sol", .context = 1_050_000 },
     .{ .provider = "codegraff", .name = "gpt-6-astra", .context = 1_050_000 },
     .{ .provider = "codegraff", .name = "gpt-6-sol", .context = 1_050_000 },
     .{ .provider = "codegraff", .name = "gpt-6.1-sol", .context = 1_050_000 },

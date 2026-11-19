@@ -378,8 +378,10 @@ pub fn resolveKeysOptional(io: Io, gpa: Allocator, arena: Allocator, environ_map
     // native-cache parse, and possible refresh until a model surface needs it.
     // Codex-observable launches accept the local snapshot (even stale) without
     // network I/O; model surfaces go online via ensure() when they need it.
-    if (catalog_selection.startupMayUse(keys, "codex", model_flag, saved_model))
+    if (catalog_selection.startupMayUse(keys, "codex", model_flag, saved_model)) {
         model_catalog.ensureCached(io, gpa, arena, home, keys.get("codex") orelse "", keys.codex_account);
+        @import("catalog_refresh.zig").detachCodexIfStale(io, arena, home, model_catalog.codex_home, keys.get("codex") orelse "", keys.codex_account);
+    }
     router_catalog.ensureForStartup(io, gpa, arena, home, keys, model_flag, saved_model, worker_provider_hint);
     if (home.len != 0) {
         // Apply the independent models.dev price/context overlay after routing

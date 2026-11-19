@@ -28,6 +28,8 @@ pub fn configure(d: *engine.Dispatch, live: *LiveTurn) void {
     d.set_orchestrator = @import("acp_orchestrator.zig").set;
     d.unharnessed_config = @import("acp_unharnessed.zig").option;
     d.set_unharnessed = @import("acp_unharnessed.zig").set;
+    d.service_tier_config = @import("acp_service_tier.zig").option;
+    d.set_service_tier = @import("acp_service_tier.zig").set;
     d.durable_session_id = if (session.validSessionName(live.root.session_name)) live.root.session_name else null;
     d.durable_name = durableName;
     live.dispatch = d;

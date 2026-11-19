@@ -29,6 +29,7 @@ pub const startup_budget: Io.Duration = .fromMilliseconds(800);
 pub const Job = union(enum) {
     router: struct { spec: provider.ProviderSpec, source: provider.Keys.CredentialSource },
     kimi,
+    codex: struct { account: []const u8, codex_home: []const u8 },
 };
 
 /// Thread-safe and independent of every caller's lifetime: an abandoned task
@@ -52,10 +53,14 @@ const Task = struct {
     job: Job,
     home: []u8,
     key: []u8,
+    extra1: []u8 = &.{},
+    extra2: []u8 = &.{},
 
     fn destroy(t: *Task) void {
         alloc.free(t.home);
         alloc.free(t.key);
+        if (t.extra1.len > 0) alloc.free(t.extra1);
+        if (t.extra2.len > 0) alloc.free(t.extra2);
         alloc.destroy(t);
     }
 
@@ -67,8 +72,9 @@ const Task = struct {
         t.ok = switch (t.job) {
             .router => |r| @import("router_catalog.zig").fetchToCache(io, alloc, t.home, r.spec, t.key, r.source),
             .kimi => @import("kimi_catalog.zig").fetchToCache(io, alloc, t.home, t.key),
+            .codex => @import("catalog_refresh.zig").fetchCodexToCache(io, alloc, t.home, t.extra2, t.key, t.extra1),
         };
-        // A cold boot's detached fetch is activated by the main thread later.
+        // A cold or stale boot's detached fetch is activated by the main thread later.
         @import("catalog_landing.zig").settle(t.job, t.ok);
         // The waiter gave up: nobody else will free this task.
         if (t.state.cmpxchgStrong(running, finished, .acq_rel, .acquire) != null) t.destroy();
@@ -88,6 +94,7 @@ pub fn privateThreaded() Io.Threaded {
 
 fn start(job: Job, home: []const u8, key: []const u8) ?*Task {
     if (builtin.single_threaded or home.len == 0 or key.len == 0) return null;
+    if (job == .codex and job.codex.account.len == 0) return null;
     const t = alloc.create(Task) catch return null;
     const home_d = alloc.dupe(u8, home) catch {
         alloc.destroy(t);
@@ -98,7 +105,26 @@ fn start(job: Job, home: []const u8, key: []const u8) ?*Task {
         alloc.destroy(t);
         return null;
     };
-    t.* = .{ .job = job, .home = home_d, .key = key_d };
+    var extra1: []u8 = &.{};
+    var extra2: []u8 = &.{};
+    if (job == .codex) {
+        extra1 = alloc.dupe(u8, job.codex.account) catch {
+            alloc.free(key_d);
+            alloc.free(home_d);
+            alloc.destroy(t);
+            return null;
+        };
+        if (job.codex.codex_home.len > 0) {
+            extra2 = alloc.dupe(u8, job.codex.codex_home) catch {
+                alloc.free(extra1);
+                alloc.free(key_d);
+                alloc.free(home_d);
+                alloc.destroy(t);
+                return null;
+            };
+        }
+    }
+    t.* = .{ .job = job, .home = home_d, .key = key_d, .extra1 = extra1, .extra2 = extra2 };
     _ = live.fetchAdd(1, .acquire);
     const thread = std.Thread.spawn(.{}, Task.run, .{t}) catch {
         _ = live.fetchSub(1, .release);
@@ -128,7 +154,7 @@ pub fn waitIdle(io: Io, budget: Io.Duration) bool {
     return true;
 }
 
-pub const max_tasks = provider.provider_specs.len + 2;
+pub const max_tasks = provider.provider_specs.len + 3;
 
 /// Fetches that share one deadline: boot pays the slowest host, capped.
 pub const Batch = struct {

@@ -276,8 +276,9 @@ pub const PromptStatus = struct {
     /// Prompt-cache hit on the last response; 0 = nothing cached.
     cache_read: u64 = 0,
     cost: CostMeter = .hidden,
-    /// The Fast badge APPLIES — the flag is on and the provider honors it.
+    /// The Fast / Ultrafast badge APPLIES — the flag is on and the provider/model honors it.
     fast: bool = false,
+    ultrafast: bool = false,
     fallback: bool = false,
     plan: bool = false,
     strict: bool = false,

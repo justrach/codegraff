@@ -128,7 +128,7 @@ pub const provider_specs = [_]ProviderSpec{
     // `graff login chatgpt`, sent to the public Responses endpoint. Before
     // codex on purpose: it is the primary ChatGPT route (ADR 0229), so a bare
     // model name and the startup default pick it when both are signed in.
-    .{ .id = "chatgpt-new", .display_name = "ChatGPT plan (new sign-in)", .kind = .responses, .auth = .bearer, .url = "https://api.openai.com/v1/responses", .env_key = "CHATGPT_NEW_DISABLED", .default_model = "gpt-6.1-sol", .login = .chatgpt_browser, .sub_login = true, .catalog = .openai, .models_url = "https://api.openai.com/v1/models?client_version=0.159.0" },
+    .{ .id = "chatgpt-new", .display_name = "ChatGPT plan (new sign-in)", .kind = .responses, .auth = .bearer, .url = "https://api.openai.com/v1/responses", .env_key = "CHATGPT_NEW_DISABLED", .default_model = "gpt-6.1-sol", .login = .chatgpt_browser, .sub_login = true, .catalog = .openai, .models_url = "https://api.openai.com/v1/models?client_version=0.170.0" },
     // codex: ChatGPT login via the Responses API. Its "key" isn't an env var
     // — it's the OAuth access token read from CODEX_HOME/auth.json at startup
     // (see loadCodexAuth), the same on-disk-credential trick used for the

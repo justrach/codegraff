@@ -152,7 +152,7 @@ test "a cold catalog cache does not hold boot, and the list activates when the f
     try std.testing.expectEqual(@as(usize, 1), f.gets.load(.acquire));
 }
 
-test "a stale catalog cache still activates now and refreshes behind for the next process" {
+test "a stale catalog cache activates immediately and refreshes behind into the live session" {
     if (@import("builtin").single_threaded) return error.SkipZigTest;
     const io = std.testing.io;
     var f: Fixture = undefined;
@@ -170,16 +170,41 @@ test "a stale catalog cache still activates now and refreshes behind for the nex
 
     rc.ensureForStartup(io, std.testing.allocator, arena, f.home, f.keys, "zai", null, null);
     try std.testing.expect(pricing.providerModelInTable("zai", "glm-cached-test"));
-    // Unchanged by ADR 0340: a stale refresh is not marked for activation.
-    try std.testing.expect(!landing.waiting(f.index));
+    // ADR 0350: stale-while-revalidate marks the slot so the landed refresh
+    // activates on the next model-surface beat without requiring a restart.
+    try std.testing.expect(landing.waiting(f.index));
     try std.testing.expect(catalog_bounded.waitIdle(io, .fromSeconds(10)));
     try std.testing.expectEqual(@as(usize, 1), f.gets.load(.acquire));
     boot.activateLanded(io, arena, f.home);
-    try std.testing.expect(pricing.providerModelInTable("zai", "glm-cached-test"));
-    try std.testing.expect(!pricing.providerModelInTable("zai", "glm-landed-test"));
-    // ...and the refreshed list is on disk for the next process.
+    try std.testing.expect(pricing.providerModelInTable("zai", "glm-landed-test"));
+    // ...and the refreshed list is on disk for the next process too.
     const written = try Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024));
     try std.testing.expect(std.mem.indexOf(u8, written, "glm-landed-test") != null);
+}
+
+test "a 6-minute-old cache activates immediately at boot and revalidates in the background" {
+    if (@import("builtin").single_threaded) return error.SkipZigTest;
+    const io = std.testing.io;
+    var f: Fixture = undefined;
+    try f.init(.{ .body = landed_body });
+    defer f.deinit();
+    var state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer state.deinit();
+    const arena = state.allocator();
+    const spec = provider.specFor("zai").?;
+    var buf: [512]u8 = undefined;
+    const path = try f.cachePath(&buf);
+    try f.tmp.dir.createDirPath(io, ".codegraff");
+    const six_min_ago = @import("util.zig").unixMs(io) - rc.background_revalidate_ms - 60_000;
+    const aged = try std.fmt.allocPrint(arena, "{{\"source\":\"{s}\",\"fetched_at_ms\":{d},\"models\":[{{\"name\":\"glm-aged-test\"}}]}}\n", .{ spec.models_url, six_min_ago });
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = aged });
+
+    rc.ensureForStartup(io, std.testing.allocator, arena, f.home, f.keys, "zai", null, null);
+    try std.testing.expect(pricing.providerModelInTable("zai", "glm-aged-test"));
+    try std.testing.expect(catalog_bounded.waitIdle(io, .fromSeconds(10)));
+    try std.testing.expectEqual(@as(usize, 1), f.gets.load(.acquire));
+    boot.activateLanded(io, arena, f.home);
+    try std.testing.expect(pricing.providerModelInTable("zai", "glm-landed-test"));
 }
 
 test "a rejected cold catalog fetch stays quiet, activates nothing and is not retried" {

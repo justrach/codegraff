@@ -30,7 +30,14 @@ pub fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.R
     // Hydrate deferred local metadata without network refresh or MCP startup.
     @import("acp_model_option.zig").hydrate(live);
     const er = @import("effort_route.zig");
-    if (@import("gateway_picker_catalog.zig").requested(req.params)) @import("gateway_picker_catalog.zig").refresh(root.io, root.arena, root.home, keys.*);
+    const cat_refresh = @import("catalog_refresh.zig");
+    const codex_home = if (root.model_catalog) |mc| mc.codex_home else "";
+    if (cat_refresh.forceRequested(req.params)) {
+        _ = cat_refresh.refreshAllBounded(root.io, root.arena, root.home, codex_home, keys.*, .fromSeconds(4));
+    } else if (@import("gateway_picker_catalog.zig").requested(req.params)) {
+        @import("gateway_picker_catalog.zig").refresh(root.io, root.arena, root.home, keys.*);
+        cat_refresh.detachStaleAll(root.io, root.arena, root.home, codex_home, keys.*);
+    }
     const catalog = pricing.models();
     const Row = struct {
         name: []const u8,
@@ -43,10 +50,13 @@ pub fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.R
         current: bool,
         effortLevels: []const []const u8,
         fastSupported: bool,
+        ultrafastSupported: bool,
+        serviceTiers: []const []const u8,
         orchestratorSupported: bool,
         executorModel: ?[]const u8,
     };
     const orchestrator = @import("orchestrator_mode.zig");
+    const service_tier = @import("service_tier.zig");
     const ranked = try arena.alloc(models_rank.Scored, catalog.len);
     for (catalog, 0..) |m, i| ranked[i] = .{
         .idx = i,
@@ -75,13 +85,16 @@ pub fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.R
             .separateQuota = billing.quotaPoolFor(m.provider, m.name, keys.source(m.provider)) == .separate,
             .current = std.mem.eql(u8, m.name, root.provider.model) and std.mem.eql(u8, m.provider, root.provider.id),
             .effortLevels = if (supports_effort) er.levels(m.provider, m.name) else &.{},
-            .fastSupported = std.mem.eql(u8, m.provider, "codex"),
+            .fastSupported = service_tier.supportsFast(m.provider),
+            .ultrafastSupported = service_tier.supportsUltrafast(m.provider, m.name),
+            .serviceTiers = service_tier.tiersFor(m.provider, m.name),
             .orchestratorSupported = exec_p != null,
             .executorModel = if (exec_p) |ep| ep.model else null,
         };
     }
     const levels: []const []const u8 = if (!root.effortApplies()) &.{} else er.levels(root.provider.id, root.provider.model);
     const cur_exec = orchestrator.resolveExecutor(root.provider, root.reasoning);
+    const cur_tier = service_tier.normalizedForModel(root.provider.id, root.provider.model, service_tier.effective(root));
     try proto.writeResult(w, req.id, .{
         .models = rows,
         .commands = proto.slashCommands(),
@@ -89,9 +102,11 @@ pub fn liveModels(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.R
             .model = root.provider.model,
             .provider = root.provider.id,
             .effort = er.normalize(root.provider.id, root.provider.model, @tagName(root.reasoning)),
-            .fast = root.fast,
+            .fast = cur_tier != .standard,
+            .serviceTier = cur_tier.label(),
             .effortLevels = levels,
-            .fastSupported = std.mem.eql(u8, root.provider.id, "codex"),
+            .fastSupported = service_tier.supportsFast(root.provider.id),
+            .ultrafastSupported = service_tier.supportsUltrafast(root.provider.id, root.provider.model),
             .orchestrator = orchestrator.g_mode.label(),
             .orchestratorSupported = cur_exec != null,
             .executorModel = if (cur_exec) |ep| ep.model else null,

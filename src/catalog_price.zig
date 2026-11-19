@@ -50,6 +50,7 @@ fn perMillion(v: ?Value) ?f64 {
 /// the price when known, and the closing brace.
 pub fn writeCacheTail(w: *Io.Writer, m: pricing.ModelInfo) !void {
     try w.print(",\"context\":{d},\"supports_reasoning\":{}", .{ m.context, m.supports_reasoning });
+    if (m.supports_ultrafast) try w.writeAll(",\"supports_ultrafast\":true");
     if (m.price) |p| {
         try w.print(",\"pricing\":{{\"prompt\":{d},\"completion\":{d},\"input_cache_read\":{d}", .{ p.in / 1_000_000, p.out / 1_000_000, p.cache / 1_000_000 });
         if (p.high_at > 0) try w.print(",\"long_context\":{{\"threshold\":{d},\"prompt\":{d},\"completion\":{d},\"input_cache_read\":{d}}}", .{ p.high_at, p.high_in / 1_000_000, p.high_out / 1_000_000, p.high_cache / 1_000_000 });

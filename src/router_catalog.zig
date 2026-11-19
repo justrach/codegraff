@@ -24,8 +24,11 @@ const util = @import("util.zig");
 const buffered_http = @import("http2_buffered.zig");
 const failures = @import("catalog_failures.zig");
 
-/// Router catalogs change on the order of weeks; favour instant startup.
+/// Offline cache horizon (6 hours) and non-blocking background revalidation
+/// horizon (5 minutes, matching Codex) so new model rollouts appear quickly
+/// without delaying boot.
 const cache_ttl_ms: i64 = 6 * 60 * 60 * 1000;
+pub const background_revalidate_ms: i64 = 5 * 60 * 1000;
 const catalog_page_limit = 16 * 1024 * 1024; // Full provider lists may be much larger than the picker response.
 pub var attempted: [provider.provider_specs.len]bool = @splat(false);
 pub var additional_attempted = false;
@@ -201,6 +204,7 @@ pub fn parseModels(arena: Allocator, provider_id: []const u8, data: []const u8) 
             .context = context,
             .supports_reasoning = listsReasoning(item.object) or boolField(item.object, "supports_reasoning"),
             .price = @import("catalog_price.zig").parse(item.object),
+            .supports_ultrafast = @import("service_tier.zig").jsonAdvertisesUltrafast(item.object),
         }) catch continue;
     }
     const owned = rows.toOwnedSlice(arena) catch return null;
@@ -451,6 +455,15 @@ pub fn cacheFresh(io: Io, arena: Allocator, home: []const u8, spec: provider.Pro
     if (alwaysLive(spec)) return activate(arena, spec, snapshot.models);
     const age = util.unixMs(io) - snapshot.fetched_at_ms;
     return age >= 0 and age <= cache_ttl_ms and activate(arena, spec, snapshot.models);
+}
+
+/// True when the on-disk cache is absent, `alwaysLive`, or older than the
+/// 5-minute background revalidation interval (stale-while-revalidate).
+pub fn cacheNeedsRevalidate(io: Io, arena: Allocator, home: []const u8, spec: provider.ProviderSpec) bool {
+    const snapshot = cachedSnapshot(io, arena, home, spec) orelse return true;
+    if (alwaysLive(spec)) return true;
+    const age = util.unixMs(io) - snapshot.fetched_at_ms;
+    return age < 0 or age > background_revalidate_ms;
 }
 
 /// Startup catalog load; it lives in `router_catalog_boot.zig`.

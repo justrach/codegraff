@@ -243,11 +243,13 @@ pub fn run(ctx: *Ctx) !void {
                 ctx.root.emit(.{ .type = "effort", .ok = true, .level = @tagName(ctx.root.reasoning), .applies = ctx.root.effortApplies() });
                 continue;
             }
-            if (std.mem.eql(u8, rtype, "set_fast")) {
-                const on = if (parsed.object.get("on")) |v| (if (v == .bool) v.bool else false) else false;
-                ctx.root.fast = on;
-                _ = repl_glue.saveThinkingSettings(ctx.root.io, ctx.root.gpa, ctx.root.reasoning, ctx.root.fast, ctx.root.ultracode_mode, ctx.root.show_thinking, ctx.root.ai_title);
-                ctx.root.emit(.{ .type = "fast", .ok = true, .on = on, .applies = ctx.root.provider.kind == .responses });
+            if (std.mem.eql(u8, rtype, "set_fast") or std.mem.eql(u8, rtype, "set_service_tier")) {
+                const st = @import("service_tier.zig");
+                const tier = st.applyJson(ctx.root, parsed.object) orelse {
+                    ctx.root.emit(.{ .type = "error", .message = "set_service_tier needs default, fast, or ultrafast" });
+                    continue;
+                };
+                ctx.root.emit(.{ .type = "fast", .ok = true, .on = tier != .standard, .tier = tier.label(), .applies = st.appliesTo(ctx.root, tier) });
                 continue;
             }
             if (std.mem.eql(u8, rtype, "set_ultracode")) {

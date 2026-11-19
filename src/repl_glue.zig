@@ -476,6 +476,7 @@ pub fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fas
     }
     if (!fast) {
         _ = root_obj.orderedRemove("fast");
+        _ = root_obj.orderedRemove("service_tier");
     } else {
         root_obj.put(a, "fast", .{ .bool = true }) catch return false;
     }
@@ -519,9 +520,7 @@ pub fn loadThinkingSettings(io: Io, arena: Allocator, root: *Agent) void {
     if (v.object.get("effort")) |e| if (e == .string) {
         root.reasoning = std.meta.stringToEnum(ReasoningEffort, e.string) orelse root.reasoning;
     };
-    if (v.object.get("fast")) |fv| if (fv == .bool) {
-        root.fast = fv.bool;
-    };
+    @import("service_tier.zig").loadFromObject(root, v.object);
     if (v.object.get("ultracode")) |uv| if (uv == .bool) {
         root.ultracode_mode = uv.bool;
     };

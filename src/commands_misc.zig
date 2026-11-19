@@ -346,6 +346,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         try out.flush();
         return true;
     }
+    if (try @import("commands_refresh.zig").tryHandle(root, keys, arena, line, out)) return true;
     if ((comptime bo.extras) and std.mem.eql(u8, line, "/models health")) {
         try showModelsHealth(root, keys, arena, out);
         return true;

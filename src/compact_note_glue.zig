@@ -137,6 +137,7 @@ fn askModel(self: *Agent) ?[]const u8 {
         .run_budget = self.run_budget,
         .reasoning = self.reasoning,
         .fast = self.fast, // a speed change would miss the cached prefix
+        .service_tier = self.service_tier,
         .cap_new = self.cap_new,
         .sys_base = self.sys_base,
         .stream_quiet = true,

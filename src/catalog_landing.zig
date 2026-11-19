@@ -20,14 +20,16 @@ const idle: u8 = 0;
 const pending: u8 = 1;
 const landed: u8 = 2;
 
-/// One slot per baked provider, the workspace's additional router, and Kimi.
+/// One slot per baked provider, the workspace's additional router, Kimi, and Codex.
 pub const additional_slot = provider.provider_specs.len;
 pub const kimi_slot = provider.provider_specs.len + 1;
-var slots: [provider.provider_specs.len + 2]std.atomic.Value(u8) = @splat(.init(idle));
+pub const codex_slot = provider.provider_specs.len + 2;
+var slots: [provider.provider_specs.len + 3]std.atomic.Value(u8) = @splat(.init(idle));
 
 pub fn slotOf(job: Job) usize {
     return switch (job) {
         .kimi => kimi_slot,
+        .codex => codex_slot,
         .router => |r| for (provider.provider_specs, 0..) |spec, i| {
             if (std.mem.eql(u8, spec.id, r.spec.id)) break i;
         } else additional_slot,
@@ -84,4 +86,5 @@ test "a landing is taken once, a failure or an unmarked refresh never is" {
     try std.testing.expect(!waiting(slot));
     try std.testing.expect(!take(slot));
     try std.testing.expectEqual(kimi_slot, slotOf(.kimi));
+    try std.testing.expectEqual(codex_slot, slotOf(.{ .codex = .{ .account = "a", .codex_home = "" } }));
 }

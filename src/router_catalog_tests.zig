@@ -47,7 +47,7 @@ test "parseModels reads the ChatGPT plan's Codex-shaped list and skips hidden ro
     try std.testing.expectEqualStrings("gpt-6.1-sol", snapshot.models[0].name);
     try std.testing.expectEqual(@as(u64, 272_000), snapshot.models[0].context);
     const spec = provider.specFor("chatgpt-new") orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("https://api.openai.com/v1/models?client_version=0.159.0", modelsUrl(spec));
+    try std.testing.expectEqualStrings("https://api.openai.com/v1/models?client_version=0.170.0", modelsUrl(spec));
 }
 
 test "parseModels reads Vercel context_window and skips non-language types" {
@@ -465,7 +465,8 @@ test "startup catalog loads detach a cold cache and batch only what --model need
     try std.testing.expect(std.mem.indexOf(u8, body, "startKimi(io, &batch") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "batch.wait(io, catalog_bounded.startup_budget)") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, ".await(io)") == null);
-    try std.testing.expect(std.mem.indexOf(u8, src, "if (rc.alwaysLive(spec)) catalog_bounded.detach(job") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "if (rc.cacheNeedsRevalidate(io, arena, home, spec))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "catalog_bounded.detach(job") != null);
     // ADR 0340: only a --model the baked rows cannot resolve joins the batch.
     try std.testing.expect(std.mem.indexOf(u8, src, "if (needsLiveRows(spec.id, model_flag)) return batch.spawn(job") != null);
 }

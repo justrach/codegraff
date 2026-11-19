@@ -78,11 +78,12 @@ pub fn write(self: *Agent, s: *std.json.Stringify, tools: ?[]const u8, force_too
         try s.objectField("parallel_tool_calls");
         try s.write(true);
     }
-    // Codex "fast" mode (/fast): priority service tier — a ChatGPT-backend
-    // field the other Responses providers must never see.
-    if (self.fast and is_codex) {
+    // Codex / ChatGPT plan service tier (/fast, /ultrafast): priority or ultrafast —
+    // a ChatGPT-backend field direct API and third-party providers must never see.
+    const service_tier = @import("service_tier.zig");
+    if (service_tier.wireValue(self.provider.id, self.provider.model, service_tier.effective(self))) |tier| {
         try s.objectField("service_tier");
-        try s.write("priority");
+        try s.write(tier);
     }
     try s.objectField("reasoning");
     try s.beginObject();

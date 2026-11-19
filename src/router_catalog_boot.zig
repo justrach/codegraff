@@ -60,7 +60,10 @@ fn startKimi(io: Io, batch: *catalog_bounded.Batch, arena: Allocator, home: []co
         return null;
     };
     kimi_catalog.commit(arena, cache.rows, "cached account catalog");
-    if (!cache.fresh) catalog_bounded.detach(.kimi, home, access);
+    if (!cache.fresh) {
+        landing.expect(.kimi);
+        catalog_bounded.detach(.kimi, home, access);
+    }
     return null;
 }
 
@@ -108,10 +111,14 @@ fn startSpec(io: Io, batch: *catalog_bounded.Batch, arena: Allocator, home: []co
     // The workspace router caches under `.graff`, not home.
     const cache_home = if (rc.isAdditional(spec)) "." else home;
     if (rc.cacheFresh(io, arena, home, spec)) {
-        if (rc.alwaysLive(spec)) catalog_bounded.detach(job, cache_home, key);
+        if (rc.cacheNeedsRevalidate(io, arena, home, spec)) {
+            landing.expect(job);
+            catalog_bounded.detach(job, cache_home, key);
+        }
         return null;
     }
     if (rc.activateCached(io, arena, home, spec)) {
+        landing.expect(job);
         catalog_bounded.detach(job, cache_home, key);
         return null;
     }
@@ -123,8 +130,8 @@ fn startSpec(io: Io, batch: *catalog_bounded.Batch, arena: Allocator, home: []co
     return null;
 }
 
-/// Activate every catalog boot detached with no cache whose fetch has landed
-/// since. Main thread only: it owns the model table and `arena`. Cheap when
+/// Activate every catalog boot detached whose fetch has landed since.
+/// Main thread only: it owns the model table and `arena`. Cheap when
 /// nothing landed (one atomic load per slot), so model surfaces call it on
 /// every beat; each landing is activated once.
 pub fn activateLanded(io: Io, arena: Allocator, home: []const u8) void {
@@ -136,6 +143,9 @@ pub fn activateLanded(io: Io, arena: Allocator, home: []const u8) void {
     };
     if (landing.take(landing.kimi_slot)) if (kimi_catalog.cached(io, arena, home)) |fresh|
         kimi_catalog.commit(arena, fresh.rows, "live account catalog");
+    if (landing.take(landing.codex_slot)) {
+        _ = @import("catalog_refresh.zig").activateCachedCodex(io, arena, home);
+    }
 }
 
 test {

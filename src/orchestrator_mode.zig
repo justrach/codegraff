@@ -248,10 +248,13 @@ pub fn resolveExecutor(planner: Provider, reasoning: ReasoningEffort) ?Provider 
         return null;
     }
     if (std.mem.eql(u8, maker, "openai")) {
+        if (pricing.modelAliasEquals(planner.model, "gpt-6.2-astra"))
+            return firstAccepted(planner, &.{ "gpt-6.2-sol", "gpt-6.1-sol", "gpt-6-sol" });
         if (pricing.modelAliasEquals(planner.model, "gpt-6-astra"))
-            return firstAccepted(planner, &.{ "gpt-6-sol", "gpt-6.1-sol" });
+            return firstAccepted(planner, &.{ "gpt-6-sol", "gpt-6.1-sol", "gpt-6.2-sol" });
         if (pricing.modelAliasEquals(planner.model, "gpt-6-sol") or
-            pricing.modelAliasEquals(planner.model, "gpt-6.1-sol"))
+            pricing.modelAliasEquals(planner.model, "gpt-6.1-sol") or
+            pricing.modelAliasEquals(planner.model, "gpt-6.2-sol"))
             return acceptCandidate(planner, "gpt-6-luna");
         return null;
     }

@@ -176,6 +176,8 @@ pub const ModelInfo = struct {
     default_verbosity: ?[]const u8 = null,
     /// What the route charges, when its own catalog publishes it (catalog_price.zig).
     price: ?CatalogPrice = null,
+    /// ChatGPT/Codex catalog advertises `"ultrafast"` in `service_tiers` / `additional_speed_tiers`.
+    supports_ultrafast: bool = false,
 };
 
 /// USD per 1M tokens, with the optional whole-request long-context tier.
@@ -333,7 +335,7 @@ pub fn contextFor(provider_id: []const u8, model: []const u8) u64 {
     if (std.mem.endsWith(u8, model, "[1m]")) return @max(1_000_000, contextFor(provider_id, model[0 .. model.len - "[1m]".len]));
     // The ChatGPT plan route caps input like the Codex backend it shares.
     const is_codex = std.mem.eql(u8, provider_id, "codex") or std.mem.eql(u8, provider_id, "chatgpt-new");
-    const subscription_cap = if (std.mem.eql(u8, model, "gpt-6.1-sol")) sol_subscription_context_window else codex_context_window;
+    const subscription_cap = if (std.mem.eql(u8, model, "gpt-6.1-sol") or std.mem.eql(u8, model, "gpt-6.2-sol")) sol_subscription_context_window else codex_context_window;
     // Provider-specific baked row is authoritative (gateway gpt-5.5 = 400k, not
     // the API's 1.05M), so it wins over the fresh name-only overlay below.
     for (models()) |m| {
