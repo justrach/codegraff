@@ -217,8 +217,8 @@ test "#1909: safe-mode external run_task rooted elsewhere is blocked for local e
     // External MCP server configured in default safe mode and rooted elsewhere.
     const cfg_json = try std.fmt.allocPrint(
         a,
-        "{{\"command\":\"graff\",\"args\":[\"mcp\",\"serve\"],\"cwd\":\"{s}\"}}",
-        .{other_root},
+        "{{\"command\":\"graff\",\"args\":[\"mcp\",\"serve\"],\"cwd\":{f}}}",
+        .{std.json.fmt(other_root, .{})},
     );
     const cfg_val = try std.json.parseFromSliceLeaky(Value, a, cfg_json, .{ .allocate = .alloc_always });
     const boundary = boundaryFromConfig("codegraff", cfg_val.object, false);
@@ -269,8 +269,8 @@ test "#1909: safe-mode external run_task rooted elsewhere is blocked for local e
     // A matching --yolo server in the same cwd or a --no-local-tools caller is allowed.
     const yolo_json = try std.fmt.allocPrint(
         a,
-        "{{\"command\":\"graff\",\"args\":[\"mcp\",\"serve\",\"--yolo\"],\"cwd\":\"{s}\"}}",
-        .{active_ws},
+        "{{\"command\":\"graff\",\"args\":[\"mcp\",\"serve\",\"--yolo\"],\"cwd\":{f}}}",
+        .{std.json.fmt(active_ws, .{})},
     );
     const yolo_val = try std.json.parseFromSliceLeaky(Value, a, yolo_json, .{ .allocate = .alloc_always });
     const yolo_b = boundaryFromConfig("codegraff", yolo_val.object, false);

@@ -148,7 +148,7 @@ pub const lean_subagent_desc = "Spawn a sidecar for a self-contained task. Child
 /// descriptions so flash models start and finish instead of rereading
 /// essays. Do not drop to four tools (ADR 0024).
 pub const lean_shell_desc = if (@import("builtin").os.tag == .windows)
-    "Run a shell command on Windows in cwd. action=run returns stdout/stderr/exit. After 15s (or a shorter timeout) backgrounds. Persistent servers snapshot now — do not poll. Finite wait_ms>0 waits until exit."
+    "Run cmd.exe /c in cwd. action=run returns stdout/stderr/exit. After 15s (or a shorter timeout) backgrounds. Persistent servers snapshot now — do not poll. Finite wait_ms>0 waits until exit."
 else
     "Run /bin/sh -c in cwd. action=run returns stdout/stderr/exit. After 15s (or a shorter timeout) backgrounds. Persistent servers snapshot now — do not poll. Finite wait_ms>0 waits until exit.";
 pub const lean_bash_desc = lean_shell_desc;
