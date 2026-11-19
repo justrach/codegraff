@@ -10,6 +10,14 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.74
+
+- Fix HTTP/2 non-2xx error-body capture by reading bounded raw chunks instead of mutating the transport `Io.Reader` across allocators (#1903).
+- Give `webfetch` an isolated HTTP client with 64 KiB header/redirect buffers and actionable oversize and connection diagnostics (#1911).
+- Preserve macOS `nanocua` root Accessibility `AXError` codes and ScreenCaptureKit failure stage/error diagnostics without leaking content (#1910).
+- Surface `run_task` boundary metadata (`permission_mode`, `workspace_dir`, `edits_verified: false`), refuse mismatched safe/other-cwd `run_task` detours for local edits while preserving `--safe`, and annotate `run_task` completion as process-exit only (#1909).
+- Improve Windows shell quoting and tool ergonomics: keep `cmd.exe /d /c` default with temporary `.cmd` script quoting for quoted/multiline commands and opt-in Git Bash (`GRAFF_WINDOWS_SHELL=bash`), add non-interactive/UTF-8 env defaults, normalize Windows workspace root comparisons, allow read-only reads of sibling files under loaded skills, support `read_file` `contains` with line ranges, tolerate empty/null optional tool arguments, and absorb coarse filesystem mtime lag in `imagegen`.
+
 ## v0.302.74.73
 
 - Scope Orchestrator Mode phase and replan directives to the active turn, block `enter_plan_mode` once replan-exhausted, and allow quoted regex alternations, read-only `gh` queries, stdout `pdftotext`, and `readOnlyHint` MCP tools under plan/read-only mode while preserving user consent (#1908).

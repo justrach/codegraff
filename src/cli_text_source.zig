@@ -5,6 +5,11 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.74
+    \\  • Fix HTTP/2 error-body capture across allocators (#1903), give `webfetch` 64 KiB header/redirect buffers (#1911), and preserve `nanocua` AXError/ScreenCaptureKit failure diagnostics (#1910).
+    \\  • Add `run_task` boundary metadata, mismatched safe/cwd edit preflight refusal, and exit-only verification caveats while keeping `--safe` intact (#1909).
+    \\  • Quote Windows `cmd.exe` commands via temp `.cmd` scripts (opt-in Git Bash via `GRAFF_WINDOWS_SHELL=bash`), add Windows UTF-8/non-interactive env defaults, read-only skill sibling reads, `read_file` `contains`+range support, and empty/null optional tool-arg tolerance.
+    \\
     \\0.302.74.73
     \\  • Keep Orchestrator phase directives turn-scoped and allow quoted `rg` alternations, read-only `gh`, stdout `pdftotext`, and `readOnlyHint` MCP tools in plan mode (#1908).
     \\  • Skip Auto Orchestrator planning on informational `?` questions or compacted histories, and settle expanded Phase 2 compaction inside `compactAt()` (#1906).
