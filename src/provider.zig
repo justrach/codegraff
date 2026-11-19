@@ -4,6 +4,7 @@
 const std = @import("std");
 
 const pricing = @import("pricing.zig");
+const nanoattention = @import("provider_nanoattention.zig");
 const contextFor = pricing.contextFor;
 
 /// #203: declare the context window (tokens) for an unknown/local model whose real
@@ -23,10 +24,10 @@ pub var g_xai_responses: bool = true;
 pub const xai_responses_url = "https://api.x.ai/v1/responses";
 pub const xai_compact_url = "https://api.x.ai/v1/responses/compact";
 
-/// The context window for a provider+model, honoring g_context_override for an
-/// unknown/local model — i.e. only when contextFor returns the conservative default,
-/// never overriding a known window (#203).
+/// Context override applies to unknown models; native local runtimes may declare
+/// their actual configured capacity, while known catalog windows remain authoritative.
 fn contextWindowFor(provider_id: []const u8, model: []const u8) u64 {
+    if (std.mem.eql(u8, provider_id, "nanoattention")) return g_context_override orelse contextFor(provider_id, model);
     // Only an unknown/local model (no catalogued window) takes the override, so a
     // global GRAFF_CONTEXT can never shrink a known model that happens to be 200k.
     if (g_context_override) |ov| if (!pricing.isKnownModel(provider_id, model)) return ov;
@@ -111,6 +112,8 @@ pub const provider_specs = [_]ProviderSpec{
     // appear without a rebuild; the baked pricing.zig rows stay the offline
     // fallback and supply windows for models the gateway omits.
     .{ .id = "fireworks", .display_name = "fireworks", .kind = .openai, .auth = .bearer, .url = "https://api.fireworks.ai/inference/v1/chat/completions", .env_key = "FIREWORKS_API_KEY", .default_model = "accounts/fireworks/models/deepseek-v4-pro", .catalog = .openai, .models_url = "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue&pageSize=200" },
+    // Native Flint uses an externally installed local runtime; no cloud fallback.
+    .{ .id = "nanoattention", .display_name = "Native Flint (nanoattention)", .kind = .openai, .auth = .bearer, .url = nanoattention.default_chat_url, .env_key = "NANOATTENTION_API_KEY", .default_model = "flint", .catalog = .openai, .models_url = nanoattention.default_models_url },
     // mlx: a local model served by mlx-lm (`mlx_lm.server`) on Apple Silicon —
     // OpenAI-compatible, no real key (MLX_API_KEY=local just clears graff's boot gate).
     .{ .id = "mlx", .display_name = "mlx", .kind = .openai, .auth = .bearer, .url = "http://127.0.0.1:8080/v1/chat/completions", .env_key = "MLX_API_KEY", .default_model = "mlx-community/Qwen3.6-27B-OptiQ-4bit" },
@@ -178,6 +181,7 @@ fn resolvedUrl(spec: ProviderSpec, model: []const u8) []const u8 {
     if (std.mem.eql(u8, spec.id, "xai")) return g_xai_url_override orelse if (g_xai_responses) xai_responses_url else spec.url;
     if (std.mem.eql(u8, spec.id, "zai")) return g_zai_url_override orelse spec.url;
     if (std.mem.eql(u8, spec.id, "vercel")) return g_vercel_url_override orelse spec.url;
+    if (std.mem.eql(u8, spec.id, "nanoattention")) return nanoattention.chatUrl(spec.url);
     if (@import("provider_codegraff.zig").usesMessages(spec.id, model)) return @import("provider_codegraff.zig").messages_url;
     if (@import("provider_codegraff.zig").usesResponses(spec.id, model)) return @import("provider_codegraff.zig").responses_url;
     return spec.url;

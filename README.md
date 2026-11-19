@@ -230,8 +230,8 @@ with `graff mcp import-session <Claude-session-id>`.
 | `/strict` | every message is a tool |
 
 Providers: Anthropic, OpenAI, DeepSeek, xAI, Z.AI, Kimi, ChatGPT plan, Codex,
-Vercel, OpenRouter, MiniMax, Xiaomi, Groq, Cerebras, Mistral, plus one
-workspace router in `.graff/.config.router`. `graff models refresh` pulls the
+Vercel, OpenRouter, MiniMax, Xiaomi, Groq, Cerebras, Mistral, native Flint,
+and one workspace router in `.graff/.config.router`. `graff models refresh` pulls the
 catalogs. Claude-subscription OAuth is deliberately not supported.
 
 Local servers: `omlx` (the oMLX app on `127.0.0.1:8000`), `lmstudio`
@@ -239,7 +239,8 @@ Local servers: `omlx` (the oMLX app on `127.0.0.1:8000`), `lmstudio`
 oMLX requires its API key: `graff key set omlx <key>` or `OMLX_API_KEY`.
 `graff models` lists the models oMLX serves, `graff --model omlx` starts on
 the first one, and `graff --model omlx/<model>` picks one. `/effort` is sent
-as `reasoning_effort`.
+as `reasoning_effort`. Native Flint is available through the separately installed
+local `nanoattention` runtime; see [setup](docs/NANOATTENTION.md).
 
 </details>
 

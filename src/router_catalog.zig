@@ -88,6 +88,7 @@ pub fn dynamic(spec: provider.ProviderSpec) bool {
 
 pub fn modelsUrl(spec: provider.ProviderSpec) []const u8 {
     if (!dynamic(spec)) return "";
+    if (std.mem.eql(u8, spec.id, "nanoattention")) return @import("provider_nanoattention.zig").modelsUrl(spec.models_url);
     // Endpoint overrides keep discovery on the mock's origin, never the live API (#1795).
     if (std.mem.eql(u8, spec.id, "chatgpt-new")) if (provider.g_chatgpt_url_override) |url| return overrideModelsUrl(url);
     if (std.mem.eql(u8, spec.id, "vercel")) if (provider.g_vercel_url_override) |url| return overrideModelsUrl(url);

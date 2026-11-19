@@ -315,8 +315,8 @@ def check_provider() -> int:
     ids = [r["id"] for r in PROVIDER_SPECS]
     if len(ids) != len(set(ids)):
         raise Counterexample("provider-unique", None, f"ids={ids}")
-    if len(PROVIDER_SPECS) != 26:
-        raise Counterexample("provider-count", None, f"n={len(PROVIDER_SPECS)} want=26")
+    if len(PROVIDER_SPECS) != 27:
+        raise Counterexample("provider-count", None, f"n={len(PROVIDER_SPECS)} want=27")
     responses = [r for r in PROVIDER_SPECS if r["kind"] == "responses"]
     if [r["id"] for r in responses] != ["openai", "chatgpt-new", "codex"]:
         raise Counterexample("responses-vendors", None, f"{responses}")
