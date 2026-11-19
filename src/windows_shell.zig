@@ -7,14 +7,15 @@
 //! syntax errors.
 //!
 //! Strategy on Windows:
-//!   1. Prefer detected Git Bash (`bash.exe -c <cmd>`) when installed (skipping
-//!      WSL's `System32\bash.exe` / `WindowsApps\bash.exe` launchers). MSYS2
-//!      `bash.exe` parses standard Win32 `CommandLineToArgvW` quoting properly
-//!      and also provides POSIX core utilities.
-//!   2. When falling back to `cmd.exe` (or `GRAFF_WINDOWS_SHELL=cmd`), run
-//!      commands containing double quotes or newlines via a temporary `.cmd`
-//!      script (`cmd.exe /d /c <temp.cmd>`) so `argvToCommandLineWindows` never
-//!      sees embedded quotes to escape.
+//!   1. Default to `cmd.exe /d /c` so native Windows backslash paths
+//!      (`C:\Users\...`, `.\bin\tool.exe`) work without POSIX backslash
+//!      stripping. Whenever `cmd` contains double quotes or newlines, write a
+//!      temporary `.cmd` script and run `cmd.exe /d /c <temp.cmd>` so
+//!      `argvToCommandLineWindows` never sees embedded quotes to escape.
+//!   2. Opt-in Git Bash via `GRAFF_WINDOWS_SHELL=bash` (auto-detecting Git
+//!      Bash on PATH or standard Git install paths while skipping WSL's
+//!      `System32\bash.exe` / `WindowsApps\bash.exe` shims) or an explicit
+//!      `GRAFF_WINDOWS_SHELL=<path>` executable path.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -75,6 +76,8 @@ fn isExistingFile(io: Io, path: []const u8) bool {
 }
 
 /// Detect the Windows shell once at startup (before the tool catalog renders).
+/// Defaults to `cmd.exe` (preserving Windows backslash paths); opts into Git
+/// Bash when `GRAFF_WINDOWS_SHELL=bash` (or `git-bash` / an explicit path).
 /// No-op on POSIX platforms.
 pub fn detect(io: Io, environ_map: anytype) void {
     if (builtin.os.tag != .windows) {
@@ -85,13 +88,12 @@ pub fn detect(io: Io, environ_map: anytype) void {
     g_kind = .cmd;
     g_bash_len = 0;
 
-    if (environ_map.get("GRAFF_WINDOWS_SHELL")) |raw| {
-        const val = std.mem.trim(u8, raw, " \t\r\n");
-        if (std.ascii.eqlIgnoreCase(val, "cmd") or std.ascii.eqlIgnoreCase(val, "cmd.exe")) return;
-        if (val.len > 0 and isExistingFile(io, val)) {
-            rememberBash(val);
-            return;
-        }
+    const raw = environ_map.get("GRAFF_WINDOWS_SHELL") orelse return;
+    const val = std.mem.trim(u8, raw, " \t\r\n");
+    if (val.len == 0 or std.ascii.eqlIgnoreCase(val, "cmd") or std.ascii.eqlIgnoreCase(val, "cmd.exe")) return;
+    if (!std.ascii.eqlIgnoreCase(val, "bash") and !std.ascii.eqlIgnoreCase(val, "git-bash")) {
+        if (isExistingFile(io, val)) rememberBash(val);
+        return;
     }
 
     var cand_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -305,4 +307,20 @@ test "formatCmdScript preserves double quotes and env vars while escaping litera
         "@echo off\r\ncurl -s -o NUL -w \"%%{http_code}\" https://example.com && echo %USERPROFILE%\r\n",
         curl,
     );
+}
+
+test "Windows cmd.exe temp script runs quoted commands without backslash-quote corruption" {
+    if (builtin.os.tag != .windows) return;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var prep = prepare(gpa, io, "powershell -NoProfile -Command \"Write-Output ('ok:' + '100%')\"");
+    defer prep.cleanup(gpa, io);
+    try std.testing.expect(prep.temp_script != null);
+    const run = try @import("process_runner.zig").runCapped(gpa, io, prep.argv(), 4096, 4096, 30_000);
+    defer {
+        gpa.free(run.stdout);
+        gpa.free(run.stderr);
+    }
+    try std.testing.expect(@import("process_runner.zig").ranOk(run));
+    try std.testing.expectEqualStrings("ok:100%", std.mem.trim(u8, run.stdout, " \r\n"));
 }
