@@ -299,7 +299,8 @@ pub fn handleLoadNative(agent: anytype, input: Value) !?ExecResult {
     if (input != .object) return null;
     const prov = agentProvider(agent);
 
-    if (input.object.get("query")) |q| if (q == .string and input.object.get("tools") == null) {
+    const has_tools = if (input.object.get("tools")) |list| (list == .array and list.array.items.len > 0) else false;
+    if (input.object.get("query")) |q| if (q == .string and std.mem.trim(u8, q.string, " \t\r\n").len > 0 and !has_tools) {
         if (!native_fold.enabled) return null;
         const Candidate = struct { name: []const u8, spec: schema.ToolSpec };
         var matched: std.ArrayList(Candidate) = .empty;

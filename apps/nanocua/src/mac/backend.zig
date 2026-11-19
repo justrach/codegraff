@@ -286,7 +286,8 @@ const Job = struct {
                 const pid = named orelse j.session.last orelse
                     ax.focusedPid() orelse return j.fail("No app has the keyboard focus: pass pid or app.", .{});
                 if (pid == m.self_pid) return j.fail("That is nanocua itself, which agents don't see. Pass pid or app (see list_apps).", .{});
-                try ax.writeTree(&j.session.refs, w, pid, j.tree_options);
+                var ax_err: [256]u8 = undefined;
+                if ((try ax.writeTree(&j.session.refs, w, pid, j.tree_options)).formatError(&ax_err, pid)) |msg| return j.fail("{s}", .{msg});
                 if (windows.main(pid)) |win| if (!win.onscreen) try w.print("\n{s}\n", .{off_this_space});
                 j.session.last = pid;
             },
@@ -543,6 +544,7 @@ const Job = struct {
         });
         const max: u32 = @intCast(std.math.clamp(j.max_size orelse 1280, 64, 2560));
         var rect = capture.screen();
+        var detail: capture.Detail = .{};
         const result: capture.Error!capture.Shot = switch (route) {
             .refused => |why| return j.fail("{s}", .{why}),
             .whole_screen => blk: {
@@ -555,7 +557,7 @@ const Job = struct {
                     } };
                     if (rect.size.width < 1 or rect.size.height < 1) return j.fail("The region is empty.", .{});
                 }
-                break :blk capture.capture(m.gpa, rect, max);
+                break :blk capture.capture(m.gpa, rect, max, &detail);
             },
             .app => |pid| blk: {
                 const w = windows.main(pid) orelse return j.fail("App {d} has no window to capture.", .{pid});
@@ -563,11 +565,13 @@ const Job = struct {
                 j.session.last = pid;
                 // macOS refuses these (SCStream error -3811), with no better reason to pass on.
                 if (!w.onscreen) return j.fail("{s}", .{off_this_space});
-                break :blk capture.window(m.gpa, w.id, w.frame, max);
+                break :blk capture.window(m.gpa, w.id, w.frame, max, &detail);
             },
         };
+        var msg: [256]u8 = undefined;
         const shot = result catch |e| return switch (e) {
             error.NoPermission => j.fail("nanocua has no Screen Recording permission: ask the user to grant it in nanocua's window, or use get_ui_tree.", .{}),
+            error.CaptureFailed => j.fail("{s}", .{detail.formatMessage(&msg)}),
             else => j.fail("The screenshot failed ({s}).", .{@errorName(e)}),
         };
         j.shot = shot;

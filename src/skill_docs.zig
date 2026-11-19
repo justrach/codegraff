@@ -356,8 +356,10 @@ pub fn render(gpa: Allocator, io: Io, sk: Skill) ![]u8 {
     try aw.writer.writeAll(util.utf8Prefix(body, body_cap));
     if (body.len > body_cap)
         try aw.writer.print("\n\n[body truncated at {d} KB — read the rest from {s}]", .{ body_cap / 1024, sk.path });
-    if (sk.dir.len > 0)
+    if (sk.dir.len > 0) {
+        @import("skill_read_roots.zig").remember(io, sk.dir);
         try aw.writer.print("\n\n[this skill lives in {s}/ — read anything it references from there with read_file]", .{sk.dir});
+    }
     return aw.toOwnedSlice();
 }
 
@@ -581,4 +583,5 @@ test "load: catalog keeps name and desc; named skill reads the body from disk" {
 
 test { // split-out tests (file cap): unreferenced, they would silently never run
     _ = @import("skill_docs_tests.zig");
+    _ = @import("skill_read_roots.zig");
 }

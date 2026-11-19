@@ -65,7 +65,19 @@ pub const non_interactive = [_][2][]const u8{
     .{ "PAGER", "cat" },
     .{ "GIT_PAGER", "cat" },
     .{ "GIT_TERMINAL_PROMPT", "0" },
+    .{ "GCM_INTERACTIVE", "never" },
     .{ "DEBIAN_FRONTEND", "noninteractive" },
+};
+
+/// Non-interactive and UTF-8 defaults for Windows tool children: suppresses
+/// modal Git Credential Manager pop-ups and prevents Python cp1252/charmap
+/// crashes on Unicode files. Overridable via GRAFF_TOOL_ENV_PASS.
+pub const windows_defaults = [_][2][]const u8{
+    .{ "GIT_TERMINAL_PROMPT", "0" },
+    .{ "GCM_INTERACTIVE", "never" },
+    .{ "GIT_PAGER", "cat" },
+    .{ "PYTHONUTF8", "1" },
+    .{ "PYTHONIOENCODING", "utf-8" },
 };
 
 /// Git's editors: the variable is removed and `<config key>=true` appended to
@@ -100,12 +112,18 @@ pub fn build(gpa: Allocator, parent: *const Map) Allocator.Error!Map {
     for (provider.provider_specs) |spec| scrub(&m, spec.env_key, pass);
     if (provider.additional_router) |spec| scrub(&m, spec.env_key, pass);
     for (extra_secrets) |name| scrub(&m, name, pass);
-    if (builtin.os.tag != .windows) {
-        for (non_interactive) |kv| if (!passed(pass, kv[0])) try m.put(kv[0], kv[1]);
-        try gitEditors(&m, pass);
-    }
+    try applyPlatformDefaults(&m, pass, builtin.os.tag);
     try @import("gui_background.zig").applyTo(&m, builtin.os.tag); // #832: `open` launches in the background
     return m;
+}
+
+pub fn applyPlatformDefaults(m: *Map, pass: []const u8, os_tag: std.Target.Os.Tag) Allocator.Error!void {
+    if (os_tag == .windows) {
+        for (windows_defaults) |kv| if (!passed(pass, kv[0])) try m.put(kv[0], kv[1]);
+        return;
+    }
+    for (non_interactive) |kv| if (!passed(pass, kv[0])) try m.put(kv[0], kv[1]);
+    try gitEditors(m, pass);
 }
 
 /// Drop the user's GIT_EDITOR / GIT_SEQUENCE_EDITOR and append the `true`
@@ -445,4 +463,24 @@ test "#1267: OAuth and alias credentials are scrubbed while provider control fla
     }
     try std.testing.expectEqualStrings("1", m.get("CHATGPT_NEW_DISABLED").?);
     try std.testing.expectEqualStrings("1", m.get("GRAFF_CLAUDE_AGENT").?);
+}
+
+test "applyPlatformDefaults sets non-interactive Git and UTF-8 Python env on Windows" {
+    const gpa = std.testing.allocator;
+    var m = Map.init(gpa);
+    defer m.deinit();
+    try applyPlatformDefaults(&m, "", .windows);
+    try std.testing.expectEqualStrings("0", m.get("GIT_TERMINAL_PROMPT").?);
+    try std.testing.expectEqualStrings("never", m.get("GCM_INTERACTIVE").?);
+    try std.testing.expectEqualStrings("cat", m.get("GIT_PAGER").?);
+    try std.testing.expectEqualStrings("1", m.get("PYTHONUTF8").?);
+    try std.testing.expectEqualStrings("utf-8", m.get("PYTHONIOENCODING").?);
+
+    // GRAFF_TOOL_ENV_PASS still lets callers opt out of any default.
+    var m2 = Map.init(gpa);
+    defer m2.deinit();
+    try applyPlatformDefaults(&m2, "PYTHONUTF8,GCM_INTERACTIVE", .windows);
+    try std.testing.expect(m2.get("PYTHONUTF8") == null);
+    try std.testing.expect(m2.get("GCM_INTERACTIVE") == null);
+    try std.testing.expectEqualStrings("0", m2.get("GIT_TERMINAL_PROMPT").?);
 }

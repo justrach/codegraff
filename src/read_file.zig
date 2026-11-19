@@ -81,8 +81,9 @@ fn appendLiteralMatch(gpa: Allocator, output: *std.ArrayList(u8), line_bytes: []
     return true;
 }
 
-fn readMatches(io: Io, gpa: Allocator, file: Io.File, size: u64, needle: []const u8) !Result {
-    if (needle.len == 0 or size == 0) return .no_match;
+fn readMatches(io: Io, gpa: Allocator, file: Io.File, size: u64, start_opt: ?i64, end_opt: ?i64, needle: []const u8) !Result {
+    const bounds = normalizedBounds(start_opt, end_opt) orelse return .start_past_end;
+    if (needle.len == 0 or size == 0) return if (bounds.start > 1) .start_past_end else .no_match;
 
     var output: std.ArrayList(u8) = .empty;
     defer output.deinit(gpa);
@@ -91,6 +92,7 @@ fn readMatches(io: Io, gpa: Allocator, file: Io.File, size: u64, needle: []const
     var buffer: [16 * 1024]u8 = undefined;
     var offset: u64 = 0;
     var line_number: usize = 1;
+    var reached_start = bounds.start == 1;
 
     while (offset < size) {
         const want: usize = @intCast(@min(@as(u64, buffer.len), size - offset));
@@ -98,15 +100,27 @@ fn readMatches(io: Io, gpa: Allocator, file: Io.File, size: u64, needle: []const
         if (got != want) return error.UnexpectedEndOfFile;
         offset += got;
         for (buffer[0..got]) |byte| {
-            if (current_line.items.len == max_bytes) return .range_too_large;
-            try current_line.append(gpa, byte);
+            const in_window = line_number >= bounds.start and line_number <= bounds.end;
+            if (in_window) {
+                if (current_line.items.len == max_bytes) return .range_too_large;
+                try current_line.append(gpa, byte);
+            }
             if (byte != '\n') continue;
-            if (!try appendLiteralMatch(gpa, &output, current_line.items, line_number, needle)) return .range_too_large;
-            current_line.clearRetainingCapacity();
+            if (in_window) {
+                if (!try appendLiteralMatch(gpa, &output, current_line.items, line_number, needle)) return .range_too_large;
+                current_line.clearRetainingCapacity();
+            }
+            if (line_number == bounds.end) {
+                if (output.items.len == 0) return .no_match;
+                return .{ .text = try output.toOwnedSlice(gpa) };
+            }
             line_number +|= 1;
+            if (line_number == bounds.start) reached_start = true;
         }
     }
-    if (current_line.items.len > 0 and !try appendLiteralMatch(gpa, &output, current_line.items, line_number, needle))
+    if (!reached_start) return .start_past_end;
+    if (current_line.items.len > 0 and line_number >= bounds.start and line_number <= bounds.end and
+        !try appendLiteralMatch(gpa, &output, current_line.items, line_number, needle))
         return .range_too_large;
     if (output.items.len == 0) return .no_match;
     return .{ .text = try output.toOwnedSlice(gpa) };
@@ -125,7 +139,7 @@ pub fn read(io: Io, gpa: Allocator, dir: Io.Dir, path: []const u8, start_line: ?
     const prefix = try readPrefix(io, file, before.size, &prefix_buffer);
     if (std.mem.indexOfScalar(u8, prefix, 0) != null) return .{ .binary = before.size };
 
-    if (contains) |needle| return readMatches(io, gpa, file, before.size, needle);
+    if (contains) |needle| return readMatches(io, gpa, file, before.size, start_line, end_line, needle);
     if (start_line != null or end_line != null)
         return readWindow(io, gpa, file, before.size, start_line, end_line);
 
@@ -233,4 +247,15 @@ test "literal matching streams only numbered target lines" {
         else => return error.TestExpectedText,
     }
     try std.testing.expect((try read(std.testing.io, gpa, tmp.dir, "catalog.txt", null, null, "missing")) == .no_match);
+
+    // Combining contains with start_line/end_line narrows matching to that line window.
+    const windowed = try read(std.testing.io, gpa, tmp.dir, "catalog.txt", 3, 4, "SKU0420");
+    switch (windowed) {
+        .text => |text| {
+            defer gpa.free(text);
+            try std.testing.expectEqualStrings("3: omega SKU0420\n", text);
+        },
+        else => return error.TestExpectedText,
+    }
+    try std.testing.expect((try read(std.testing.io, gpa, tmp.dir, "catalog.txt", 1, 1, "SKU0420")) == .no_match);
 }

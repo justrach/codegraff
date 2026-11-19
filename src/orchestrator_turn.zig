@@ -341,6 +341,7 @@ pub fn run(root: *Agent, keys: *Keys, arena: Allocator, out: ?*Io.Writer, single
             arena,
             \\[orchestrator mode — phase 2: execute]
             \\Phase 1 planning is complete and read-only mode is now OFF. Carry out the approved plan below verbatim, make the edits, and verify with the relevant tests/commands.
+            \\Use this session's workspace-native tools (`edit_file`, `write_file`, `shell`) or a scoped shared-cwd `subagent` for local workspace edits rather than delegating through an external MCP task service (`mcp__codegraff__run_task`).
             \\If a step fails repeatedly or hits an unresolvable missing assumption, call `enter_plan_mode(reason)` alone to escalate back for replanning.
             \\
             \\Approved plan:

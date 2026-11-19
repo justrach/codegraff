@@ -33,9 +33,17 @@ fn hasDotDot(path: []const u8) bool {
 }
 
 fn under(path: []const u8, root: []const u8) bool {
-    if (!std.mem.startsWith(u8, path, root)) return false;
-    if (path.len == root.len) return true;
-    const next = path[root.len];
+    const clean = std.mem.trimEnd(u8, root, "/\\");
+    if (clean.len == 0 or path.len < clean.len) return false;
+    const ci = @import("builtin").os.tag == .windows;
+    for (clean, path[0..clean.len]) |rc, pc| {
+        if ((rc == '/' or rc == '\\') and (pc == '/' or pc == '\\')) continue;
+        if (ci) {
+            if (std.ascii.toLower(rc) != std.ascii.toLower(pc)) return false;
+        } else if (rc != pc) return false;
+    }
+    if (path.len == clean.len) return true;
+    const next = path[clean.len];
     return next == '/' or next == '\\';
 }
 

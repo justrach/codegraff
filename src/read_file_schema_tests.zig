@@ -69,10 +69,40 @@ test "read_file (#761): a call with only path is a whole-file read" {
     try std.testing.expect(!empty_contains.is_error);
     try std.testing.expectEqualStrings("hello whole file\n", empty_contains.text);
 
-    const combined = try readFile(cwd, "{\"path\":\"note.txt\",\"contains\":\"hello\",\"start_line\":1}");
+    const combined = try readFile(cwd, "{\"path\":\"note.txt\",\"contains\":\"hello\",\"start_line\":1,\"end_line\":1}");
     defer gpa.free(combined.text);
-    try std.testing.expect(combined.is_error);
-    try std.testing.expect(std.mem.indexOf(u8, combined.text, "cannot be combined") != null);
+    try std.testing.expect(!combined.is_error);
+    try std.testing.expectEqualStrings("1: hello whole file\n", combined.text);
+
+    const compact_conflict = try readFile(cwd, "{\"path\":\"note.txt\",\"contains\":\"hello\",\"compact\":true}");
+    defer gpa.free(compact_conflict.text);
+    try std.testing.expect(compact_conflict.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, compact_conflict.text, "cannot be combined") != null);
+}
+
+test "edit_file ignores empty/null edits array when top-level old_string is provided" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(io, .{ .sub_path = "a.txt", .data = "alpha\nbeta\n" });
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = real_buf[0..try tmp.dir.realPath(io, &real_buf)];
+
+    var parsed = try std.json.parseFromSlice(Value, gpa, "{\"path\":\"a.txt\",\"old_string\":\"alpha\",\"new_string\":\"ALPHA\",\"edits\":[]}", .{});
+    defer parsed.deinit();
+    var client: std.http.Client = undefined;
+    const out = exec.execTool(testCtx(&client, cwd, null), .{
+        .id = "call_e1",
+        .name = "edit_file",
+        .input = parsed.value,
+    });
+    defer gpa.free(out.text);
+    try std.testing.expect(!out.is_error);
+    const after = try tmp.dir.readFileAlloc(io, "a.txt", gpa, .limited(1024));
+    defer gpa.free(after);
+    try std.testing.expectEqualStrings("ALPHA\nbeta\n", after);
 }
 
 test "#1116: sequential missing reads under one prefix stop and point at list_dir" {

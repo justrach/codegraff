@@ -85,6 +85,7 @@ pub const Job = struct { // session-global; pump drains pipes or capture files; 
     stream: ?process_runner.StreamFn = null,
     stream_ctx: ?*anyopaque = null,
     capture: ?*job_capture.Capture = null, // ADR 0218: output in files, not pipes
+    temp_script: ?[]u8 = null, // Windows cmd.exe fallback .cmd script cleaned on finish
 };
 
 pub const job_unread_cap = 256 * 1024;
@@ -249,6 +250,7 @@ pub fn finish(job: *Job, io: Io, code: ?u8, killed: bool, detached: bool, pid: i
     if (detached) return;
     if (builtin.is_test) if (completion_test_hook) |hook| hook(io, id);
     if (pid != 0) job_registry.forget(io, job_registry.home, pid);
+    if (job.temp_script) |p| @import("windows_shell.zig").removeTempScript(io, p);
     if (!quiet) job_notify.publish(io, id, code, killed);
 }
 
@@ -275,11 +277,12 @@ const admin = @import("jobs_admin.zig");
 pub const setPinned = admin.setPinned;
 pub const restartJob = admin.restartJob;
 
-pub fn shellArgv(cmd: []const u8) [3][]const u8 { // /bin/sh -c, or cmd.exe /c on Windows
-    return if (builtin.os.tag == .windows)
-        .{ "cmd.exe", "/c", cmd }
-    else
-        .{ "/bin/sh", "-c", cmd };
+pub fn shellArgv(cmd: []const u8) [3][]const u8 { // /bin/sh -c, or Git Bash / cmd.exe /c on Windows
+    if (builtin.os.tag == .windows) {
+        if (@import("windows_shell.zig").gitBashPath()) |bash| return .{ bash, "-c", cmd };
+        return .{ "cmd.exe", "/c", cmd };
+    }
+    return .{ "/bin/sh", "-c", cmd };
 }
 
 pub const SpawnOpts = struct {
@@ -303,8 +306,10 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
     if (comptime job_capture.enabled) {
         if (opts.session.len > 0 and !opts.persistent) setup = job_capture.prepare(io, gpa, id, cmd);
     }
-    const sh = shellArgv(cmd);
-    const argv: []const []const u8 = if (setup) |*s| &s.argv else &sh;
+    const windows_shell = @import("windows_shell.zig");
+    var prep = windows_shell.prepare(gpa, io, cmd);
+    errdefer prep.cleanup(gpa, io);
+    const argv: []const []const u8 = if (setup) |*s| &s.argv else prep.argv();
     var child = std.process.spawn(io, .{
         .argv = argv,
         .cwd = if (opts.cwd) |path| .{ .path = path } else .inherit,
@@ -344,6 +349,7 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
         .started_ms = util.unixMs(io),
         .last_active_ms = nowMs(io),
         .capture = capture,
+        .temp_script = prep.takeTempScript(),
     };
     g_jobs.mutex.lockUncancelable(io);
     job.id = id;
@@ -354,6 +360,10 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
     g_jobs.mutex.unlock(io);
     if (!appended) {
         abortSpawn(gpa, io, &job.child, capture);
+        if (job.temp_script) |p| {
+            windows_shell.removeTempScript(io, p);
+            gpa.free(p);
+        }
         if (job.cwd) |c| gpa.free(c);
         gpa.free(job.cmd);
         gpa.destroy(job);
@@ -369,6 +379,10 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
         }
         g_jobs.mutex.unlock(io);
         abortSpawn(gpa, io, &job.child, capture);
+        if (job.temp_script) |p| {
+            windows_shell.removeTempScript(io, p);
+            gpa.free(p);
+        }
         if (job.cwd) |c| gpa.free(c);
         gpa.free(job.cmd);
         gpa.destroy(job);
@@ -505,6 +519,10 @@ fn freeJob(gpa: Allocator, io: Io, job: *Job) void {
     if (job.parked) job_parked.finish(io, job.id, job.cmd, .{ .exit_code = job.exit_code, .done = job.done, .killed = job.killed, .session_end = job.exit_cleanup, .unread = job.buf.items[job.cursor..] });
     // A kept job still writes to its capture: a later resume re-attaches it.
     if (job.capture) |c| job_capture.release(gpa, io, c, !job.detach);
+    if (job.temp_script) |p| {
+        @import("windows_shell.zig").removeTempScript(io, p);
+        gpa.free(p);
+    }
     job.buf.deinit(gpa);
     if (job.cwd) |c| gpa.free(c);
     gpa.free(job.cmd);

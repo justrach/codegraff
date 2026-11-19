@@ -59,10 +59,71 @@ const Walk = struct {
     shown: usize = 0,
     full: bool = false,
     saw_content: bool = false,
+    root_error: cf.AXError = 0,
+    root_null: bool = false,
 };
 
+pub const TreeOutcome = union(enum) {
+    ok,
+    root_failed: cf.AXError,
+    root_null,
+
+    pub fn formatError(self: TreeOutcome, buf: []u8, pid: i32) ?[]const u8 {
+        return switch (self) {
+            .ok => null,
+            .root_failed => |code| formatRootError(buf, pid, code),
+            .root_null => std.fmt.bufPrint(buf, "get_ui_tree failed for pid {d}: root AX query returned no attributes.", .{pid}) catch "get_ui_tree failed: root AX query returned no attributes.",
+        };
+    }
+};
+
+/// Symbolic name for standard HIServices AXError values.
+pub fn errorName(code: cf.AXError) []const u8 {
+    return switch (code) {
+        0 => "kAXErrorSuccess",
+        -25200 => "kAXErrorFailure",
+        -25201 => "kAXErrorIllegalArgument",
+        -25202 => "kAXErrorInvalidUIElement",
+        -25203 => "kAXErrorInvalidUIElementObserver",
+        -25204 => "kAXErrorCannotComplete",
+        -25205 => "kAXErrorAttributeUnsupported",
+        -25206 => "kAXErrorActionUnsupported",
+        -25207 => "kAXErrorNotificationUnsupported",
+        -25208 => "kAXErrorNotImplemented",
+        -25209 => "kAXErrorNotificationAlreadyRegistered",
+        -25210 => "kAXErrorNotificationNotRegistered",
+        -25211 => "kAXErrorAPIDisabled",
+        -25212 => "kAXErrorNoValue",
+        -25213 => "kAXErrorParameterizedAttributeUnsupported",
+        -25214 => "kAXErrorNotEnoughPrecision",
+        else => "unknown",
+    };
+}
+
+/// Only retry empty or transient `kAXErrorCannotComplete` (-25204) root queries.
+pub fn shouldRetryRoot(code: cf.AXError) bool {
+    return code == 0 or code == -25204;
+}
+
+/// Sanitized diagnostic for a failed root AX query (no app content or titles).
+pub fn formatRootError(buf: []u8, pid: i32, code: cf.AXError) []const u8 {
+    const hint: []const u8 = switch (code) {
+        -25211 => " (Accessibility API is disabled or trust was not granted to this process)",
+        -25204 => " (the target app did not answer or rejected accessibility messaging; verify Accessibility permission or app responsiveness)",
+        -25202 => " (the target process may have exited or invalidated its accessibility element)",
+        -25208 => " (the target process does not implement the accessibility protocol)",
+        else => "",
+    };
+    return std.fmt.bufPrint(buf, "get_ui_tree failed for pid {d}: root AX query returned AXError {d} ({s}){s}.", .{
+        pid,
+        code,
+        errorName(code),
+        hint,
+    }) catch "get_ui_tree failed: root AX query error.";
+}
+
 /// Writes app `pid`'s tree to `w`, replacing the refs.
-pub fn writeTree(refs: *Refs, w: *std.Io.Writer, pid: i32, opts: Options) !void {
+pub fn writeTree(refs: *Refs, w: *std.Io.Writer, pid: i32, opts: Options) !TreeOutcome {
     refs.clear();
     const arr = try copyNames(opts.include_frames);
     defer cf.CFRelease(arr);
@@ -78,23 +139,35 @@ pub fn writeTree(refs: *Refs, w: *std.Io.Writer, pid: i32, opts: Options) !void 
     const before = w.end;
     try visit(&walk, app, 0, 0);
     var tries: usize = 0;
-    while (!walk.saw_content and w.end == before and tries < 3) : (tries += 1) {
+    while (!walk.saw_content and w.end == before and shouldRetryRoot(walk.root_error) and tries < 3) : (tries += 1) {
         _ = usleep(300_000);
+        walk.root_error = 0;
+        walk.root_null = false;
         try visit(&walk, app, 0, 0);
     }
+    if (walk.root_error != 0) return .{ .root_failed = walk.root_error };
+    if (walk.root_null) return .root_null;
     if (w.end == before) try w.writeAll(if (walk.saw_content)
         "(no matching controls: retry without interactive_only to read text)\n"
     else
         "(no elements: the app shows no windows, or it doesn't support accessibility)\n");
     if (opts.interactive_only) try w.writeAll("(controls only; static text omitted)\n");
     if (walk.full) try w.print("(stopped at {d} elements: ask for a larger max_nodes, up to 2000)\n", .{walk.shown});
+    return .ok;
 }
 
 fn visit(walk: *Walk, el: cf.AXUIElementRef, depth: usize, level: usize) !void {
     if (walk.full or level > 64) return;
     var out: ?cf.CFArrayRef = null;
-    if (cf.AXUIElementCopyMultipleAttributeValues(el, walk.names, 0, &out) != 0) return;
-    const vals = out orelse return;
+    const rc = cf.AXUIElementCopyMultipleAttributeValues(el, walk.names, 0, &out);
+    if (rc != 0) {
+        if (level == 0) walk.root_error = rc;
+        return;
+    }
+    const vals = out orelse {
+        if (level == 0) walk.root_null = true;
+        return;
+    };
     defer cf.CFRelease(vals);
     var v: [names.len]?*anyopaque = @splat(null);
     for (0..walk.names_len) |i| {
@@ -245,4 +318,24 @@ test "AX batch keeps content and state while geometry is opt-in" {
             try std.testing.expectEqualStrings(entry[1], cf.text(&buf, cf.CFArrayGetValueAtIndex(attrs, @backingInt(entry[0]))));
         }
     }
+}
+
+test "#1910: root AX error formatting preserves code and symbolic name without content leakage" {
+    try std.testing.expectEqualStrings("kAXErrorCannotComplete", errorName(-25204));
+    try std.testing.expectEqualStrings("kAXErrorAPIDisabled", errorName(-25211));
+    try std.testing.expectEqualStrings("unknown", errorName(-99999));
+    try std.testing.expect(shouldRetryRoot(0));
+    try std.testing.expect(shouldRetryRoot(-25204));
+    try std.testing.expect(!shouldRetryRoot(-25211));
+    try std.testing.expect(!shouldRetryRoot(-25202));
+
+    var buf: [256]u8 = undefined;
+    const disabled = formatRootError(&buf, 4242, -25211);
+    try std.testing.expect(std.mem.indexOf(u8, disabled, "pid 4242") != null);
+    try std.testing.expect(std.mem.indexOf(u8, disabled, "AXError -25211") != null);
+    try std.testing.expect(std.mem.indexOf(u8, disabled, "kAXErrorAPIDisabled") != null);
+
+    const cannot = formatRootError(&buf, 100, -25204);
+    try std.testing.expect(std.mem.indexOf(u8, cannot, "AXError -25204") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cannot, "kAXErrorCannotComplete") != null);
 }

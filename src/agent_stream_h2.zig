@@ -346,21 +346,25 @@ fn headTask(head: *Head, watch: *http_send.Watch) anyerror!void {
     // classifies quota/overflow from the snippet and honours Retry-After.
     const throttled = head.status == 429 or head.status >= 500;
     if (throttled) main_mod.g_retry_after_ms = http.retryAfterMs(lines.header("retry-after"), lines.header("retry-after-ms"));
-    if (throttled or (head.status == 404 and head.openai)) captureErrorBody(head.gpa, lines);
+    if (throttled or (head.status == 404 and head.openai)) captureErrorBody(lines);
 }
 
 /// Same contract as http.capture5xxBodyStream: up to g_5xx_body_buf.len bytes
-/// of the body, lines joined without their newlines; best effort.
-fn captureErrorBody(gpa: std.mem.Allocator, lines: *http_zig.LineStream) void {
+/// of the body, lines joined without their newlines; best effort. Reads bounded
+/// raw chunks into caller-owned stack storage so allocation ownership can never
+/// cross between the connection allocator and the request allocator (#1903).
+pub fn captureErrorBody(lines: *http_zig.LineStream) void {
     main_mod.g_5xx_body_len = 0;
-    var line: std.ArrayList(u8) = .empty;
-    defer line.deinit(gpa);
+    var chunk: [256]u8 = undefined;
     while (main_mod.g_5xx_body_len < main_mod.g_5xx_body_buf.len) {
-        const more = lines.readLine(&line) catch break;
-        if (!more) break;
-        const n = @min(line.items.len, main_mod.g_5xx_body_buf.len - main_mod.g_5xx_body_len);
-        @memcpy(main_mod.g_5xx_body_buf[main_mod.g_5xx_body_len..][0..n], line.items[0..n]);
-        main_mod.g_5xx_body_len += n;
+        const n = lines.readChunk(&chunk) catch break;
+        if (n == 0) break;
+        for (chunk[0..n]) |b| {
+            if (b == '\n') continue;
+            if (main_mod.g_5xx_body_len >= main_mod.g_5xx_body_buf.len) break;
+            main_mod.g_5xx_body_buf[main_mod.g_5xx_body_len] = b;
+            main_mod.g_5xx_body_len += 1;
+        }
     }
 }
 

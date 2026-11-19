@@ -407,45 +407,9 @@ pub fn blankText(text: []const u8) bool {
     return meaningful < 16;
 }
 
-/// Fetch via the harness's shared HTTP client. The raw HTML/text body is
-/// capped at webfetch_cap.
+/// Fetch via the built-in HTTP fetcher (`webfetch.zig`, #1911).
 pub fn rawFetch(gpa: Allocator, client: *std.http.Client, url: []const u8) ToolOutput {
-    const buf = gpa.alloc(u8, webfetch_cap) catch return .{ .is_error = true };
-    defer gpa.free(buf);
-    var w: Io.Writer = .fixed(buf);
-    var truncated = false;
-    var status: ?std.http.Status = null;
-    if (client.fetch(.{
-        .location = .{ .url = url },
-        .method = .GET,
-        .response_writer = &w,
-        .headers = .{ .user_agent = .{ .override = "simple-harness/" ++ harness_version } },
-    })) |res| {
-        status = res.status;
-    } else |err| switch (err) {
-        error.WriteFailed => truncated = true, // body hit the cap: keep what we have
-        else => return failure(gpa, err),
-    }
-    const body = w.buffered();
-    if (status) |st| {
-        const code = @backingInt(st);
-        if (code < 200 or code >= 300) return .{
-            .text = std.fmt.allocPrint(gpa, "HTTP {d} {s}", .{ code, st.phrase() orelse "" }) catch return .{ .is_error = true },
-            .is_error = true,
-        };
-    }
-    if (std.mem.indexOfScalar(u8, body[0..@min(body.len, 4096)], 0) != null) return .{
-        .text = std.fmt.allocPrint(gpa, "{s} returned binary content ({d} bytes) — webfetch only handles text; use bash (e.g. curl -o) to download it", .{ url, body.len }) catch return .{ .is_error = true },
-        .is_error = true,
-    };
-    if (blankText(body)) return .{ .text = gpa.dupe(u8, "(empty response body)") catch return .{ .is_error = true } };
-    var aw: Io.Writer.Allocating = .init(gpa);
-    aw.writer.writeAll(body) catch {
-        aw.deinit();
-        return .{ .is_error = true };
-    };
-    if (truncated) aw.writer.print("\n[truncated at {d} KB]", .{webfetch_cap / 1024}) catch {};
-    return .{ .text = aw.toOwnedSlice() catch return .{ .is_error = true } };
+    return @import("webfetch.zig").fetch(gpa, client, url);
 }
 
 test "codedbGuard.referencesSourceFile: concrete code paths, not globs/logs/configs" {

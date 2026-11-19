@@ -88,14 +88,27 @@ pub fn sessionAbs(gpa: Allocator, io: Io, agent_cwd: ?[]const u8, path: []const 
     }
 }
 
-fn stripUnderRoot(raw_path: []const u8, root: []const u8, allow_self: bool) ?[]const u8 {
+fn pathCharEql(a: u8, b: u8, case_insensitive: bool) bool {
+    if ((a == '/' or a == '\\') and (b == '/' or b == '\\')) return true;
+    if (case_insensitive) return std.ascii.toLower(a) == std.ascii.toLower(b);
+    return a == b;
+}
+
+pub fn stripUnderRootPlatform(raw_path: []const u8, root: []const u8, allow_self: bool, case_insensitive: bool) ?[]const u8 {
     const clean = std.mem.trimEnd(u8, root, "/\\");
-    if (clean.len == 0 or !std.mem.startsWith(u8, raw_path, clean)) return null;
+    if (clean.len == 0 or raw_path.len < clean.len) return null;
+    for (clean, raw_path[0..clean.len]) |rc, pc| {
+        if (!pathCharEql(rc, pc, case_insensitive)) return null;
+    }
     if (raw_path.len == clean.len) return if (allow_self) "." else null;
-    if (!std.fs.path.isSep(raw_path[clean.len])) return null;
+    if (raw_path[clean.len] != '/' and raw_path[clean.len] != '\\') return null;
     const rel = std.mem.trimStart(u8, raw_path[clean.len..], "/\\");
     if (rel.len == 0) return if (allow_self) "." else null;
     return rel;
+}
+
+fn stripUnderRoot(raw_path: []const u8, root: []const u8, allow_self: bool) ?[]const u8 {
+    return stripUnderRootPlatform(raw_path, root, allow_self, @import("builtin").os.tag == .windows);
 }
 
 /// #1886: strip an exact `<agent_cwd>/` (or process cwd when `agent_cwd == null`)
@@ -225,4 +238,12 @@ test "#609: a native-shaped {path: …} read call is accepted under file" {
     var prepared_search = try prepareInput(std.testing.allocator, std.testing.io, "/tmp/graff-worktree", "mcp__codedbpro__faster_search", search_input);
     defer prepared_search.deinit(std.testing.allocator);
     try std.testing.expect(prepared_search.value.object.get("path") != null);
+}
+
+test "stripUnderRootPlatform handles Windows drive case and mixed slashes" {
+    try std.testing.expectEqualStrings("sub/doc.txt", stripUnderRootPlatform("c:/Work/Docs/sub/doc.txt", "C:\\Work\\Docs", false, true).?);
+    try std.testing.expectEqualStrings("a\\b.py", stripUnderRootPlatform("C:\\Work\\Docs\\a\\b.py", "C:/Work/Docs/", false, true).?);
+    try std.testing.expectEqualStrings(".", stripUnderRootPlatform("c:\\work\\docs\\", "C:\\Work\\Docs", true, true).?);
+    try std.testing.expect(stripUnderRootPlatform("C:\\Work\\DocsOther\\a.py", "C:\\Work\\Docs", false, true) == null);
+    try std.testing.expect(stripUnderRootPlatform("/Work/docs/a.py", "/work/docs", false, false) == null);
 }

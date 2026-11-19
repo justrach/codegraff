@@ -155,13 +155,24 @@ pub fn probeOwners(io: Io, records: []const Owner, out: []proc_identity.Probe) [
     return out[0..n];
 }
 
+fn isGitIdentity(id: []const u8) bool {
+    if (id.len == 0) return true; // default/unspecified keeps git worktree wording
+    return std.mem.endsWith(u8, id, ".git") or
+        std.mem.indexOf(u8, id, "/.git/") != null or
+        std.mem.indexOf(u8, id, "\\.git\\") != null;
+}
+
 pub fn duplicateOwnerWarning(arena: Allocator, rec: Owner, age_ms: i64) []const u8 {
     const mins = @divTrunc(if (age_ms > 0) age_ms else 0, std.time.ms_per_min);
     const goal = if (rec.goal.len > 0) std.fmt.allocPrint(arena, "\n  goal: {s}", .{rec.goal}) catch "" else "";
+    const guidance = if (isGitIdentity(rec.identity))
+        "you would both be editing the same uncommitted tree — restart with -w for an isolated worktree, or continue knowing edits can collide"
+    else
+        "you would both be editing the same folder — coordinate via peer_message or keep edits on separate files knowing edits can collide";
     return std.fmt.allocPrint(
         arena,
-        "⚠ another graff session already owns this worktree\n  pid {d} · session {s} · active {d}m{s}\n  you would both be editing the same uncommitted tree — restart with -w for an isolated worktree, or continue knowing edits can collide\n",
-        .{ rec.pid, if (rec.session_id.len > 0) rec.session_id else "unknown", mins, goal },
+        "⚠ another graff session already owns this worktree\n  pid {d} · session {s} · active {d}m{s}\n  {s}\n",
+        .{ rec.pid, if (rec.session_id.len > 0) rec.session_id else "unknown", mins, goal, guidance },
     ) catch "⚠ another graff session already owns this worktree\n";
 }
 
@@ -452,6 +463,12 @@ test "duplicateOwnerWarning: names the pid, the session and an escape hatch (#32
     try std.testing.expect(std.mem.indexOf(u8, text, "s-1") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "5m") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "-w") != null);
+
+    // Non-git folders omit the git-only `-w` worktree restart advice.
+    const folder = duplicateOwnerWarning(arena_state.allocator(), .{ .pid = 4242, .start_id = 1, .session_id = "s-2", .identity = "/tmp/plain-docs" }, 0);
+    try std.testing.expect(std.mem.indexOf(u8, folder, "s-2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, folder, "-w") == null);
+    try std.testing.expect(std.mem.indexOf(u8, folder, "same folder") != null);
 }
 
 test "identityLine: says which kind of checkout, and stays honest when unknown" {

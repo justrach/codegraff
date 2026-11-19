@@ -368,13 +368,19 @@ fn enable(arena: Allocator, tool: mcp.Tool) ![]const u8 {
     return (try publish(tool.qualified_name, try renderEntry(arena, tool))).rendered;
 }
 
+fn nonEmptyStr(input: Value, key: []const u8) ?[]const u8 {
+    const raw = tools_mod.strField(input, key) orelse return null;
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    return if (trimmed.len > 0) trimmed else null;
+}
+
 /// The pure core of the `load_tool_schemas` tool: everything except touching
 /// the Agent. `input` is the model-supplied argument object.
 pub fn loadInto(arena: Allocator, all: []const mcp.Tool, input: Value) !Loaded {
     var wanted: std.ArrayList(usize) = .empty;
     var missing: std.ArrayList([]const u8) = .empty;
 
-    const server = tools_mod.strField(input, "server");
+    const server = nonEmptyStr(input, "server");
     if (server) |want| {
         for (all, 0..) |t, i| if (std.mem.eql(u8, t.serverName(), want)) try wanted.append(arena, i);
         if (wanted.items.len == 0) try missing.append(arena, want);
@@ -390,7 +396,7 @@ pub fn loadInto(arena: Allocator, all: []const mcp.Tool, input: Value) !Loaded {
     };
     // codex tool_search pattern: keyword discovery when the exact name is not
     // known — top matches join `wanted` and load exactly like named tools.
-    if (tools_mod.strField(input, "query")) |q| {
+    if (nonEmptyStr(input, "query")) |q| {
         const matched = try mcp_listing.matchQuery(arena, all, q);
         if (matched.len == 0) {
             const rest = try mcp_listing.listing(arena, all, &.{});

@@ -494,12 +494,14 @@ fn execUnchecked(ctx: ToolCtx, call: tools.ToolCall) !ToolOutput {
             },
         };
     }
-    const sh = jobs.shellArgv(cmd);
+    var prep = @import("windows_shell.zig").prepare(gpa, io, cmd);
+    defer prep.cleanup(gpa, io);
+    const sh = prep.argv();
     // ADR 0232: a read-only child's command runs under the sandbox; with none, only the allowlist runs.
     const ro = @import("readonly_sandbox.zig");
     var sandboxed: ro.Argv = .{};
-    const argv: []const []const u8 = if (!ctx.read_only_shell) &sh else ro.build(io, ctx.agent_cwd, cmd, &sandboxed) orelse
-        if (ro.allowlisted(cmd)) &sh else return .{ .text = try gpa.dupe(u8, ro.refusal), .is_error = true };
+    const argv: []const []const u8 = if (!ctx.read_only_shell) sh else ro.build(io, ctx.agent_cwd, cmd, &sandboxed) orelse
+        if (ro.allowlisted(cmd)) sh else return .{ .text = try gpa.dupe(u8, ro.refusal), .is_error = true };
     var opts = jobs.toolRunOptions(ctx.agent_cwd);
     var live = exec_bash_stream.Ctx{ .io = io };
     exec_bash_stream.attach(&opts, false, &live); // subagents stay quiet (#93)

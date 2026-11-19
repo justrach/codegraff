@@ -379,3 +379,55 @@ test "FrameTap over real http_zig.Conn classifies HTTP_1_1_REQUIRED, REFUSED_STR
     try std.testing.expect(h2_buf.bufferedRedialFreshH2(true, false, error.GoAway));
     try std.testing.expect(!h2_buf.bufferedRedialFreshH2(false, true, error.RstStream));
 }
+
+test "#1903: captureErrorBody reads bounded chunks without crossing connection and request allocators" {
+    const main_mod = @import("main.zig");
+    const stream_h2 = @import("agent_stream_h2.zig");
+    const saved_len = main_mod.g_5xx_body_len;
+    defer main_mod.g_5xx_body_len = saved_len;
+
+    // Distinct allocators: the H2 connection owns `conn_dbg` while the caller
+    // uses `req_dbg` (mirroring a pooled connection vs a per-request allocator).
+    var conn_dbg: std.heap.DebugAllocator(.{}) = .init;
+    var req_dbg: std.heap.DebugAllocator(.{}) = .init;
+    {
+        const conn_gpa = conn_dbg.allocator();
+        const req_gpa = req_dbg.allocator();
+
+        var srv: Io.Writer.Allocating = .init(req_gpa);
+        defer srv.deinit();
+        try http_zig.frame.write(&srv.writer, .{ .typ = .settings, .flags = 0, .stream_id = 0, .payload = &.{} });
+        // :status 500 (static index 14 => 0x8e)
+        const hdr = [_]u8{0x8e};
+        try http_zig.frame.write(&srv.writer, .{ .typ = .headers, .flags = 0x4, .stream_id = 1, .payload = &hdr });
+        // Multi-line error body exceeding g_5xx_body_buf.len across two DATA frames.
+        const part1 = "{\"error\":\"upstream overload\"\n";
+        const part2 = ",\"detail\":\"" ++ @as([700]u8, @splat('x')) ++ "\"}\n";
+        try http_zig.frame.write(&srv.writer, .{ .typ = .data, .flags = 0, .stream_id = 1, .payload = part1 });
+        try http_zig.frame.write(&srv.writer, .{ .typ = .data, .flags = 0x1, .stream_id = 1, .payload = part2 });
+
+        var reader: Io.Reader = .fixed(srv.written());
+        var client_out: Io.Writer.Allocating = .init(conn_gpa);
+        defer client_out.deinit();
+        var conn = http_zig.Conn.init(conn_gpa, &reader, &client_out.writer);
+        defer conn.deinit();
+
+        var lines = try conn.startLines(.{
+            .method = "POST",
+            .scheme = "https",
+            .authority = "api.example",
+            .path = "/v1/responses",
+            .body = "{}",
+        });
+        defer lines.deinit();
+        try std.testing.expectEqual(@as(u16, 500), try lines.waitStatus());
+
+        stream_h2.captureErrorBody(&lines);
+        const got = main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len];
+        try std.testing.expectEqual(main_mod.g_5xx_body_buf.len, got.len);
+        try std.testing.expect(std.mem.startsWith(u8, got, "{\"error\":\"upstream overload\",\"detail\":\"xxx"));
+        try std.testing.expect(std.mem.indexOfScalar(u8, got, '\n') == null);
+    }
+    try std.testing.expectEqual(std.heap.Check.ok, conn_dbg.deinit());
+    try std.testing.expectEqual(std.heap.Check.ok, req_dbg.deinit());
+}

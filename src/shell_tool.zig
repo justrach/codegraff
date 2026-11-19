@@ -26,18 +26,36 @@ pub const tool_name = "shell";
 const os_clause = switch (@import("builtin").os.tag) {
     .macos => " on macOS (BSD tools: `sed -i ''`, no GNU-only flags)",
     .linux => " on Linux",
+    .windows => " on Windows (cmd.exe syntax: use dir/type/findstr or python; POSIX commands like ls/grep/head/2>/dev/null are unavailable unless running via Git Bash)",
     else => "",
 };
-const desc_head = "Run a shell command via /bin/sh -c";
+const desc_head = if (@import("builtin").os.tag == .windows)
+    "Run a shell command via cmd.exe /d /c"
+else
+    "Run a shell command via /bin/sh -c";
 pub const tool_desc = desc_head ++ os_clause ++ " in the current working directory, read a background job, or stop one. action=run (default when command is set) returns stdout/stderr/exit. A user-cancelled command reports cancelled (its whole local process group is killed; a remote process started over ssh may survive on the remote host). Foreground commands still running after 120s (interactive sessions and lean -p: 15s) move to the background and return a job id. For long-running commands set run_in_background true to skip the wait. You are notified on completion — do not poll. action=output wait_ms>0 blocks until exit (up to 10h) for a finite job; a persistent server snapshots immediately (wait_ms is ignored) and stays on /jobs. action=kill stops it. A background job that writes nothing and is read by nobody for 2 hours is stopped for inactivity; the user pins a long-lived server with /jobs keep. bash/bash_output/bash_kill still dispatch. Not a PTY: you cannot type into the process. Type in the composer to steer the turn.";
 pub const tool_schema =
     \\{"type": "object", "properties": {"action": {"type": "string", "enum": ["run", "output", "kill"], "description": "run a command, read a job, or stop a job. Default run when command is set."}, "command": {"type": "string", "description": "Shell command to execute (action=run)"}, "timeout": {"type": "integer", "description": "Unattended runs only: foreground wait in milliseconds before auto-background. A shorter value promotes earlier, not below 5000; a larger value cannot extend past the 120s (lean -p: 15s) bound. Interactive sessions always wait 15s. 0 uses the default. Ignored when run_in_background is true. A persistent server's action=output is a snapshot, not wait-until-exit."}, "run_in_background": {"type": "boolean", "description": "Start as a background job and return its id immediately instead of waiting (default false). Do not poll it."}, "id": {"type": "integer", "description": "Job id for action=output or kill"}, "wait_ms": {"type": "integer", "description": "0 = snapshot now. Finite jobs: >0 waits until exit (10h cap). Persistent servers: snapshot now; wait_ms is ignored. Do not poll."}}}
 ;
 
 /// ADR 0242: a rendered catalog whose shell description names python3's
-/// version, read once at startup (python_version.zig). Unchanged when unknown.
+/// version, read once at startup (python_version.zig), and on Windows swaps in
+/// Git Bash when startup detected it (windows_shell.zig). Unchanged when unknown.
 pub fn withPython(arena: std.mem.Allocator, catalog: []const u8) ![]const u8 {
     const v = @import("python_version.zig").version;
+    if (@import("builtin").os.tag == .windows) {
+        const git_bash = @import("windows_shell.zig").isGitBash();
+        if (!git_bash and v.len == 0) return catalog;
+        const head = if (git_bash) "Run a shell command via Git Bash (bash -c)" else desc_head;
+        const clause = if (git_bash)
+            (if (v.len > 0)
+                try std.fmt.allocPrint(arena, " on Windows (python3 is {s}, so scripts must run on {s})", .{ v, v })
+            else
+                " on Windows")
+        else
+            try std.fmt.allocPrint(arena, " on Windows (cmd.exe syntax; python3 is {s}, so scripts must run on {s})", .{ v, v });
+        return std.mem.replaceOwned(u8, arena, catalog, desc_head ++ os_clause, try std.mem.concat(arena, u8, &.{ head, clause }));
+    }
     if (v.len == 0) return catalog;
     const clause = switch (@import("builtin").os.tag) {
         .macos => try std.fmt.allocPrint(arena, " on macOS (BSD tools: `sed -i ''`, no GNU-only flags; python3 is {s}, so scripts must run on {s})", .{ v, v }),
@@ -233,6 +251,10 @@ test "ADR 0234: the shell tool names the OS its commands run on" {
     switch (@import("builtin").os.tag) {
         .macos => try std.testing.expect(std.mem.startsWith(u8, tool_desc, "Run a shell command via /bin/sh -c on macOS (BSD tools: `sed -i ''`, no GNU-only flags) in the current")),
         .linux => try std.testing.expect(std.mem.startsWith(u8, tool_desc, "Run a shell command via /bin/sh -c on Linux in the current")),
+        .windows => {
+            try std.testing.expect(std.mem.startsWith(u8, tool_desc, "Run a shell command via cmd.exe /d /c on Windows"));
+            try std.testing.expect(std.mem.indexOf(u8, tool_desc, "/bin/sh") == null);
+        },
         else => try std.testing.expect(std.mem.startsWith(u8, tool_desc, "Run a shell command via /bin/sh -c in the current")),
     }
 }

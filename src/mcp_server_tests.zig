@@ -126,6 +126,8 @@ test "MCP reports the context it carried" {
     try std.testing.expectEqual(@as(i64, 40), data.object.get("context_chars").?.integer);
     try std.testing.expect(data.object.get("context_summarized").?.bool);
     try std.testing.expectEqual(@as(i64, 7), data.object.get("context_used_chars").?.integer);
+    try std.testing.expect(!data.object.get("edits_verified").?.bool);
+    try std.testing.expectEqualStrings("safe", data.object.get("permission_mode").?.string);
     // Unavailable usage is stated, not omitted: a client must be able to tell
     // "no charge reported" apart from "the field was dropped".
     try std.testing.expect(!data.object.get("usage_reported").?.bool);

@@ -115,10 +115,16 @@ pub fn dispatch(agent: anytype, call: tools_mod.ToolCall) tools_mod.ExecResult {
     return withShapes(agent, mcp_schema_gate.handleLoad(agent, call.input));
 }
 
+fn nonEmptyStr(input: Value, key: []const u8) ?[]const u8 {
+    const raw = tools_mod.strField(input, key) orelse return null;
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    return if (trimmed.len > 0) trimmed else null;
+}
+
 fn isListingRequest(input: Value) bool {
     if (input != .object) return true;
-    if (tools_mod.strField(input, "server") != null) return false;
-    if (tools_mod.strField(input, "query") != null) return false;
+    if (nonEmptyStr(input, "server") != null) return false;
+    if (nonEmptyStr(input, "query") != null) return false;
     if (input.object.get("tools")) |list| {
         if (list == .array and list.array.items.len > 0) return false;
     }
@@ -170,8 +176,9 @@ pub fn loadBoth(agent: anytype, call: tools_mod.ToolCall) tools_mod.ExecResult {
         return mcp_res;
     }
 
-    if (tools_mod.strField(norm_input, "query")) |q| {
-        const no_tools = norm_input.object.get("tools") == null and tools_mod.strField(norm_input, "server") == null;
+    if (nonEmptyStr(norm_input, "query")) |q| {
+        const has_tools = if (norm_input.object.get("tools")) |list| (list == .array and list.array.items.len > 0) else false;
+        const no_tools = !has_tools and nonEmptyStr(norm_input, "server") == null;
         if (no_tools) {
             const native_q = native_fold.handleLoadNative(agent, norm_input) catch null;
             if (agent.registry == null) {
@@ -248,8 +255,8 @@ pub fn loadBoth(agent: anytype, call: tools_mod.ToolCall) tools_mod.ExecResult {
 pub fn mcpRemainder(arena: Allocator, input: Value) ?Value {
     if (input != .object) return null;
     var obj: std.json.ObjectMap = .empty;
-    if (input.object.get("server")) |v| obj.put(arena, "server", v) catch return null;
-    if (input.object.get("query")) |v| obj.put(arena, "query", v) catch return null;
+    if (nonEmptyStr(input, "server")) |sv| obj.put(arena, "server", .{ .string = sv }) catch return null;
+    if (nonEmptyStr(input, "query")) |qv| obj.put(arena, "query", .{ .string = qv }) catch return null;
     if (input.object.get("tools")) |list| if (list == .array) {
         var keep = std.json.Array.init(arena);
         for (list.array.items) |item| {
@@ -274,6 +281,13 @@ test "a load naming folded natives and an MCP server leaves the server for the M
     try std.testing.expectEqualStrings("mcp__linear__list_issues", left[0].string);
     const natives_only = try std.json.parseFromSliceLeaky(Value, a, "{\"tools\":[\"subagent\",\"workflow\"]}", .{ .allocate = .alloc_always });
     try std.testing.expect(mcpRemainder(a, natives_only) == null);
+
+    // Strict tool-calling models often send empty optional server/query strings.
+    const empty_opts = try std.json.parseFromSliceLeaky(Value, a, "{\"tools\":[\"subagent\"],\"server\":\"\",\"query\":\"   \"}", .{ .allocate = .alloc_always });
+    try std.testing.expect(mcpRemainder(a, empty_opts) == null);
+    try std.testing.expect(!isListingRequest(empty_opts));
+    const listing_empty = try std.json.parseFromSliceLeaky(Value, a, "{\"tools\":[],\"server\":\"\",\"query\":\"\"}", .{ .allocate = .alloc_always });
+    try std.testing.expect(isListingRequest(listing_empty));
 }
 
 test "search lists matches and does not enable them" {

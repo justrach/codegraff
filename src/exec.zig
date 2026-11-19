@@ -189,6 +189,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             return failure(gpa, err);
         };
         defer prepared.deinit(gpa);
+        if (@import("mcp_run_task_guard.zig").preflight(gpa, io, ctx, reg, call.name, call.input)) |refusal| return refusal;
         const r = reg.callAt(gpa, call.name, prepared.value, ctx.call_seq) catch |err| {
             codedbpro_report.onFailure(ctx, call.name, @errorName(err));
             return failure(gpa, err);
@@ -200,7 +201,9 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
             // ADR 0238: an rlm bind keeps every field. rlm slims only what it
             // prints, so a script can still project or save a dropped field.
             if (ctx.rlm_host) return .{ .text = try r.takeHostText(gpa), .is_error = false, .run_task = r.run_task };
-            return .{ .text = shapes.takeSlimKept(gpa, .{ .io = io, .dir = .cwd() }, r.text), .is_error = false, .run_task = r.run_task };
+            const slim = shapes.takeSlimKept(gpa, .{ .io = io, .dir = .cwd() }, r.text);
+            const final_text = try @import("mcp_run_task_guard.zig").annotateCompleted(gpa, call.name, r.run_task != null, slim);
+            return .{ .text = final_text, .is_error = false, .run_task = r.run_task };
         }
         return .{ .text = r.text, .is_error = r.is_error, .run_task = r.run_task };
     }
@@ -262,7 +265,8 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         if (ctx.read_miss) |tracker| {
             if (tracker.shouldRefuse(path)) return .{ .text = try read_miss.refusalText(gpa, path), .is_error = true };
         }
-        if (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd)) return outsideCwd(gpa, raw_path);
+        const skill_read_ok = @import("skill_read_roots.zig").isAllowedRead(io, raw_path);
+        if (!skill_read_ok and (!confinedPath(path) or !noSymlinkEscape(io, path, ctx.agent_cwd))) return outsideCwd(gpa, raw_path);
         const start_line: ?i64 = intField(input, "start_line") orelse if (intField(input, "offset")) |off| @max(@as(i64, 1), off) else null;
         const end_line: ?i64 = intField(input, "end_line") orelse blk_end: {
             const lim = intField(input, "limit") orelse break :blk_end null;
@@ -275,8 +279,8 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         const contains_raw = strField(input, "contains");
         const contains: ?[]const u8 = if (contains_raw) |n| (if (n.len == 0) null else n) else null;
         const want_compact = tools.json_args.flag(input, "compact");
-        if (contains != null and (start_line != null or end_line != null or want_compact))
-            return .{ .text = try gpa.dupe(u8, "read_file: contains cannot be combined with start_line, end_line, or compact"), .is_error = true };
+        if (contains != null and want_compact)
+            return .{ .text = try gpa.dupe(u8, "read_file: contains cannot be combined with compact"), .is_error = true };
         // #66: opt-in compact view routes to `codedb read <path> [-L a-b] --compact`
         // when codedb is present and this file is indexed. Lossy (strips comments/
         // blanks, shows line numbers) so it is NEVER the default and is labeled
@@ -326,8 +330,12 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
                 if (input_util.isImagePath(effective_path)) {
                     if (try stageReadFileImage(gpa, io, ctx, resolved, effective_path, size)) |out| break :blk out;
                 }
+                const bin_hint = if (builtin.os.tag == .windows)
+                    "Use shell with python (e.g. zipfile/python-docx/pypdf) or PowerShell to inspect it."
+                else
+                    "Use bash instead (e.g. `file`, `strings`, `pdftotext`, `sips`, `unzip -l`).";
                 break :blk .{
-                    .text = try std.fmt.allocPrint(gpa, "{s} is a binary file ({d} bytes) — read_file only handles text. Use bash instead (e.g. `file`, `strings`, `pdftotext`, `sips`, `unzip -l`).", .{ effective_path, size }),
+                    .text = try std.fmt.allocPrint(gpa, "{s} is a binary file ({d} bytes) — read_file only handles text. {s}", .{ effective_path, size, bin_hint }),
                     .is_error = true,
                 };
             },
@@ -349,7 +357,16 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
     // the post-edit check sits ON the success path — a write that did not land
     // can no longer be reported as `replaced N occurrence(s)`.
     if (std.mem.eql(u8, call.name, "edit_file")) {
-        const out = try if (input == .object and input.object.get("edits") != null) edit_batch.execBatch(ctx, input) else edit_verify.execEdit(ctx, input);
+        // Strict tool-calling models often emit `edits: []` or `edits: null`
+        // alongside top-level `old_string`/`new_string`; route those to single-edit.
+        const use_batch = blk_batch: {
+            if (input != .object) break :blk_batch false;
+            const edits_val = input.object.get("edits") orelse break :blk_batch false;
+            const has_single_old = if (input.object.get("old_string")) |v| v == .string else false;
+            if (has_single_old and (edits_val == .null or (edits_val == .array and edits_val.array.items.len == 0))) break :blk_batch false;
+            break :blk_batch true;
+        };
+        const out = try if (use_batch) edit_batch.execBatch(ctx, input) else edit_verify.execEdit(ctx, input);
         if (!out.is_error) write_file.noteInput(ctx, input); // ADR 0231: an edited file may be rewritten
         return out;
     }

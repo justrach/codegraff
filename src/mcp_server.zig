@@ -24,6 +24,9 @@ pub const Result = struct {
     context_chars: u64 = 0,
     context_summarized: bool = false,
     context_used_chars: u64 = 0,
+    /// Server-owned launch policy reported truthfully to callers (#1909).
+    permission_mode: []const u8 = "safe",
+    workspace_dir: []const u8 = "",
     /// Set only when the server summarized a handover before the task ran.
     preprocess: ?Preprocess = null,
 };
@@ -107,6 +110,9 @@ pub const Server = struct {
         const data = .{
             .text = result.text,
             .status = if (result.timed_out) "timed_out" else if (result.cancelled) "cancelled" else if (result.isError) "failed" else "completed",
+            .edits_verified = false,
+            .permission_mode = result.permission_mode,
+            .workspace_dir = result.workspace_dir,
             .output_truncated = result.output_truncated,
             .timeout_seconds = task.timeout_seconds,
             .max_model_calls = task.max_model_calls,
@@ -149,7 +155,7 @@ const usage_unavailable_reason = "per-task usage and charge are not reported: th
 
 const capabilities = .{ .tools = struct {}{}, .resources = struct {}{} };
 const server_info = .{ .name = "codegraff", .title = "Codegraff", .version = @import("main.zig").harness_version };
-const instructions = "Delegate a small, self-contained task with run_task. Tasks run serially in the server launch directory with fresh context; hand background over in context, which is summarized when it is long. Include scope and acceptance criteria; inspect the result and changes before integrating.";
+const instructions = "Delegate a small, self-contained task with run_task. Tasks run serially in the server launch directory under server-owned permissions (safe mode by default unless started with --yolo) and never inherit the caller's workspace or approvals. Callers with workspace-native file tools or shared-cwd subagents should use those for local workspace edits instead. Status completed reflects process exit only, not verified edits; inspect the result text and verify actual file changes before integrating.";
 
 /// One reply, in the requesting era's shape.
 const Answer = struct {
@@ -303,6 +309,11 @@ fn execute(raw: ?*anyopaque, a: Allocator, task: Task) !Result {
     result.context_chars = if (task.context) |c| c.len else 0;
     result.context_summarized = summarized;
     result.context_used_chars = used_chars;
+    result.permission_mode = if (ctx.yolo) "yolo" else "safe";
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (std.process.currentPath(ctx.io, &cwd_buf)) |n| {
+        result.workspace_dir = try a.dupe(u8, cwd_buf[0..n]);
+    } else |_| {}
     result.preprocess = preprocess;
     return result;
 }
@@ -481,5 +492,5 @@ pub fn run(io: Io, gpa: Allocator, parent: *const std.process.Environ.Map, args:
 }
 
 const tool_catalog =
-    \\{"tools":[{"name":"run_task","description":"Run a small, self-contained task with Codegraff in the server launch directory. Fresh context per call; pass background the child needs in context (summarized when long) and include scope and acceptance criteria. May edit files and execute commands when server permissions allow. Returns the answer or an explicit failure with partial output. Calls run serially; no continuation or cancellation handle.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","minLength":1,"maxLength":32768},"context":{"type":"string","minLength":1,"maxLength":32768,"description":"Background for the task: relevant history, decisions, file paths or constraints the child cannot re-derive. Appended to the child's system prompt; over 8192 bytes it is summarized first, and the result reports whether that happened."},"timeout_seconds":{"type":"integer","minimum":1,"maximum":300,"default":120},"max_model_calls":{"type":"integer","minimum":1,"maximum":32,"default":8}},"required":["prompt"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}}]}
+    \\{"tools":[{"name":"run_task","description":"Run a small, self-contained task with Codegraff in the server launch directory under server-owned permissions (safe mode unless launched with --yolo; never inherits caller cwd or approvals). Callers with workspace-native file tools or shared-cwd subagents should use those for local workspace edits instead. Fresh context per call; pass background in context (summarized when long). Status completed reflects process exit only, not verified file edits — inspect output and verify files on disk. Calls run serially; no continuation or cancellation handle.","inputSchema":{"type":"object","properties":{"prompt":{"type":"string","minLength":1,"maxLength":32768},"context":{"type":"string","minLength":1,"maxLength":32768,"description":"Background for the task: relevant history, decisions, file paths or constraints the child cannot re-derive. Appended to the child's system prompt; over 8192 bytes it is summarized first, and the result reports whether that happened."},"timeout_seconds":{"type":"integer","minimum":1,"maximum":300,"default":120},"max_model_calls":{"type":"integer","minimum":1,"maximum":32,"default":8}},"required":["prompt"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}}]}
 ;
