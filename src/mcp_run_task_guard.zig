@@ -42,26 +42,96 @@ pub fn isRunTaskTool(qualified_name: []const u8, original_name: []const u8) bool
         std.mem.endsWith(u8, qualified_name, "__run_task");
 }
 
-fn hasWord(haystack: []const u8, word: []const u8) bool {
-    if (word.len == 0 or word.len > haystack.len) return false;
-    var i: usize = 0;
-    while (i + word.len <= haystack.len) : (i += 1) {
-        if (!std.ascii.eqlIgnoreCase(haystack[i .. i + word.len], word)) continue;
-        const left_ok = i == 0 or !std.ascii.isAlphanumeric(haystack[i - 1]);
-        const right_ok = i + word.len == haystack.len or !std.ascii.isAlphanumeric(haystack[i + word.len]);
-        if (left_ok and right_ok) return true;
+const edit_keywords = [_][]const u8{
+    "edit",   "edits",  "modify", "patch",  "update", "replace",
+    "write",  "create", "delete", "remove", "rename", "insert",
+    "append", "apply",  "fix",    "add",    "change", "rewrite",
+};
+
+const negation_words = [_][]const u8{
+    "no",     "not",       "never",    "without", "avoid",
+    "don't",  "dont",      "doesn't",  "doesnt",  "won't",
+    "wont",   "cannot",    "can't",    "cant",    "mustn't",
+    "mustnt", "shouldn't", "shouldnt", "zero",    "neither",
+    "nor",    "non",       "skip",     "forbid",  "prohibit",
+};
+
+const clause_reset_words = [_][]const u8{
+    "but", "however", "instead", "except", "yet", "please", "only",
+};
+
+fn inWordList(word: []const u8, list: []const []const u8) bool {
+    for (list) |item| {
+        if (std.mem.eql(u8, word, item)) return true;
     }
     return false;
 }
 
+fn isRightSingleQuoteAt(s: []const u8, idx: usize) bool {
+    return idx + 3 <= s.len and s[idx] == 0xe2 and s[idx + 1] == 0x80 and s[idx + 2] == 0x99;
+}
+
 /// True when the delegated task text asks to modify/write/create/delete files.
+/// Tracks clause-local negation so explicit read-only prompts ("No edits.",
+/// "Do not edit or modify files") are not rejected while positive edit clauses
+/// remain blocked (#1914).
 pub fn requestsLocalEdit(prompt: []const u8) bool {
-    for ([_][]const u8{
-        "edit",   "edits",  "modify", "patch",  "update", "replace",
-        "write",  "create", "delete", "remove", "rename", "insert",
-        "append", "apply",  "fix",    "add",    "change", "rewrite",
-    }) |kw| {
-        if (hasWord(prompt, kw)) return true;
+    var negated = false;
+    var i: usize = 0;
+    while (i < prompt.len) {
+        const ch = prompt[i];
+        if (!std.ascii.isAlphanumeric(ch)) {
+            const sentence_period = ch == '.' and (i + 1 >= prompt.len or !std.ascii.isAlphanumeric(prompt[i + 1]));
+            if (sentence_period or ch == '!' or ch == '?' or ch == ';' or ch == '\n' or ch == '\r') {
+                negated = false;
+            }
+            i += 1;
+            continue;
+        }
+        var buf: [32]u8 = undefined;
+        var len: usize = 0;
+        var overflow = false;
+        while (i < prompt.len) {
+            const c = prompt[i];
+            if (std.ascii.isAlphanumeric(c)) {
+                if (len < buf.len) {
+                    buf[len] = std.ascii.toLower(c);
+                    len += 1;
+                } else {
+                    overflow = true;
+                }
+                i += 1;
+            } else if (c == '\'' and i + 1 < prompt.len and std.ascii.isAlphanumeric(prompt[i + 1])) {
+                if (len < buf.len) {
+                    buf[len] = '\'';
+                    len += 1;
+                } else {
+                    overflow = true;
+                }
+                i += 1;
+            } else if (isRightSingleQuoteAt(prompt, i) and i + 3 < prompt.len and std.ascii.isAlphanumeric(prompt[i + 3])) {
+                if (len < buf.len) {
+                    buf[len] = '\'';
+                    len += 1;
+                } else {
+                    overflow = true;
+                }
+                i += 3;
+            } else {
+                break;
+            }
+        }
+        if (overflow) continue;
+        const word = buf[0..len];
+        if (inWordList(word, &clause_reset_words)) {
+            negated = false;
+            continue;
+        }
+        if (inWordList(word, &negation_words)) {
+            negated = true;
+            continue;
+        }
+        if (inWordList(word, &edit_keywords) and !negated) return true;
     }
     return false;
 }
@@ -284,4 +354,46 @@ test "#1909: safe-mode external run_task rooted elsewhere is blocked for local e
     const annotated = try annotateCompleted(gpa, "mcp__codegraff__run_task", true, raw);
     defer gpa.free(annotated);
     try std.testing.expect(std.mem.indexOf(u8, annotated, "process exit only") != null);
+}
+
+test "#1914: negated edit instructions are allowed for read-only external run_task while positive edits stay blocked" {
+    const http_boundary = boundaryFromConfig("codegraff", null, true);
+    try std.testing.expectEqual(PolicyMode.server_owned_external, http_boundary.mode);
+    const safe_boundary = boundaryFromConfig("codegraff", null, false);
+    try std.testing.expectEqual(PolicyMode.safe, safe_boundary.mode);
+
+    // Explicit no-edit / read-only prompts must not be misclassified as local edits.
+    const read_only_prompts = [_][]const u8{
+        "Search public docs for Zig 0.15 std.Io changes. No edits.",
+        "Look up the latest API reference. Do not edit or modify any files.",
+        "Inspect the schema and report findings — don't update or patch anything.",
+        "Research the error message; don\xe2\x80\x99t write, delete, or rename any files.",
+        "Explain how auth works without any edit or change to local files.",
+        "Do not edit README.md or modify src/main.zig.",
+        "Never apply patches or create files; just summarize.",
+        "Read-only check, no-edits, zero change.",
+        "Make no local edits or fix any files, please.",
+        "Please do not edit any files in the workspace.",
+        "Neither modify nor rewrite any code.",
+    };
+    for (read_only_prompts) |p| {
+        try std.testing.expect(!requestsLocalEdit(p));
+        try std.testing.expect(!checkBoundary(http_boundary, "/tmp/ws", p, true).any());
+        try std.testing.expect(!checkBoundary(safe_boundary, "/tmp/ws", p, true).any());
+    }
+
+    // Positive edit requests and mixed clauses that still ask for an edit must stay blocked.
+    const edit_prompts = [_][]const u8{
+        "Edit src/main.zig to handle timeouts.",
+        "No edits to README.md, but update src/main.zig.",
+        "Do not edit docs. Please write summary.txt.",
+        "Don't touch tests; patch src/server.zig instead.",
+        "No edits\nApply the fix to src/mcp.zig",
+        "Don't modify README.md, instead replace the default port in config.zig.",
+    };
+    for (edit_prompts) |p| {
+        try std.testing.expect(requestsLocalEdit(p));
+        try std.testing.expect(checkBoundary(http_boundary, "/tmp/ws", p, true).external_http);
+        try std.testing.expect(checkBoundary(safe_boundary, "/tmp/ws", p, true).safe_mode);
+    }
 }
