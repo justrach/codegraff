@@ -166,8 +166,8 @@ pub fn translateTracked(
     if (std.mem.eql(u8, typ, "text")) {
         const text = util.strFieldObj(ev.object, "text") orelse return .none;
         if (text.len == 0) return .none;
-        try writeMessage(w, session_id, text);
-        return .text;
+        const visible = try proto.writeSessionUpdateVisible(w, session_id, text);
+        return if (visible) .text else .none;
     }
     if (std.mem.eql(u8, typ, "tool_call") or std.mem.eql(u8, typ, "tool_call_started")) {
         const name = util.strFieldObj(ev.object, "name") orelse "tool";
