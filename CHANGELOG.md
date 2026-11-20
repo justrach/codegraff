@@ -10,6 +10,13 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.75
+
+- Add the built-in `nanoattention` Native Flint local provider (`GRAFF_NANOATTENTION_URL`, `NANOATTENTION_API_KEY`, `GRAFF_CONTEXT`) exposing `nanoattention/flint` over authenticated loopback HTTP (#1905).
+- Add GPT-6.2 Sol (`gpt-6.2-sol`) and Astra (`gpt-6.2-astra`), non-blocking catalog refresh, `/refresh`, `ultrafast` speed tier support, and Codex `client_version=0.170.0` compatibility.
+- Add opt-in unharnessed Python REPL execution (#1904).
+- Only latch ACP `saw_text` when non-whitespace visible text survives citation stripping, preventing whitespace-only or citation-only chunks from suppressing a turn's final answer (#1912).
+
 ## v0.302.74.74
 
 - Fix HTTP/2 non-2xx error-body capture by reading bounded raw chunks instead of mutating the transport `Io.Reader` across allocators (#1903).

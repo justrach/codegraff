@@ -5,6 +5,10 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.75
+    \\  • Add Native Flint (`nanoattention/flint`) local provider (#1905), unharnessed Python REPL (#1904), and ACP `saw_text` citation-strip safeguard (#1912).
+    \\  • Add GPT-6.2 Sol/Astra, non-blocking model refresh (`/refresh`), `ultrafast` tier, and Codex `client_version=0.170.0`.
+    \\
     \\0.302.74.74
     \\  • Fix HTTP/2 error-body capture across allocators (#1903), give `webfetch` 64 KiB header/redirect buffers (#1911), and preserve `nanocua` AXError/ScreenCaptureKit failure diagnostics (#1910).
     \\  • Add `run_task` boundary metadata, mismatched safe/cwd edit preflight refusal, and exit-only verification caveats while keeping `--safe` intact (#1909).
