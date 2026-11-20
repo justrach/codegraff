@@ -1,0 +1,45 @@
+name: CLA
+
+# Verifies that pull request authors have agreed to CLA.md once per GitHub
+# account (tracked by numeric user ID and CLA.md SHA-256 on the orphan
+# `cla-signatures` branch).
+#
+# Security: `pull_request_target` and `issue_comment` run with write access, so
+# this workflow only ever checks out and executes the default branch's CLA.md
+# and scripts/check-cla.py, never code from the pull request.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: cla-ledger
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.event_name == 'pull_request_target' || github.event.issue.pull_request != null
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            CLA.md
+            scripts/check-cla.py
+            scripts/check_cla_test.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Run CLA verifier self-tests
+        run: python3 scripts/check_cla_test.py
+      - name: Verify or record CLA signature
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/check-cla.py

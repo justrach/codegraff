@@ -518,4 +518,10 @@ and so do organizations that meet none of these tests. Earlier versions keep the
 yourself as covered and contact
 [rach@standardharness.com](mailto:rach@standardharness.com).
 
+**Contributing.** All contributions require prior agreement to the
+[Contributor Assignment and License Agreement (`CLA.md`)](CLA.md) (see
+[`CONTRIBUTING.md`](CONTRIBUTING.md)), under which contributions are irrevocably
+assigned to the Licensors and become part of codegraff governed by
+[`LICENSE`](LICENSE).
+
 <p align="center"><sub>Built in Zig 0.17 dev · <a href="LICENSE">AGPL-3.0 (modified)</a> · <a href="docs/architecture.md">architecture</a> · <a href="CHANGELOG.md">CHANGELOG</a> · <a href="docs/uxlog.md">uxlog</a></sub></p>

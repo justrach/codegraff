@@ -27,6 +27,9 @@ jobs:
       - name: Release CI gate integrity tests
         run: python3 scripts/test-wait-for-ci.py
 
+      - name: CLA verifier integrity tests
+        run: python3 scripts/check_cla_test.py
+
       - name: PTY cleanup integrity
         run: python3 scripts/eval/test_pty_cleanup.py
 
