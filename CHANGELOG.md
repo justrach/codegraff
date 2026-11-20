@@ -10,6 +10,10 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.77
+
+- Prefer `rlm` for independent file reads, JSON row counts, and field extraction. Direct tools, shell fallback, and `--no-rlm` remain available (#1915).
+
 ## v0.302.74.76
 
 - Raise `gpt-6.2-astra` subscription context window to 500k on `codex` and `chatgpt-new` (offline rows, subscription clamp, and live catalog discovery when `max_context_window` advertises a wider window; ADR 0292 addendum).
