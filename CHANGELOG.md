@@ -10,6 +10,10 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.78
+
+- Allow read-only `run_task` prompts that say `No edits.` without weakening the guard for actual edit requests (#1914).
+
 ## v0.302.74.77
 
 - Prefer `rlm` for independent file reads, JSON row counts, and field extraction. Direct tools, shell fallback, and `--no-rlm` remain available (#1915).

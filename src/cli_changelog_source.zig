@@ -5,6 +5,9 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.78
+    \\  • Let read-only `run_task` prompts say `No edits.` while still guarding actual edits (#1914).
+    \\
     \\0.302.74.77
     \\  • Prefer `rlm` for independent reads, JSON row counts, and field extraction (#1915).
     \\
