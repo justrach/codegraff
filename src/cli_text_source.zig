@@ -5,6 +5,11 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.75
+    \\  • Add built-in `nanoattention/flint` local provider (#1905, ADR 0349) and persistent `python_repl` + `--unharnessed` single-tool mode (#1904, ADR 0348).
+    \\  • Add `gpt-6.2-sol` / `gpt-6.2-astra`, `client_version=0.170.0`, 0ms-boot 5-min background catalog refresh + `/refresh` (ADR 0350), and Codex/ChatGPT `ultrafast` service tier.
+    \\  • Only latch ACP `saw_text` when visible text survives citation stripping (#1912).
+    \\
     \\0.302.74.74
     \\  • Fix HTTP/2 error-body capture across allocators (#1903), give `webfetch` 64 KiB header/redirect buffers (#1911), and preserve `nanocua` AXError/ScreenCaptureKit failure diagnostics (#1910).
     \\  • Add `run_task` boundary metadata, mismatched safe/cwd edit preflight refusal, and exit-only verification caveats while keeping `--safe` intact (#1909).

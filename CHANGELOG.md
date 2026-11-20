@@ -10,6 +10,13 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.75
+
+- Add built-in `nanoattention/flint` local OpenAI-compatible provider with validated loopback endpoint overrides (`GRAFF_NANOATTENTION_URL`), shared `/v1/models` discovery, `GRAFF_CONTEXT` sizing, and fail-closed credentials (#1905, ADR 0349).
+- Add persistent per-owner `python_repl` tool and opt-in `--unharnessed` / `/unharnessed` / ACP `unharnessed` single-tool mode (#1904, ADR 0348).
+- Add `gpt-6.2-sol` and `gpt-6.2-astra`, raise Codex/ChatGPT `client_version` discovery floor to `0.170.0`, revalidate stale dynamic model catalogs (>5 min) in the background with zero startup delay, add `/refresh` and bounded ACP `graff/models` (`force: true`) refresh (ADR 0350), and add Codex/ChatGPT `ultrafast` service tier support across REPL (`/ultrafast`, `/fast ultrafast`), ACP (`serviceTier`), JSON control (`set_service_tier`), and Responses requests.
+- Only latch ACP `saw_text` when non-whitespace visible text survives citation stripping so whitespace-only or citation-only chunks never suppress a turn's final answer (#1912).
+
 ## v0.302.74.74
 
 - Fix HTTP/2 non-2xx error-body capture by reading bounded raw chunks instead of mutating the transport `Io.Reader` across allocators (#1903).
