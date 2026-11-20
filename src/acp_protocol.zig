@@ -229,12 +229,23 @@ pub fn writeNotification(w: *Io.Writer, method: []const u8, params: anytype) !vo
 /// One `agent_message_chunk` notification (the v0 final-text update).
 /// Provider citation markers are removed on the way out (acp_citations.zig).
 pub fn writeSessionUpdate(w: *Io.Writer, session_id: []const u8, raw: []const u8) !void {
+    _ = try writeSessionUpdateVisible(w, session_id, raw);
+}
+
+/// Like `writeSessionUpdate`, returning whether non-whitespace visible text
+/// remained after stripping citation markers. Callers use this so whitespace-
+/// only or citation-only chunks never suppress a turn's `final` answer.
+pub fn writeSessionUpdateVisible(w: *Io.Writer, session_id: []const u8, raw: []const u8) !bool {
     const cleaned = @import("acp_citations.zig").filter(session_id, .message, raw);
     defer cleaned.deinit();
     const text = cleaned.text;
-    if (text.len == 0 and raw.len != 0) return; // the chunk was all marker
+    if (text.len == 0 and raw.len != 0) return false; // the chunk was all marker
+    const visible = std.mem.trim(u8, text, " \t\r\n").len != 0;
     const v2 = @import("acp_v2.zig");
-    if (v2.on()) return v2.writeChunk(w, session_id, false, text);
+    if (v2.on()) {
+        try v2.writeChunk(w, session_id, false, text);
+        return visible;
+    }
     try writeNotification(w, "session/update", .{
         .sessionId = session_id,
         .update = .{
@@ -242,6 +253,7 @@ pub fn writeSessionUpdate(w: *Io.Writer, session_id: []const u8, raw: []const u8
             .content = .{ .type = "text", .text = text },
         },
     });
+    return visible;
 }
 
 /// ACP v1 slash-command advertisement (`available_commands_update`).
@@ -274,4 +286,29 @@ pub fn slashCommands() []const AvailableCommand {
         break :blk frozen;
     };
     return &built;
+}
+
+test "EventSink: whitespace-only and citation-only text chunks do not set saw_text" {
+    const stream = @import("acp_stream.zig");
+    var output: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var session_id: []const u8 = "saw-text-visible";
+    defer @import("acp_citations.zig").endTurn(session_id);
+    var saw = false;
+    var sink: stream.EventSink = undefined;
+    sink.init(std.testing.allocator, &output.writer, &session_id, &saw);
+    defer sink.deinit();
+
+    // Whitespace-only or citation-only chunks after tool work must not flip
+    // saw_text to true, or acp_live_turn suppresses the turn's final answer.
+    try sink.writer.writeAll("{\"type\":\"text\",\"text\":\"\\n  \\t\"}\n");
+    try sink.writer.writeAll("{\"type\":\"text\",\"text\":\"\\ue200cite\\ue202turn0search0\\ue201\"}\n");
+    try sink.writer.flush();
+    try std.testing.expect(!saw);
+
+    // Visible text latches saw_text; trailing whitespace after it keeps saw_text true.
+    try sink.writer.writeAll("{\"type\":\"text\",\"text\":\"Actual reply\"}\n");
+    try sink.writer.writeAll("{\"type\":\"text\",\"text\":\"\\n\"}\n");
+    try sink.writer.flush();
+    try std.testing.expect(saw);
 }
