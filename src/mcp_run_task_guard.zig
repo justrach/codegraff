@@ -42,26 +42,45 @@ pub fn isRunTaskTool(qualified_name: []const u8, original_name: []const u8) bool
         std.mem.endsWith(u8, qualified_name, "__run_task");
 }
 
-fn hasWord(haystack: []const u8, word: []const u8) bool {
-    if (word.len == 0 or word.len > haystack.len) return false;
-    var i: usize = 0;
-    while (i + word.len <= haystack.len) : (i += 1) {
-        if (!std.ascii.eqlIgnoreCase(haystack[i .. i + word.len], word)) continue;
-        const left_ok = i == 0 or !std.ascii.isAlphanumeric(haystack[i - 1]);
-        const right_ok = i + word.len == haystack.len or !std.ascii.isAlphanumeric(haystack[i + word.len]);
-        if (left_ok and right_ok) return true;
-    }
-    return false;
+// Match a whole word followed by horizontal whitespace immediately before the
+// edit word. Do not carry negation across punctuation or a line break.
+fn beforeWord(prefix: []const u8, word: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trimEnd(u8, prefix, " \t");
+    if (trimmed.len == prefix.len or trimmed.len < word.len) return null;
+    const start = trimmed.len - word.len;
+    if (start > 0 and std.ascii.isAlphanumeric(trimmed[start - 1])) return null;
+    if (!std.ascii.eqlIgnoreCase(trimmed[start..], word)) return null;
+    return trimmed[0..start];
 }
 
-/// True when the delegated task text asks to modify/write/create/delete files.
+fn explicitlyNegated(prefix: []const u8) bool {
+    for ([_][]const u8{ "no", "without", "don't" }) |word| {
+        if (beforeWord(prefix, word) != null) return true;
+    }
+    const before_not = beforeWord(prefix, "not") orelse return false;
+    return beforeWord(before_not, "do") != null;
+}
+
+/// Heuristic only: ignore directly negated edit words, but keep scanning for
+/// positive requests. Server-side permissions are independent of this check.
 pub fn requestsLocalEdit(prompt: []const u8) bool {
-    for ([_][]const u8{
-        "edit",   "edits",  "modify", "patch",  "update", "replace",
-        "write",  "create", "delete", "remove", "rename", "insert",
-        "append", "apply",  "fix",    "add",    "change", "rewrite",
-    }) |kw| {
-        if (hasWord(prompt, kw)) return true;
+    var i: usize = 0;
+    while (i < prompt.len) {
+        if (!std.ascii.isAlphanumeric(prompt[i])) {
+            i += 1;
+            continue;
+        }
+        const start = i;
+        while (i < prompt.len and std.ascii.isAlphanumeric(prompt[i])) : (i += 1) {}
+        for ([_][]const u8{
+            "edit",   "edits",  "modify", "patch",  "update", "replace",
+            "write",  "create", "delete", "remove", "rename", "insert",
+            "append", "apply",  "fix",    "add",    "change", "rewrite",
+        }) |kw| {
+            if (!std.ascii.eqlIgnoreCase(prompt[start..i], kw)) continue;
+            if (!explicitlyNegated(prompt[0..start])) return true;
+            break;
+        }
     }
     return false;
 }
@@ -194,6 +213,31 @@ pub fn annotateCompleted(gpa: Allocator, qualified_name: []const u8, has_meta: b
     const joined = try std.fmt.allocPrint(gpa, "{s}{s}", .{ text, exit_only_caveat });
     gpa.free(text);
     return joined;
+}
+
+test "#1914: run_task ignores explicit no-edit instructions without allowing actual edits" {
+    const boundaries = [_]ServerBoundary{
+        .{ .server_name = "codegraff", .mode = .server_owned_external },
+        .{ .server_name = "codegraff", .mode = .safe, .server_cwd = "/other" },
+        .{ .server_name = "codegraff", .mode = .yolo, .server_cwd = "/other" },
+    };
+    for (boundaries) |boundary| {
+        for ([_][]const u8{
+            "Look up the public documentation. No edits.",
+            "Summarize the results. Do not edit any files.",
+            "Review only; DON'T\tMODIFY the workspace.",
+            "Summarize without edits.",
+        }) |prompt| try std.testing.expect(!checkBoundary(boundary, "/workspace", prompt, true).any());
+        for ([_][]const u8{
+            "Update notes.md.",
+            "No edits elsewhere. Update notes.md.",
+            "Do not edit notes.md, but fix config.json.",
+            "Fix config.json. No edits elsewhere.",
+            "Do not stop. Edit notes.md.",
+            "Do not edit notes.md.\nUpdate config.json.",
+            "Why not fix config.json?",
+        }) |prompt| try std.testing.expect(checkBoundary(boundary, "/workspace", prompt, true).any());
+    }
 }
 
 test "#1909: safe-mode external run_task rooted elsewhere is blocked for local edits while native edit verifies bytes" {
