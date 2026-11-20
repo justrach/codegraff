@@ -5,6 +5,9 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.77
+    \\  • Prefer `rlm` for independent reads, JSON row counts, and field extraction (#1915).
+    \\
     \\0.302.74.76
     \\  • Raise `gpt-6.2-astra` subscription context window to 500k on `codex`/`chatgpt-new` (ADR 0292 addendum).
     \\  • Ignore empty optional args and normalize `mcp__<server>` prefixes in MCP schema loading; add `CLA.md` PR check.
