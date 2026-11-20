@@ -42,26 +42,155 @@ pub fn isRunTaskTool(qualified_name: []const u8, original_name: []const u8) bool
         std.mem.endsWith(u8, qualified_name, "__run_task");
 }
 
-fn hasWord(haystack: []const u8, word: []const u8) bool {
-    if (word.len == 0 or word.len > haystack.len) return false;
-    var i: usize = 0;
-    while (i + word.len <= haystack.len) : (i += 1) {
-        if (!std.ascii.eqlIgnoreCase(haystack[i .. i + word.len], word)) continue;
-        const left_ok = i == 0 or !std.ascii.isAlphanumeric(haystack[i - 1]);
-        const right_ok = i + word.len == haystack.len or !std.ascii.isAlphanumeric(haystack[i + word.len]);
-        if (left_ok and right_ok) return true;
+const edit_keywords = [_][]const u8{
+    "edit",   "edits",  "modify", "patch",  "update", "replace",
+    "write",  "create", "delete", "remove", "rename", "insert",
+    "append", "apply",  "fix",    "add",    "change", "rewrite",
+};
+
+const negation_words = [_][]const u8{
+    "no",     "not",      "never",    "without", "none",
+    "zero",   "non",      "dont",     "cannot",  "cant",
+    "wont",   "shouldnt", "mustnt",   "avoid",   "skip",
+    "forbid", "prohibit", "disallow", "refuse",
+};
+
+const pivot_words = [_][]const u8{
+    "but",    "however", "instead", "except",
+    "unless", "yet",     "though",  "although",
+    "so",     "then",
+};
+
+const max_negation_gap: usize = 4;
+
+fn isCurlyApostrophe(s: []const u8, i: usize) bool {
+    return i + 2 < s.len and s[i] == 0xE2 and s[i + 1] == 0x80 and s[i + 2] == 0x99;
+}
+
+fn isDashUtf8(s: []const u8, i: usize) bool {
+    return i + 2 < s.len and s[i] == 0xE2 and s[i + 1] == 0x80 and (s[i + 2] == 0x93 or s[i + 2] == 0x94);
+}
+
+fn eqlNormalizedWord(word: []const u8, target: []const u8) bool {
+    var wi: usize = 0;
+    var ti: usize = 0;
+    while (wi < word.len) {
+        if (word[wi] == '\'') {
+            wi += 1;
+            continue;
+        }
+        if (isCurlyApostrophe(word, wi)) {
+            wi += 3;
+            continue;
+        }
+        if (ti >= target.len) return false;
+        if (std.ascii.toLower(word[wi]) != target[ti]) return false;
+        wi += 1;
+        ti += 1;
+    }
+    return ti == target.len;
+}
+
+fn inWordList(word: []const u8, list: []const []const u8) bool {
+    for (list) |kw| {
+        if (eqlNormalizedWord(word, kw)) return true;
     }
     return false;
 }
 
 /// True when the delegated task text asks to modify/write/create/delete files.
+/// Explicit clause-local negations ("No edits.", "Do not edit or modify",
+/// "without making any file edits", "no-edit") are not treated as edit requests
+/// (#1914), while positive edit instructions in the same or another clause stay
+/// guarded.
 pub fn requestsLocalEdit(prompt: []const u8) bool {
-    for ([_][]const u8{
-        "edit",   "edits",  "modify", "patch",  "update", "replace",
-        "write",  "create", "delete", "remove", "rename", "insert",
-        "append", "apply",  "fix",    "add",    "change", "rewrite",
-    }) |kw| {
-        if (hasWord(prompt, kw)) return true;
+    var negated = false;
+    var negated_edit_seen = false;
+    var gap: usize = 0;
+
+    var i: usize = 0;
+    while (i < prompt.len) {
+        const ch = prompt[i];
+        if (std.ascii.isAlphanumeric(ch)) {
+            const start = i;
+            while (i < prompt.len) {
+                if (std.ascii.isAlphanumeric(prompt[i])) {
+                    i += 1;
+                } else if (prompt[i] == '\'' and i + 1 < prompt.len and std.ascii.isAlphanumeric(prompt[i + 1])) {
+                    i += 1;
+                } else if (isCurlyApostrophe(prompt, i) and i + 3 < prompt.len and std.ascii.isAlphanumeric(prompt[i + 3])) {
+                    i += 3;
+                } else break;
+            }
+            const word = prompt[start..i];
+            if (inWordList(word, &pivot_words)) {
+                negated = false;
+                negated_edit_seen = false;
+                gap = 0;
+            } else if (inWordList(word, &negation_words)) {
+                negated = true;
+                negated_edit_seen = false;
+                gap = 0;
+            } else if (inWordList(word, &edit_keywords)) {
+                if (!negated) return true;
+                negated_edit_seen = true;
+                gap = 0;
+            } else if (negated) {
+                if (negated_edit_seen and (eqlNormalizedWord(word, "or") or eqlNormalizedWord(word, "nor"))) {
+                    gap = 0;
+                } else if (eqlNormalizedWord(word, "and")) {
+                    if (negated_edit_seen and gap == 0) {
+                        gap = 1;
+                    } else {
+                        negated = false;
+                        negated_edit_seen = false;
+                        gap = 0;
+                    }
+                } else {
+                    gap += 1;
+                    if (gap > max_negation_gap) {
+                        negated = false;
+                        negated_edit_seen = false;
+                        gap = 0;
+                    }
+                }
+            }
+            continue;
+        }
+
+        if (isDashUtf8(prompt, i)) {
+            negated = false;
+            negated_edit_seen = false;
+            gap = 0;
+            i += 3;
+            continue;
+        }
+
+        switch (ch) {
+            '.', '!', '?', ';', ':', '\n', '\r', '(', ')', '[', ']', '{', '}' => {
+                negated = false;
+                negated_edit_seen = false;
+                gap = 0;
+            },
+            ',' => {
+                if (!negated_edit_seen) {
+                    negated = false;
+                    gap = 0;
+                }
+            },
+            '-' => {
+                const intra_word = i > 0 and i + 1 < prompt.len and
+                    std.ascii.isAlphanumeric(prompt[i - 1]) and
+                    std.ascii.isAlphanumeric(prompt[i + 1]);
+                if (!intra_word) {
+                    negated = false;
+                    negated_edit_seen = false;
+                    gap = 0;
+                }
+            },
+            else => {},
+        }
+        i += 1;
     }
     return false;
 }
@@ -284,4 +413,59 @@ test "#1909: safe-mode external run_task rooted elsewhere is blocked for local e
     const annotated = try annotateCompleted(gpa, "mcp__codegraff__run_task", true, raw);
     defer gpa.free(annotated);
     try std.testing.expect(std.mem.indexOf(u8, annotated, "process exit only") != null);
+}
+
+test "#1914: explicit no-edit instructions are allowed while positive local edits remain guarded" {
+    const http_boundary = boundaryFromConfig("remote_tasks", null, true);
+    try std.testing.expectEqual(PolicyMode.server_owned_external, http_boundary.mode);
+
+    const safe_boundary: ServerBoundary = .{
+        .server_name = "codegraff",
+        .mode = .safe,
+        .server_cwd = "/other/root",
+    };
+
+    const allowed_read_only = [_][]const u8{
+        "Look up the latest public release notes online. No edits.",
+        "Check the public API docs (no edits)",
+        "Do not edit any local files.",
+        "Don't edit or modify notes.md.",
+        "Don\xE2\x80\x99t edit, write, or delete any files.",
+        "Run a read-only search without making any file edits.",
+        "Make no local edits or patches.",
+        "Perform a no-edit lookup of the documentation.",
+        "Never create, update, or remove files.",
+        "You must not rewrite or replace anything.",
+        "Avoid any patch or edit to the workspace.",
+        "Summarize the architecture in README.md.",
+    };
+    for (allowed_read_only) |prompt| {
+        try std.testing.expect(!requestsLocalEdit(prompt));
+        try std.testing.expect(!checkBoundary(http_boundary, "/active/ws", prompt, true).any());
+        try std.testing.expect(!checkBoundary(safe_boundary, "/active/ws", prompt, true).any());
+    }
+
+    const guarded_edits = [_][]const u8{
+        "Update notes.md to replace old line with new line.",
+        "Edit README.md. Do not modify LICENSE.",
+        "Do not delete tests, but update README.md.",
+        "Do not modify tests; fix src/main.zig.",
+        "No, edit src/main.zig.",
+        "No comments needed. Fix src/main.zig.",
+        "(No edits) Update notes.md.",
+        "No edits - update notes.md.",
+        "No edits \xE2\x80\x94 update notes.md.",
+        "No tests exist so add one in src/main.zig.",
+        "Do not edit tests and update README.md.",
+        "The parser can't handle this input, fix it.",
+        "No timeout limit configured on the client when you update notes.md.",
+    };
+    for (guarded_edits) |prompt| {
+        try std.testing.expect(requestsLocalEdit(prompt));
+        const http_m = checkBoundary(http_boundary, "/active/ws", prompt, true);
+        try std.testing.expect(http_m.external_http);
+        const safe_m = checkBoundary(safe_boundary, "/active/ws", prompt, true);
+        try std.testing.expect(safe_m.safe_mode);
+        try std.testing.expect(safe_m.cwd_mismatch);
+    }
 }
