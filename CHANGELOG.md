@@ -10,6 +10,12 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.76
+
+- Raise `gpt-6.2-astra` subscription context window to 500k on `codex` and `chatgpt-new` (offline rows, subscription clamp, and live catalog discovery when `max_context_window` advertises a wider window; ADR 0292 addendum).
+- Ignore empty optional arguments (`name`, `server`, `query`, blank `tools` items) and normalize `mcp__<server>` prefixes during MCP tool schema loading and selection.
+- Add Contributor Assignment and License Agreement (`CLA.md`), `CONTRIBUTING.md`, and automated PR CLA verification workflow.
+
 ## v0.302.74.75
 
 - Add built-in `nanoattention/flint` local OpenAI-compatible provider with validated loopback endpoint overrides (`GRAFF_NANOATTENTION_URL`), shared `/v1/models` discovery, `GRAFF_CONTEXT` sizing, and fail-closed credentials (#1905, ADR 0349).

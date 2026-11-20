@@ -5,6 +5,10 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.76
+    \\  • Raise `gpt-6.2-astra` subscription context window to 500k on `codex`/`chatgpt-new` (ADR 0292 addendum).
+    \\  • Ignore empty optional args and normalize `mcp__<server>` prefixes in MCP schema loading; add `CLA.md` PR check.
+    \\
     \\0.302.74.75
     \\  • Add built-in `nanoattention/flint` local provider (#1905, ADR 0349) and persistent `python_repl` + `--unharnessed` single-tool mode (#1904, ADR 0348).
     \\  • Add `gpt-6.2-sol` / `gpt-6.2-astra`, `client_version=0.170.0`, 0ms-boot 5-min background catalog refresh + `/refresh` (ADR 0350), and Codex/ChatGPT `ultrafast` service tier.
