@@ -374,6 +374,21 @@ fn nonEmptyStr(input: Value, key: []const u8) ?[]const u8 {
     return if (trimmed.len > 0) trimmed else null;
 }
 
+/// Strip optional `mcp__` prefix / trailing `__` so callers passing
+/// `server: "mcp__harness"` match `serverName() == "harness"`.
+pub fn normalizeServerName(raw: []const u8) ?[]const u8 {
+    var trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (std.mem.startsWith(u8, trimmed, "mcp__")) trimmed = trimmed["mcp__".len..];
+    while (std.mem.endsWith(u8, trimmed, "__")) trimmed = trimmed[0 .. trimmed.len - 2];
+    return if (trimmed.len > 0) trimmed else null;
+}
+
+pub fn serverMatches(tool_server: []const u8, requested: []const u8) bool {
+    if (std.mem.eql(u8, tool_server, requested)) return true;
+    const norm = normalizeServerName(requested) orelse return false;
+    return std.mem.eql(u8, tool_server, norm);
+}
+
 /// The pure core of the `load_tool_schemas` tool: everything except touching
 /// the Agent. `input` is the model-supplied argument object.
 pub fn loadInto(arena: Allocator, all: []const mcp.Tool, input: Value) !Loaded {
@@ -382,16 +397,18 @@ pub fn loadInto(arena: Allocator, all: []const mcp.Tool, input: Value) !Loaded {
 
     const server = nonEmptyStr(input, "server");
     if (server) |want| {
-        for (all, 0..) |t, i| if (std.mem.eql(u8, t.serverName(), want)) try wanted.append(arena, i);
+        for (all, 0..) |t, i| if (serverMatches(t.serverName(), want)) try wanted.append(arena, i);
         if (wanted.items.len == 0) try missing.append(arena, want);
     }
     if (input == .object) if (input.object.get("tools")) |list| if (list == .array) {
         for (list.array.items) |item| {
             if (item != .string) continue;
+            const trimmed = std.mem.trim(u8, item.string, " \t\r\n");
+            if (trimmed.len == 0) continue;
             const found = for (all, 0..) |t, i| {
-                if (std.mem.eql(u8, t.qualified_name, item.string)) break i;
+                if (std.mem.eql(u8, t.qualified_name, trimmed)) break i;
             } else null;
-            if (found) |i| try wanted.append(arena, i) else try missing.append(arena, item.string);
+            if (found) |i| try wanted.append(arena, i) else try missing.append(arena, trimmed);
         }
     };
     // codex tool_search pattern: keyword discovery when the exact name is not

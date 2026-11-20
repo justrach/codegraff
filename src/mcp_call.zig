@@ -111,15 +111,22 @@ fn hasLiveQueryMatch(all: []const @import("mcp.zig").Tool, input: Value) bool {
 }
 
 fn findWithdrawn(reg: *const Registry, input: Value) ?Withdrawn {
-    if (@import("tools.zig").strField(input, "server")) |want| {
-        if (!hasLiveServer(reg, want)) {
-            for (reg.withdrawn) |w| if (std.mem.eql(u8, w.server, want)) return w;
+    const gate = @import("mcp_schema_gate.zig");
+    if (@import("tools.zig").strField(input, "server")) |raw| {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len > 0) {
+            const want = if (hasLiveServer(reg, trimmed)) trimmed else (gate.normalizeServerName(trimmed) orelse trimmed);
+            if (!hasLiveServer(reg, want)) {
+                for (reg.withdrawn) |w| if (gate.serverMatches(w.server, trimmed)) return w;
+            }
         }
     }
     if (input == .object) if (input.object.get("tools")) |list| if (list == .array) {
         for (list.array.items) |item| {
-            if (item != .string or isLive(reg, item.string)) continue;
-            if (withdrawnTool(reg, item.string)) |w| return w;
+            if (item != .string) continue;
+            const trimmed = std.mem.trim(u8, item.string, " \t\r\n");
+            if (trimmed.len == 0 or isLive(reg, trimmed)) continue;
+            if (withdrawnTool(reg, trimmed)) |w| return w;
         }
     };
     return null;

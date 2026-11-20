@@ -44,14 +44,14 @@ fn scoreTool(t: mcp.Tool, query: []const u8) usize {
 
 /// Names + short descriptions only. Does not call enable().
 pub fn searchInto(arena: Allocator, all: []const mcp.Tool, input: Value) !mcp_schema_gate.Loaded {
-    const query = tools_mod.strField(input, "query") orelse
+    const query = nonEmptyStr(input, "query") orelse
         return .{ .text = "mcp_search_tools needs query", .is_error = true };
-    const server = tools_mod.strField(input, "server");
+    const server = nonEmptyStr(input, "server");
     var hits: std.ArrayList(struct { score: usize, idx: usize }) = .empty;
     for (all, 0..) |t, i| {
         if (!mcp_schema_gate.isDeferred(all, t)) continue;
         if (server) |sv| {
-            if (!std.mem.eql(u8, t.serverName(), sv)) continue;
+            if (!mcp_schema_gate.serverMatches(t.serverName(), sv)) continue;
         }
         const score = scoreTool(t, query);
         if (score == 0) continue;
@@ -86,15 +86,23 @@ pub fn handleSearch(agent: anytype, input: Value) tools_mod.ExecResult {
 }
 
 fn selectInput(arena: Allocator, input: Value) Value {
-    const one = tools_mod.strField(input, "name") orelse return input;
+    if (input != .object) return input;
     var obj: std.json.ObjectMap = .empty;
     var argv = std.json.Array.init(arena);
-    if (input == .object) if (input.object.get("tools")) |list| if (list == .array) {
-        for (list.array.items) |it| argv.append(it) catch return input;
+    if (input.object.get("tools")) |list| if (list == .array) {
+        for (list.array.items) |it| {
+            if (it == .string) {
+                const trimmed = std.mem.trim(u8, it.string, " \t\r\n");
+                if (trimmed.len == 0) continue;
+                argv.append(.{ .string = trimmed }) catch return input;
+            } else {
+                argv.append(it) catch return input;
+            }
+        }
     };
-    argv.append(.{ .string = one }) catch return input;
-    obj.put(arena, "tools", .{ .array = argv }) catch return input;
-    if (tools_mod.strField(input, "server")) |sv| obj.put(arena, "server", .{ .string = sv }) catch {};
+    if (nonEmptyStr(input, "name")) |one| argv.append(.{ .string = one }) catch return input;
+    if (argv.items.len > 0) obj.put(arena, "tools", .{ .array = argv }) catch return input;
+    if (nonEmptyStr(input, "server")) |sv| obj.put(arena, "server", .{ .string = sv }) catch {};
     return .{ .object = obj };
 }
 
@@ -126,7 +134,11 @@ fn isListingRequest(input: Value) bool {
     if (nonEmptyStr(input, "server") != null) return false;
     if (nonEmptyStr(input, "query") != null) return false;
     if (input.object.get("tools")) |list| {
-        if (list == .array and list.array.items.len > 0) return false;
+        if (list == .array) {
+            for (list.array.items) |item| {
+                if (item != .string or std.mem.trim(u8, item.string, " \t\r\n").len > 0) return false;
+            }
+        }
     }
     return true;
 }
@@ -260,7 +272,12 @@ pub fn mcpRemainder(arena: Allocator, input: Value) ?Value {
     if (input.object.get("tools")) |list| if (list == .array) {
         var keep = std.json.Array.init(arena);
         for (list.array.items) |item| {
-            if (item == .string and @import("native_fold.zig").isKnownNative(arena, item.string)) continue;
+            if (item == .string) {
+                const trimmed = std.mem.trim(u8, item.string, " \t\r\n");
+                if (trimmed.len == 0 or @import("native_fold.zig").isKnownNative(arena, trimmed)) continue;
+                keep.append(.{ .string = trimmed }) catch return null;
+                continue;
+            }
             keep.append(item) catch return null;
         }
         if (keep.items.len > 0) obj.put(arena, "tools", .{ .array = keep }) catch return null;
@@ -288,6 +305,40 @@ test "a load naming folded natives and an MCP server leaves the server for the M
     try std.testing.expect(!isListingRequest(empty_opts));
     const listing_empty = try std.json.parseFromSliceLeaky(Value, a, "{\"tools\":[],\"server\":\"\",\"query\":\"\"}", .{ .allocate = .alloc_always });
     try std.testing.expect(isListingRequest(listing_empty));
+    const listing_blank_tool = try std.json.parseFromSliceLeaky(Value, a, "{\"tools\":[\"\", \"  \"],\"server\":\"\",\"query\":\"\"}", .{ .allocate = .alloc_always });
+    try std.testing.expect(isListingRequest(listing_blank_tool));
+    const blank_with_native = try std.json.parseFromSliceLeaky(Value, a, "{\"tools\":[\"subagent\", \"\"],\"server\":\"\",\"query\":\"\"}", .{ .allocate = .alloc_always });
+    try std.testing.expect(mcpRemainder(a, blank_with_native) == null);
+}
+
+test "search and select ignore empty optional args and normalize mcp__ server prefixes" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    mcp_schema_gate.reset();
+    defer mcp_schema_gate.reset();
+    mcp_schema_gate.g_policy = .{ .enabled = true, .budget = 0, .eager = &.{} };
+    const all = try @import("mcp_schema_gate_tests.zig").fixture(a, "wiki", 2, 2000);
+
+    // Empty server string in mcp_search_tools searches all deferred servers.
+    const search_empty_sv = try std.json.parseFromSliceLeaky(Value, a, "{\"query\":\"first line\",\"server\":\"\"}", .{ .allocate = .alloc_always });
+    const r_empty = try searchInto(a, all, search_empty_sv);
+    try std.testing.expect(!r_empty.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, r_empty.text, "mcp__wiki__t0") != null);
+
+    // Prefixed server name ("mcp__wiki") matches server "wiki".
+    const search_prefixed = try std.json.parseFromSliceLeaky(Value, a, "{\"query\":\"first line\",\"server\":\"mcp__wiki\"}", .{ .allocate = .alloc_always });
+    const r_pref = try searchInto(a, all, search_prefixed);
+    try std.testing.expect(!r_pref.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, r_pref.text, "mcp__wiki__t0") != null);
+
+    // Empty name + tools list in mcp_select_tool never appends "" as an unknown tool.
+    const sel_empty_name = try std.json.parseFromSliceLeaky(Value, a, "{\"name\":\"\",\"tools\":[\"mcp__wiki__t0\"],\"server\":\"\"}", .{ .allocate = .alloc_always });
+    const sel_norm = selectInput(a, sel_empty_name);
+    const loaded = try mcp_schema_gate.loadInto(a, all, sel_norm);
+    try std.testing.expect(!loaded.is_error);
+    try std.testing.expectEqual(@as(usize, 1), loaded.loaded);
+    try std.testing.expect(mcp_schema_gate.isLoaded("mcp__wiki__t0"));
 }
 
 test "search lists matches and does not enable them" {

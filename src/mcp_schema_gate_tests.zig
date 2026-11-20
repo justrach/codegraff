@@ -480,3 +480,24 @@ test "loaded schemas outlive the arena that loaded them (the scripted REPL's fin
     try testing.expectEqual(@as(usize, 0), r.loaded); // already loaded: the kept render is reused
     try testing.expect(std.mem.indexOf(u8, r.text, "mcp__gone__t0") != null);
 }
+
+test "loadInto normalizes mcp__ server prefix and ignores blank tool entries" {
+    withDefaults();
+    defer withDefaults();
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const fat = try fixture(arena, "fat", 2, 2000);
+
+    const prefixed = try std.json.parseFromSliceLeaky(Value, arena, "{\"server\":\"mcp__fat\"}", .{ .allocate = .alloc_always });
+    const loaded = try gate.loadInto(arena, fat, prefixed);
+    try testing.expect(!loaded.is_error);
+    try testing.expectEqual(@as(usize, 2), loaded.loaded);
+
+    gate.reset();
+    const blanks = try std.json.parseFromSliceLeaky(Value, arena, "{\"tools\":[\"\", \"mcp__fat__t1\", \"  \"],\"server\":\"\",\"query\":\"\"}", .{ .allocate = .alloc_always });
+    const r = try gate.loadInto(arena, fat, blanks);
+    try testing.expect(!r.is_error);
+    try testing.expectEqual(@as(usize, 1), r.loaded);
+    try testing.expect(gate.isLoaded("mcp__fat__t1"));
+}
