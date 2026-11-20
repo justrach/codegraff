@@ -375,6 +375,7 @@ record only when you need the evidence or the edge cases.
 | [0348](0348-persistent-python-repl-and-unharnessed-mode.md) | Persistent per-owner Python 3 worker (`python_repl`, folded in `native_fold`) gives sessions cross-turn globals, `_` expression results, fd 1/2 capture, and timeout resilience without turn-1 schema overhead; opt-in `--unharnessed` / `/unharnessed` (`CLI > env > .harness/settings.json`, ACP/JSON parity) exposes only `python` with a single-tool prompt, while `--no-local-tools`, `plan_mode`, and hard policies block both. |
 | [0349](0349-native-flint-runtime-is-external.md) | Native Flint is a built-in local OpenAI-compatible provider, while its runtime and model files remain separately installed; use only validated loopback endpoints and never cloud-fallback. |
 | [0350](0350-nonblocking-catalog-refresh-and-slash-refresh.md) | Dynamic provider catalogs (including Codex) stay 0 ms non-blocking at boot while stale-while-revalidating in the background past 5 minutes and activating landed caches in-session; `graff/models` adds bounded `{"force": true}`, and `/refresh` refreshes all signed-in catalogs across REPL and ACP. |
+| [0351](0351-prefer-rlm-for-supported-work.md) | The shared RLM catalog entry prefers RLM for independent reads, JSON row counts, and field projection. It does not force tool choice or remove direct tools or the shell fallback. |
 
 ## When to write one
 
