@@ -86,6 +86,19 @@ pub fn visibleSnapshots(parse_snapshot: anytype) !void {
     try std.testing.expectEqualStrings("medium", defaults.models[1].default_verbosity.?);
     try std.testing.expect(defaults.models[2].default_effort == null and defaults.models[2].default_verbosity == null);
     try std.testing.expect(defaults.models[3].default_effort == null and defaults.models[3].default_verbosity == null);
+
+    // ADR 0292 addendum: gpt-6.2-astra lifts to 500k when the account row also
+    // advertises a wider max_context_window, and stays conservative without it.
+    const astra_wide = parse_snapshot(arena.allocator(),
+        \\{"models":[
+        \\ {"slug":"gpt-6.2-astra","visibility":"list","context_window":272000,"max_context_window":872000}]}
+    ).?;
+    try std.testing.expectEqual(@as(u64, 500_000), astra_wide.models[0].context);
+    const astra_narrow = parse_snapshot(arena.allocator(),
+        \\{"models":[
+        \\ {"slug":"gpt-6.2-astra","visibility":"list","context_window":272000}]}
+    ).?;
+    try std.testing.expectEqual(@as(u64, 272_000), astra_narrow.models[0].context);
 }
 
 pub fn versionFloor(floor: []const u8, effective_version: anytype, snapshot_matches: anytype) !void {

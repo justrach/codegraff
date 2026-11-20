@@ -108,6 +108,9 @@ test "usdFor: per-million math, cache writes, and negative clamping" {
     try std.testing.expectEqual(@as(u64, 1_050_000), pricing.contextFor("openai", "gpt-6.2-sol"));
     try std.testing.expectEqual(@as(u64, 500_000), pricing.contextFor("codex", "gpt-6.2-sol"));
     try std.testing.expectEqual(@as(u64, 500_000), pricing.contextFor("chatgpt-new", "gpt-6.2-sol"));
+    try std.testing.expectEqual(@as(u64, 1_050_000), pricing.contextFor("openai", "gpt-6.2-astra"));
+    try std.testing.expectEqual(@as(u64, 500_000), pricing.contextFor("codex", "gpt-6.2-astra"));
+    try std.testing.expectEqual(@as(u64, 500_000), pricing.contextFor("chatgpt-new", "gpt-6.2-astra"));
     try std.testing.expect(pricing.providerModelInTable("codex", "gpt-6.2-sol"));
     try std.testing.expect(pricing.providerModelInTable("codex", "gpt-6.2-astra"));
     try std.testing.expect(pricing.providerModelInTable("chatgpt-new", "gpt-6.2-sol"));

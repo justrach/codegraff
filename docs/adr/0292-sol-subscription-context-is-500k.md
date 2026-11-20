@@ -29,3 +29,15 @@ A stale smaller account catalog stays conservative until refreshed. This
 change does not increase account quotas or promise that larger sessions use
 the same amount of subscription allowance. Revisit the cap only with new
 route-specific evidence, not a name-only API maximum.
+
+## Addendum (2026-11-20)
+
+Live ChatGPT/Codex subscription probes verified that `gpt-6.2-sol` (500k
+catalog `context_window`, 872k `max_context_window`) and `gpt-6.2-astra` (272k
+catalog `context_window`, 872k `max_context_window`) both accept ~485k+ input
+tokens on the subscription route with exact start/end recall. Both models now
+use the 500,000 subscription window (`compactAt()` = 400,000) in offline rows,
+in the subscription clamp, and when live Codex/ChatGPT catalog discovery
+advertises a wider `max_context_window` on `gpt-6.2-astra`. Accounts whose
+catalog row does not advertise a wider `max_context_window` remain at the
+row's narrower `context_window`.

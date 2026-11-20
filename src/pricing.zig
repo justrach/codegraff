@@ -189,9 +189,27 @@ pub const ThinkingSupport = enum { unknown, no, both, only };
 // Conservative subscription input cap for older/unverified models: their
 // advertised total window may exceed what the backend accepts as input.
 pub const codex_context_window: u64 = 270_000;
-// Use GPT-6.1 Sol's announced subscription default, not the API's larger
-// maximum (ADR 0292).
+// Verified 500k subscription window (ADR 0292: gpt-6.1-sol, gpt-6.2-sol,
+// and gpt-6.2-astra when the account advertises a wider max_context_window).
 pub const sol_subscription_context_window: u64 = 500_000;
+
+/// Subscription input cap for `codex` / `chatgpt-new`.
+pub fn subscriptionContextCap(model: []const u8) u64 {
+    if (std.mem.eql(u8, model, "gpt-6.1-sol") or
+        std.mem.eql(u8, model, "gpt-6.2-sol") or
+        std.mem.eql(u8, model, "gpt-6.2-astra"))
+        return sol_subscription_context_window;
+    return codex_context_window;
+}
+
+/// Lift `gpt-6.2-astra` up to the verified 500k subscription window when the
+/// live Codex/ChatGPT catalog advertises a wider `max_context_window` (e.g. 872k).
+pub fn effectiveSubscriptionCatalogContext(model: []const u8, context_window: u64, max_context_window: u64) u64 {
+    if (std.mem.eql(u8, model, "gpt-6.2-astra") and max_context_window > context_window) {
+        return @max(context_window, @min(max_context_window, sol_subscription_context_window));
+    }
+    return context_window;
+}
 
 pub const model_table = @import("pricing_models.zig").rows;
 
@@ -335,7 +353,7 @@ pub fn contextFor(provider_id: []const u8, model: []const u8) u64 {
     if (std.mem.endsWith(u8, model, "[1m]")) return @max(1_000_000, contextFor(provider_id, model[0 .. model.len - "[1m]".len]));
     // The ChatGPT plan route caps input like the Codex backend it shares.
     const is_codex = std.mem.eql(u8, provider_id, "codex") or std.mem.eql(u8, provider_id, "chatgpt-new");
-    const subscription_cap = if (std.mem.eql(u8, model, "gpt-6.1-sol") or std.mem.eql(u8, model, "gpt-6.2-sol")) sol_subscription_context_window else codex_context_window;
+    const subscription_cap = subscriptionContextCap(model);
     // Provider-specific baked row is authoritative (gateway gpt-5.5 = 400k, not
     // the API's 1.05M), so it wins over the fresh name-only overlay below.
     for (models()) |m| {

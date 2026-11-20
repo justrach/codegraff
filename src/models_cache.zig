@@ -139,6 +139,7 @@ pub fn parseCodexSnapshot(arena: Allocator, data: []const u8) ?CodexSnapshot {
         if (duplicate) continue;
         var context = u64Field(item.object, "context");
         if (context == 0) context = u64Field(item.object, "context_window");
+        context = pricing.effectiveSubscriptionCatalogContext(slug, context, u64Field(item.object, "max_context_window"));
         if (context == 0) context = pricing.codex_context_window;
         rows.append(arena, .{
             .provider = "codex",

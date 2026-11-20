@@ -39,13 +39,16 @@ test "parseModels reads the ChatGPT plan's Codex-shaped list and skips hidden ro
     const snapshot = parseModels(state.allocator(), "chatgpt-new",
         \\{"models":[
         \\ {"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol","visibility":"list","context_window":272000,"max_context_window":872000},
+        \\ {"slug":"gpt-6.2-astra","display_name":"GPT-6.2-Astra","visibility":"list","context_window":272000,"max_context_window":872000},
         \\ {"slug":"gpt-reserve","display_name":"Reserve","visibility":"hide","context_window":272000}
         \\]}
     ) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 1), snapshot.models.len);
+    try std.testing.expectEqual(@as(usize, 2), snapshot.models.len);
     try std.testing.expectEqualStrings("chatgpt-new", snapshot.models[0].provider);
     try std.testing.expectEqualStrings("gpt-6.1-sol", snapshot.models[0].name);
     try std.testing.expectEqual(@as(u64, 272_000), snapshot.models[0].context);
+    try std.testing.expectEqualStrings("gpt-6.2-astra", snapshot.models[1].name);
+    try std.testing.expectEqual(@as(u64, 500_000), snapshot.models[1].context);
     const spec = provider.specFor("chatgpt-new") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("https://api.openai.com/v1/models?client_version=0.170.0", modelsUrl(spec));
 }

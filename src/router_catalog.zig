@@ -191,6 +191,9 @@ pub fn parseModels(arena: Allocator, provider_id: []const u8, data: []const u8) 
         if (context == 0) context = positiveInt(item.object, "contextLength"); // Fireworks (AIP gateway shape)
         // Vercel AI Gateway (and some OpenAI-compat hosts) use context_window.
         if (context == 0) context = positiveInt(item.object, "context_window");
+        if (std.mem.eql(u8, provider_id, "chatgpt-new")) {
+            context = pricing.effectiveSubscriptionCatalogContext(id, context, positiveInt(item.object, "max_context_window"));
+        }
         if (context == 0) context = positiveInt(item.object, "max_model_len"); // oMLX and vLLM-style local servers
         // Anthropic's input window is max_input_tokens; its sibling max_tokens is the
         // OUTPUT cap (128k on Opus 5), never a window, or 1M would compact at ~102k.
