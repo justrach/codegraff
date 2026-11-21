@@ -226,12 +226,21 @@ pub fn gateTool(self: *Agent, call: ToolCall) !?ExecResult {
     const approvals = self.approvals orelse return null;
 
     if (main_mod.plan_mode) {
+        if (mcp.Registry.isMcp(call.name) and !mcpReadOnly(self.registry, call)) {
+            const msg = if (@import("orchestrator_mode.zig").g_phase == .planning)
+                "orchestrator Phase 1 planning is read-only"
+            else
+                "plan mode is on — read-only";
+            return .{
+                .text = try std.fmt.allocPrint(self.arena, "{s}: MCP tool {s} is not declared read-only. Use a verified read-only alternative, or defer this call until execution.", .{ msg, call.name }),
+                .is_error = true,
+            };
+        }
         if (std.mem.eql(u8, call.name, "learn_candidate") or
             std.mem.eql(u8, call.name, "write_file") or std.mem.eql(u8, call.name, "edit_file") or
             @import("python_repl.zig").isTool(call.name) or
             std.mem.eql(u8, call.name, "imagegen") or // #352: writes a file and spawns a workspace-write child
-            std.mem.eql(u8, call.name, "peer_message") or // #469: appends to a peer's inbox — a side effect
-            (mcp.Registry.isMcp(call.name) and !mcpReadOnly(self.registry, call)))
+            std.mem.eql(u8, call.name, "peer_message")) // #469: appends to a peer's inbox — a side effect
         {
             const msg = if (@import("orchestrator_mode.zig").g_phase == .planning)
                 "orchestrator Phase 1 planning is read-only — include this edit in exit_plan_mode(plan) so the executor runs it in Phase 2."
