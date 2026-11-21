@@ -10,6 +10,11 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.79
+
+- Explain that unannotated MCP tools are not declared read-only during planning/plan-mode refusals (both direct and via `rlm`) instead of labeling them as edits (#1919, #1920).
+- Run only Zig fixture unit tests (`zig build unit -Dtest-filter=spec/`) during Lean/Zig spec conformance checks (#1921).
+
 ## v0.302.74.78
 
 - Allow read-only `run_task` prompts that say `No edits.` without weakening the guard for actual edit requests (#1914).
