@@ -499,10 +499,11 @@ def try_impl() -> int:
     if zig is None:
         print("impl: zig not on PATH; skip")
         return 0
-    cmd = [zig, "build", "test", "--summary", "none", "-Dtest-filter=spec/"]
+    # The "test" step also runs subprocess integrations, regardless of the unit filter.
+    cmd = [zig, "build", "unit", "--summary", "none", "-Dtest-filter=spec/"]
     print("impl:", " ".join(cmd))
     if subprocess.run(cmd, cwd=ROOT.parent).returncode != 0:
-        raise Counterexample("impl", None, "zig test spec/tool_catalog failed")
+        raise Counterexample("impl", None, "Zig spec fixture tests failed")
     return 0
 
 

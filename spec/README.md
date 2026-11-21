@@ -69,7 +69,7 @@ python3 spec/conformance.py --diagram transport
 python3 spec/conformance.py --diagram score
 python3 spec/conformance.py --break imagegen-always-on   # demo a counterexample
 python3 spec/conformance.py --lean     # lake build, if installed
-zig build test --summary none -Dtest-filter="spec/tool_catalog"
+python3 spec/conformance.py --lean --impl  # Lean build + Zig fixture unit tests
 ```
 
 Process kernels (`GoalLoop`, `PromptCache`, `PromptPrefix`, `PromptStable`,
