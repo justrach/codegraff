@@ -1,6 +1,7 @@
 //! ACP v1 session/load for the live CLI Agent. Only a saved session in the
 //! selected workspace can be loaded; session IDs are plain save basenames.
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const proto = @import("acp_protocol.zig");
@@ -112,6 +113,11 @@ pub fn load(ctx: *anyopaque, arena: Allocator, w: *Io.Writer, req: proto.Request
 
 pub const Saved = union(enum) { provider: []const u8, rejected: []const u8 };
 
+fn canonicalActiveWorkspace(io: Io, arena: Allocator, cwd: []const u8) []const u8 {
+    if (builtin.os.tag != .windows) return cwd;
+    return Io.Dir.cwd().realPathFileAlloc(io, cwd, arena) catch cwd;
+}
+
 /// A save `sid` in the selected workspace that session/load (and session/fork)
 /// may restore, or why not. Names its provider for a credential error.
 /// #1858: reads and parses the session file in a scoped scratch arena so the
@@ -129,7 +135,8 @@ pub fn savedHere(live: *LiveTurn, env: acp_workspace.Env, arena: Allocator, sid:
         break :blk Io.Dir.cwd().statFile(live.root.io, path, .{}) catch
             return .{ .rejected = "Unknown session ID in the selected workspace" };
     };
-    const canonical_active = workspace_switch.currentAbs(live.root.io, scratch);
+    const active = workspace_switch.currentAbs(live.root.io, scratch);
+    const canonical_active = canonicalActiveWorkspace(live.root.io, scratch, active);
     if (stat.kind != .file) return .{ .rejected = "Unknown session ID in the selected workspace" };
     @import("session_store.zig").recover(live.root.io, live.root.gpa, .cwd(), path) catch |err|
         return .{ .rejected = loadErrorText(arena, err, "") };
@@ -149,6 +156,24 @@ pub fn savedHere(live: *LiveTurn, env: acp_workspace.Env, arena: Allocator, sid:
             return .{ .rejected = "Saved session belongs to another workspace" };
     }
     return .{ .provider = arena.dupe(u8, provider.string) catch return unloadable };
+}
+
+test "session workspace comparison canonicalizes Windows extended paths" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    var repo = std.testing.tmpDir(.{});
+    defer repo.cleanup();
+    var other = std.testing.tmpDir(.{});
+    defer other.cleanup();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const saved_workspace = try repo.dir.realPathFileAlloc(io, ".", arena);
+    const other_workspace = try other.dir.realPathFileAlloc(io, ".", arena);
+    const extended_active = try std.fmt.allocPrint(arena, "\\\\?\\{s}", .{saved_workspace});
+    const canonical_active = canonicalActiveWorkspace(io, arena, extended_active);
+    try std.testing.expect(session_index.sameWorkspace(saved_workspace, canonical_active));
+    try std.testing.expect(!session_index.sameWorkspace(saved_workspace, other_workspace));
 }
 
 /// #1557: the save parsed and its fields are present, so a failure here is
