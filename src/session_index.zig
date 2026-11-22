@@ -5,6 +5,7 @@
 //! callers keep importing `session.listSavedSessions` and friends.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Value = std.json.Value;
 const Allocator = std.mem.Allocator;
@@ -141,7 +142,43 @@ pub const SessionEntry = struct {
 };
 
 pub fn sameWorkspace(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, std.mem.trimEnd(u8, a, "/"), std.mem.trimEnd(u8, b, "/"));
+    return sameWorkspaceOn(builtin.os.tag == .windows, a, b);
+}
+
+/// #1922: on Windows one checkout can arrive as `C:\repo` or the
+/// extended-length `\\?\C:\repo` (`\\?\UNC\host\share` for `\\host\share`),
+/// with either separator and any letter case. Different checkouts still differ.
+fn sameWorkspaceOn(windows: bool, a: []const u8, b: []const u8) bool {
+    if (!windows) return std.mem.eql(u8, std.mem.trimEnd(u8, a, "/"), std.mem.trimEnd(u8, b, "/"));
+    const x = windowsWorkspace(a);
+    const y = windowsWorkspace(b);
+    if (x.unc != y.unc or x.rest.len != y.rest.len) return false;
+    for (x.rest, y.rest) |c, d| {
+        if (isWindowsSep(c) and isWindowsSep(d)) continue;
+        if (std.ascii.toLower(c) != std.ascii.toLower(d)) return false;
+    }
+    return true;
+}
+
+fn isWindowsSep(c: u8) bool {
+    return c == '\\' or c == '/';
+}
+
+const WindowsWorkspace = struct { unc: bool, rest: []const u8 };
+
+fn windowsWorkspace(path: []const u8) WindowsWorkspace {
+    var unc = false;
+    var rest = path;
+    if (rest.len >= 8 and std.mem.startsWith(u8, rest, "\\\\?\\") and std.ascii.eqlIgnoreCase(rest[4..7], "UNC") and isWindowsSep(rest[7])) {
+        unc = true;
+        rest = rest[8..];
+    } else if (std.mem.startsWith(u8, rest, "\\\\?\\")) {
+        rest = rest[4..];
+    } else if (rest.len >= 2 and isWindowsSep(rest[0]) and isWindowsSep(rest[1])) {
+        unc = true;
+        rest = rest[2..];
+    }
+    return .{ .unc = unc, .rest = std.mem.trimEnd(u8, rest, "\\/") };
 }
 
 pub fn listFromDir(io: Io, arena: Allocator, dir: Io.Dir, workspace: []const u8, local: bool) std.ArrayList(SessionEntry) {
@@ -343,4 +380,16 @@ test "homeSessionPath and sameWorkspace (#712)" {
     try std.testing.expectEqualStrings("/Users/me/.graff/sessions/home-test.session.json", try homeSessionPath(arena, "/Users/me", "home-test"));
     try std.testing.expect(sameWorkspace("/Users/me", "/Users/me/"));
     try std.testing.expect(!sameWorkspace("/Users/me", "/tmp/proj"));
+}
+
+test "sameWorkspace treats Windows extended-length paths as the same checkout (#1922)" {
+    try std.testing.expect(sameWorkspaceOn(true, "\\\\?\\C:\\src\\repo", "C:\\src\\repo"));
+    try std.testing.expect(sameWorkspaceOn(true, "c:/src/repo/", "\\\\?\\C:\\src\\repo"));
+    try std.testing.expect(sameWorkspaceOn(true, "\\\\?\\UNC\\host\\share\\repo", "\\\\host\\share\\repo"));
+    try std.testing.expect(!sameWorkspaceOn(true, "\\\\?\\C:\\src\\repo", "C:\\src\\other"));
+    try std.testing.expect(!sameWorkspaceOn(true, "\\\\?\\C:\\src\\repo", "D:\\src\\repo"));
+    try std.testing.expect(!sameWorkspaceOn(true, "\\\\?\\UNC\\host\\share", "C:\\host\\share"));
+    // POSIX compare is unchanged: case-sensitive, `\\?\` is not special.
+    try std.testing.expect(sameWorkspaceOn(false, "/Users/me", "/Users/me/"));
+    try std.testing.expect(!sameWorkspaceOn(false, "/Users/Me", "/Users/me"));
 }
