@@ -5,6 +5,9 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.80
+    \\  • Accept Windows extended-length (`\\?\`) workspace paths on ACP `session/load` (#1922).
+    \\
     \\0.302.74.79
     \\  • Report unannotated MCP tools as not declared read-only in plan mode / RLM instead of edits (#1919).
     \\
