@@ -5,6 +5,9 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.81
+    \\  • Reject corrupt PNG attachments without aborting the turn; skip them when loading saved sessions (#1926).
+    \\
     \\0.302.74.80
     \\  • Accept Windows extended-length (`\\?\`) workspace paths on ACP `session/load` (#1922).
     \\

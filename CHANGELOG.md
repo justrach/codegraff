@@ -10,6 +10,10 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.81
+
+- Return a `read_file` error for corrupt PNG attachments instead of aborting the turn, and omit corrupt PNG attachments when restoring saved sessions (#1926).
+
 ## v0.302.74.80
 
 - Treat Windows extended-length (`\\?\`, `\\?\UNC\`) and drive-letter forms of one checkout as the same workspace, so ACP `session/load` no longer rejects them as "Saved session belongs to another workspace" (#1922, #1925).
