@@ -18,6 +18,7 @@ const clip = @import("vision_clipboard.zig");
 const sniff = @import("image_sniff.zig");
 const orient = @import("image_orient.zig");
 const inbox = @import("image_inbox.zig");
+const png_integrity = @import("png_integrity.zig");
 
 /// Stage pixels after exec has confined the path. The tool-batch checkpoint
 /// delivers them to the next model request as a native image content block.
@@ -120,6 +121,10 @@ fn stageWith(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: [
     // The type of the bytes actually encoded: a downscale step re-encodes
     // (sipsResize forces PNG), so it is sniffed again rather than assumed.
     const sent_type = sniff.sniff(data) orelse return notRaster(gpa, actual_path);
+    if (std.mem.eql(u8, sent_type, "image/png") and !png_integrity.valid(data)) return .{
+        .text = try std.fmt.allocPrint(gpa, "Image could not be attached: {s} is a corrupt or truncated PNG (invalid chunk data or checksum). Re-export it as a new PNG and try again.", .{actual_path}),
+        .is_error = true,
+    };
     const enc = std.base64.standard.Encoder;
     const b64 = try gpa.alloc(u8, enc.calcSize(data.len));
     defer gpa.free(b64);
@@ -160,6 +165,31 @@ fn stageWith(gpa: Allocator, io: Io, ctx: ToolCtx, resolved: []const u8, path: [
     return .{ .text = try aw.toOwnedSlice() };
 }
 
+test "#1926 native image read rejects PNG with missing IHDR checksum without queueing it" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var reg = @import("mcp.zig").Registry.empty(a, io);
+    defer reg.deinit();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var corrupt: [tiny_png.len - 4]u8 = undefined;
+    @memcpy(corrupt[0..29], tiny_png[0..29]);
+    @memcpy(corrupt[29..], tiny_png[33..]);
+    try tmp.dir.writeFile(io, .{ .sub_path = "corrupt.png", .data = &corrupt });
+    const file_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/corrupt.png", .{tmp.sub_path});
+    defer a.free(file_path);
+    var ctx: ToolCtx = undefined;
+    ctx.registry = &reg;
+    ctx.agent_cwd = null;
+    ctx.call_seq = 0;
+    ctx.provider = .{ .id = "test", .kind = .responses, .auth = .bearer, .url = "", .api_key = "", .model = "gpt-5", .context = 100000 };
+    const out = (try stage(a, io, ctx, file_path, "corrupt.png", corrupt.len)).?;
+    defer a.free(out.text);
+    try std.testing.expect(out.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, out.text, "corrupt or truncated PNG") != null);
+    try std.testing.expect(reg.pending_images.isEmpty());
+}
+
 test "native image read stages pixels and tool checkpoint sends them without a user follow-up" {
     const a = std.testing.allocator;
     const io = std.testing.io;
@@ -169,7 +199,7 @@ test "native image read stages pixels and tool checkpoint sends them without a u
     defer reg.deinit();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const bytes = "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0b\x49\x44\x41\x54\x78\xda\x63\xfc\xff\x1f\x00\x03\x03\x02\x00\xef\x9a\x0f\x5b\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
+    const bytes = "\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x00\x00\x00\x00\x3a\x7e\x9b\x55\x00\x00\x00\x0aIDATx\x9c\x63\x60\x00\x00\x00\x02\x00\x01\x48\xaf\xa4\x71\x00\x00\x00\x00IEND\xae\x42\x60\x82";
     try tmp.dir.writeFile(io, .{ .sub_path = "image.PNG", .data = bytes });
     const file_path = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}/image.PNG", .{tmp.sub_path});
     defer a.free(file_path);
@@ -325,7 +355,7 @@ test "#1737: after workspace use, an image in the new tree attaches; one outside
 }
 
 /// 1x1 PNG a fake resizer "downscales" to.
-const tiny_png = "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0b\x49\x44\x41\x54\x78\xda\x63\xfc\xff\x1f\x00\x03\x03\x02\x00\xef\x9a\x0f\x5b\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
+const tiny_png = "\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x00\x00\x00\x00\x3a\x7e\x9b\x55\x00\x00\x00\x0aIDATx\x9c\x63\x60\x00\x00\x00\x02\x00\x01\x48\xaf\xa4\x71\x00\x00\x00\x00IEND\xae\x42\x60\x82";
 
 fn fakeShrink(io: Io, in: []const u8, max_dim: []const u8, out: []const u8) bool {
     _ = in;

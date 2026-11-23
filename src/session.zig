@@ -443,6 +443,7 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     }
     root.messages = msgs;
     root.compaction_window = compaction_window;
+    try @import("image_history_repair.zig").repair(root.gpa, scratch, &root.messages);
     @import("history_wire.zig").prepare(scratch, root.provider.kind, &root.messages);
     // #752: truncated `function.arguments` strings 400 every later request.
     tool_call_args.repairHistory(root.gpa, scratch, root.messages.items);
