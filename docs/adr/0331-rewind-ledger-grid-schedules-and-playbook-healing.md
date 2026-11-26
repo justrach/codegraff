@@ -16,7 +16,7 @@ Long-running autonomous and scheduled sessions hit four durability and latency s
 - `snapshots.Snapshots` maintains an append-only, rewind-proof ledger (`rewinds: ArrayList(RewindEntry)`, `restoreWithReason`, `rewindDigest`) across `/undo` and `/rewind`, and `compact_handoff_note.durableState` injects the bounded digest so compacted sessions know which edits were reverted and why.
 - `schedule` aligns recurring tasks to wall-clock grid boundaries (`nextGridSlot`) and supports `@every <delay>` and `--missed=once|skip` (`MissedPolicy.once | .skip`, defaulting to firing at most once per missed window rather than bursting).
 - `playbook` provides corrupt-safe line-by-line recovery (`parseDetailed`, `loadDetailed`), backs up corrupted files to `.graff/playbook.jsonl.corrupt` while healing missing trailing newlines before `appendLine`, and surfaces `"storage_warning"` diagnostics in `recordedStateWithHealth`.
-- `agent_file.validateMarkdown` reports 1-based `line:col` frontmatter diagnostics, `tool_env` scrubs OAuth/alias tokens while preserving provider control flags (`CHATGPT_NEW_DISABLED`, `GRAFF_CLAUDE_AGENT`), and `job_foreground.pollStepMs` ramps polling from `5ms -> 10ms -> 20ms -> 65ms -> 100ms`.
+- `agent_file.validateMarkdown` reports 1-based `line:col` frontmatter diagnostics, `tool_env` scrubs OAuth/alias tokens while preserving provider control flags (`CHATGPT_NEW_DISABLED`, `GRAFF_CLAUDE_AGENT`), and `job_foreground.pollStepMs` ramps polling from `1ms -> 10ms -> 20ms -> 65ms -> 100ms` (see ADR 0352).
 
 ## Consequences
 

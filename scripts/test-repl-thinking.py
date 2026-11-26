@@ -10,7 +10,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "scripts/eval"))
-from pty_harness import PtySession
+from pty_harness import PtySession, PtyTimeout
 from frontend_model import FrontendModel
 
 
@@ -63,9 +63,18 @@ def run(binary):
                 cursor = len(session.raw)
                 session.send_line("Reply briefly to this sample request.")
                 session.wait_for_literal("Ctrl+T collapse", start=cursor)
-                cursor = len(session.raw)
-                session.send_text("\x14")
-                session.wait_for_literal("Ctrl+T expand", start=cursor)
+                # Fold while the SSE is still live. One Ctrl+T after collapse
+                # can land after the last delta when the host is busy.
+                expand_from = cursor
+                for _ in range(40):
+                    session.send_text("\x14")
+                    try:
+                        session.wait_for_literal("Ctrl+T expand", start=expand_from, timeout=0.15)
+                        break
+                    except PtyTimeout:
+                        expand_from = len(session.raw)
+                else:
+                    session.wait_for_literal("Ctrl+T expand", start=cursor)
                 cursor = len(session.raw)
                 session.send_text("\x14")
                 session.wait_for_literal("Ctrl+T collapse", start=cursor)
