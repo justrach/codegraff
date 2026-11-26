@@ -108,6 +108,9 @@ const posix_groups = builtin.os.tag != .windows and builtin.os.tag != .wasi;
 const Jobs = struct {
     mutex: Io.Mutex = .init,
     list: std.ArrayList(*Job) = .empty,
+    /// Wakes foreground waiters when any job's pump sets `done` (pidfd is the
+    /// Linux fast path; this Condition is the portable waitpid-side wake).
+    progress: Io.Condition = .init,
 
     /// Caller holds the mutex.
     pub fn find(self: *Jobs, id: u64) ?*Job {
@@ -240,6 +243,7 @@ pub fn finish(job: *Job, io: Io, code: ?u8, killed: bool, detached: bool, pid: i
     job.exit_code = code;
     job.killed = killed and !detached;
     job.done = true;
+    g_jobs.progress.broadcast(io);
     const id = job.id;
     const quiet = job.quiet;
     const idle = job.stopped_idle;
@@ -271,6 +275,11 @@ pub fn markReported(io: Io, id: u64) void {
 
 pub fn nowMs(io: Io) i64 {
     return @intCast(@divTrunc(Io.Timestamp.now(io, .awake).nanoseconds, std.time.ns_per_ms));
+}
+
+/// Persist the live-job ownership record. No-op on Windows/WASI (no pgid).
+pub fn recordLive(io: Io, job: *Job) void {
+    if (comptime posix_groups) job_registry.write(io, job_registry.home, admin.recordOf(io, job));
 }
 
 const admin = @import("jobs_admin.zig");
@@ -388,8 +397,9 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
         gpa.destroy(job);
         return e;
     };
-    // #199: the ownership record outlives a graff that dies without its defers.
-    if (comptime posix_groups) job_registry.write(io, job_registry.home, admin.recordOf(io, job));
+    // Quiet foreground jobs are process-local until auto-bg; skip the
+    // per-spawn jobs/N.json write. recordLive runs if the wait promotes.
+    if (!job.quiet) recordLive(io, job);
     if (capture) |c| @import("job_durable.zig").record(io, job, c, opts.session);
     return job;
 }

@@ -3,6 +3,9 @@
 //! Synced files and directory entries order recovery for process crashes;
 //! power-loss guarantees still depend on the filesystem/device (and Windows
 //! cannot portably sync directory handles). The snapshot inode is never swapped.
+//! finish() does not dir-sync after the in-place snapshot pwrite: file.sync
+//! covers that inode. The journal still syncs before rename, the directory
+//! after journal publish, and the directory after journal unlink (ADR 0352).
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
@@ -212,7 +215,8 @@ pub fn write(io: Io, gpa: Allocator, dir: Io.Dir, path: []const u8, new_parts: [
 }
 fn finish(io: Io, gpa: Allocator, dir: Io.Dir, path: []const u8, file: Io.File) !void {
     try file.sync(io); // The snapshot must be durable before retiring its WAL.
-    try syncParent(io, dir, path);
+    // In-place pwrite does not create a directory entry; file.sync covers the
+    // inode. The remaining dir sync is the journal unlink below.
     const name = try journalName(gpa, path);
     defer gpa.free(name);
     try dir.deleteFile(io, name);

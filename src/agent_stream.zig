@@ -299,7 +299,11 @@ pub fn postStreamWithClient(self: *Agent, client: *std.http.Client, body: []cons
         if (self.provider.kind == .openai and openaiComplete(line.writer.buffered())) saw_done = true;
         if (isStreamEnd(self.scratchAlloc(), self.provider.kind, line.writer.buffered())) { // #124: parse tree is a transient bool check
             saw_done = true; // #133: the provider's terminal event landed — a later close is clean
-            if (req.connection) |conn| conn.closing = true;
+            if (req.connection) |conn| {
+                // Keep the socket when the peer offered keep-alive so the next
+                // model request can reuse it. Connection: close still poisons.
+                if (!response.head.keep_alive) conn.closing = true;
+            }
             break :stream;
         }
         line.clearRetainingCapacity();

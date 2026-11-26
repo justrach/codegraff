@@ -51,6 +51,7 @@ pub fn ensureIgnore(io: Io, base: Io.Dir) void {
 
 /// The same, given an already-open handle on `.graff` itself.
 pub fn ensureIgnoreIn(io: Io, graff: Io.Dir) void {
+    if (graff.access(io, ".gitignore", .{})) return else |_| {}
     graff.writeFile(io, .{ .sub_path = ".gitignore", .data = gitignore_body, .flags = .{ .exclusive = true } }) catch {};
 }
 
@@ -129,4 +130,18 @@ test "#1273: a user's own .graff/.gitignore is never overwritten" {
     defer other.cleanup();
     ensureFor(io, other.dir, "notes/x.md");
     try std.testing.expectError(error.FileNotFound, other.dir.statFile(io, ".graff", .{}));
+}
+
+test "#1273: ensureIgnore writes .gitignore only when it is missing" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    ensure(io, tmp.dir);
+    const first = try tmp.dir.statFile(io, ".graff/.gitignore", .{});
+    try io.sleep(.fromMilliseconds(20), .awake);
+    ensure(io, tmp.dir);
+    ensureIgnore(io, tmp.dir);
+    const second = try tmp.dir.statFile(io, ".graff/.gitignore", .{});
+    try std.testing.expectEqual(first.mtime.nanoseconds, second.mtime.nanoseconds);
+    try std.testing.expectEqual(first.size, second.size);
 }

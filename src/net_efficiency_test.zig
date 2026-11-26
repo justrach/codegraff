@@ -11,6 +11,9 @@ const mcp_http = @import("mcp_http.zig");
 const mcp_lifecycle = @import("mcp_lifecycle.zig");
 const mcp_protocol = @import("mcp_protocol.zig");
 const mcp_rpc = @import("mcp_rpc.zig");
+const http_mod = @import("http.zig");
+const agent_stream = @import("agent_stream.zig");
+const Agent = @import("agent.zig").Agent;
 
 test "WSS CA bundle is scanned from disk at most once per process" {
     const io = std.testing.io;
@@ -264,6 +267,99 @@ test "MCP reuse teardown stops the listener before the wake accept" {
     const join = std.mem.indexOfPos(u8, src, wake, "fut.await(io)").?;
     try std.testing.expect(stop < wake);
     try std.testing.expect(wake < join);
+}
+
+const sse_ok = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n";
+
+const StreamSrv = struct {
+    accepts: *std.atomic.Value(u8),
+    posts: *std.atomic.Value(u8),
+    done: *std.atomic.Value(bool),
+
+    fn run(self: *StreamSrv, io: Io, listener: *std.Io.net.Server) void {
+        while (!self.done.load(.acquire)) {
+            const stream = listener.accept(io) catch {
+                if (self.done.load(.acquire)) return;
+                continue;
+            };
+            _ = self.accepts.fetchAdd(1, .monotonic);
+            defer stream.close(io);
+            self.serveConn(io, stream) catch {};
+        }
+    }
+
+    fn serveConn(self: *StreamSrv, io: Io, stream: std.Io.net.Stream) !void {
+        var rbuf: [4096]u8 = undefined;
+        var wbuf: [4096]u8 = undefined;
+        var rd = std.Io.net.Stream.Reader.init(stream, io, &rbuf);
+        var wr = std.Io.net.Stream.Writer.init(stream, io, &wbuf);
+        const r = &rd.interface;
+        const w = &wr.interface;
+        while (self.posts.load(.acquire) < 2) {
+            var content_len: usize = 0;
+            while (true) {
+                const line = (r.takeDelimiter('\n') catch return) orelse return;
+                if (line.len == 0 or (line.len == 1 and line[0] == '\r')) break;
+                if (std.ascii.startsWithIgnoreCase(line, "content-length:")) {
+                    const raw = if (line[line.len - 1] == '\r') line[0 .. line.len - 1] else line;
+                    const v = std.mem.trim(u8, raw["content-length:".len..], " \t");
+                    content_len = std.fmt.parseInt(usize, v, 10) catch 0;
+                }
+            }
+            if (content_len > 0) _ = try r.take(content_len);
+            _ = self.posts.fetchAdd(1, .monotonic);
+            try w.print(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {d}\r\nconnection: keep-alive\r\n\r\n{s}",
+                .{ sse_ok.len, sse_ok },
+            );
+            try w.flush();
+        }
+    }
+};
+
+test "OpenAI SSE reuses one TCP connection across two completed streams" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var addr = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:0");
+    var listener = try std.Io.net.IpAddress.listen(&addr, io, .{});
+    defer listener.deinit(io);
+    var accepts: std.atomic.Value(u8) = .init(0);
+    var posts: std.atomic.Value(u8) = .init(0);
+    var done: std.atomic.Value(bool) = .init(false);
+    var srv: StreamSrv = .{ .accepts = &accepts, .posts = &posts, .done = &done };
+    var fut = io.async(StreamSrv.run, .{ &srv, io, &listener });
+    defer joinReuseServer(io, &listener, &done, &fut);
+
+    const saved_budget = http_mod.stream_stall_ms;
+    http_mod.stream_stall_ms = 500;
+    defer http_mod.stream_stall_ms = saved_budget;
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    var url_buf: [96]u8 = undefined;
+    const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/v1/chat/completions", .{listener.socket.address.getPort()});
+    var agent: Agent = .{
+        .gpa = gpa,
+        .arena = arena_state.allocator(),
+        .io = io,
+        .client = &client,
+        .provider = .{ .id = "test", .kind = .openai, .auth = .bearer, .url = url, .api_key = "synthetic", .model = "fixture", .context = 0 },
+        .messages = std.json.Array.init(arena_state.allocator()),
+        .sub = true,
+        .label = "fixture",
+        .out = null,
+    };
+    const first = try agent_stream.postStreamWithClient(&agent, &client, "{}");
+    defer gpa.free(first);
+    try std.testing.expect(std.mem.indexOf(u8, first, "data: [DONE]") != null);
+    const second = try agent_stream.postStreamWithClient(&agent, &client, "{}");
+    defer gpa.free(second);
+    try std.testing.expect(std.mem.indexOf(u8, second, "data: [DONE]") != null);
+    try std.testing.expectEqual(@as(u8, 1), accepts.load(.monotonic));
+    try std.testing.expectEqual(@as(u8, 2), posts.load(.monotonic));
 }
 
 test "#849: blocked accept loop joins within a bound after stop-then-wake" {

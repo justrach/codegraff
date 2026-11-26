@@ -73,19 +73,54 @@ fn writeCounter(io: Io, dir: Io.Dir, name: []const u8, n: Id) !void {
     try @import("credential_store.zig").replaceFile(io, dir, name, data, private_file);
 }
 
+/// IDs issued from one durable high-water advance. Cross-process uniqueness
+/// is the invariant; in-process issues stay consecutive.
+pub const block_size: Id = 64;
+
+const Cache = struct {
+    home_buf: [std.fs.max_path_bytes]u8 = undefined,
+    home_len: usize = 0,
+    next: Id = 0,
+    end: Id = 0, // exclusive
+};
+
+var cache_mu: Io.Mutex = .init;
+var cache: Cache = .{};
+
+fn cacheTake(home: []const u8) ?Id {
+    if (cache.home_len == 0) return null;
+    if (!std.mem.eql(u8, cache.home_buf[0..cache.home_len], home)) return null;
+    if (cache.next >= cache.end) return null;
+    const id = cache.next;
+    cache.next += 1;
+    return id;
+}
+
+pub fn resetCacheForTest() void {
+    if (comptime !builtin.is_test) return;
+    const io = std.testing.io;
+    cache_mu.lockUncancelable(io);
+    defer cache_mu.unlock(io);
+    cache = .{};
+}
+
 pub fn reserve(io: Io, home: []const u8) !Id {
+    cache_mu.lockUncancelable(io);
+    defer cache_mu.unlock(io);
+    if (cacheTake(home)) |id| return id;
     for (0..50) |_| {
-        return reserveLocked(io, home) catch |err| {
+        return fillBlockLocked(io, home) catch |err| {
             if (err != error.ShellIdentityInitializing) return err;
-            // Release the advisory lock before the creator can initialize it.
+            // fillBlockLocked has dropped the file lock; wait for the creator.
             try io.sleep(.fromMilliseconds(10), .awake);
+            if (cacheTake(home)) |id| return id;
             continue;
         };
     }
     return error.ShellIdentityStoreInvalid;
 }
 
-fn reserveLocked(io: Io, home: []const u8) !Id {
+fn fillBlockLocked(io: Io, home: []const u8) !Id {
     if (home.len == 0) return error.ShellIdentityHomeRequired;
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = try std.fmt.bufPrint(&buf, "{s}/.codegraff", .{home});
@@ -129,14 +164,23 @@ fn reserveLocked(io: Io, home: []const u8) !Id {
     }
     const current = try readCounter(io, dir, "shell-id.counter");
     if (current == last) return error.ShellIdentityExhausted;
-    const next = current + 1;
-    // Atomic replacement yields the old or new valid counter after a crash.
+    const take = @min(block_size, last - current);
+    const high = current + take;
+    // Atomic replacement yields the old or new valid high-water after a crash.
     // Spawn happens only after the new counter and directory entry are synced.
-    try writeCounter(io, dir, "shell-id.counter", next);
-    return next;
+    try writeCounter(io, dir, "shell-id.counter", high);
+    const issued = current + 1;
+    if (home.len <= cache.home_buf.len) {
+        @memcpy(cache.home_buf[0..home.len], home);
+        cache.home_len = home.len;
+        cache.next = issued + 1;
+        cache.end = high + 1;
+    }
+    return issued;
 }
 
 test "shell identity reservations survive a fresh allocator and remain JS exact" {
+    resetCacheForTest();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -147,7 +191,27 @@ test "shell identity reservations survive a fresh allocator and remain JS exact"
     try std.testing.expectError(error.ShellIdentityHomeRequired, reserve(std.testing.io, ""));
 }
 
+test "shell identity reserves a durable block and issues the rest from memory" {
+    resetCacheForTest();
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &buf);
+    const home = buf[0..n];
+    try std.testing.expectEqual(first, try reserve(io, home));
+    try std.testing.expectEqual(first + 1, try reserve(io, home));
+    try std.testing.expectEqual(first + 2, try reserve(io, home));
+    var dir = try tmp.dir.openDir(io, ".codegraff", .{});
+    defer dir.close(io);
+    try std.testing.expectEqual(first + block_size - 1, try readCounter(io, dir, "shell-id.counter"));
+    resetCacheForTest();
+    try std.testing.expectEqual(first + block_size, try reserve(io, home));
+    try std.testing.expectEqual(first + 2 * block_size - 1, try readCounter(io, dir, "shell-id.counter"));
+}
+
 test "shell identity fails closed on missing corrupt or exhausted storage" {
+    resetCacheForTest();
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -155,6 +219,7 @@ test "shell identity fails closed on missing corrupt or exhausted storage" {
     const n = try tmp.dir.realPath(io, &buf);
     const home = buf[0..n];
     _ = try reserve(io, home);
+    resetCacheForTest();
     var dir = try tmp.dir.openDir(io, ".codegraff", .{});
     defer dir.close(io);
     try dir.deleteFile(io, "shell-id.counter");
