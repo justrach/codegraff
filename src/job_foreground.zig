@@ -3,6 +3,7 @@
 //! background at the bound, or kill it on Esc.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
@@ -61,6 +62,7 @@ pub fn waitForeground(gpa: Allocator, io: Io, id: u64, wait_ms: u64) !FgWait {
             job.quiet = false; // completion should now notify (#620)
             const result: FgWait = .{ .running = .{ .id = id, .output = pair[0], .dropped = pair[1] } };
             g_jobs.mutex.unlock(io);
+            jobs.recordLive(io, job);
             return result;
         }
         g_jobs.mutex.unlock(io);
@@ -79,11 +81,10 @@ pub fn waitForeground(gpa: Allocator, io: Io, id: u64, wait_ms: u64) !FgWait {
             return .{ .cancelled = .{ .id = id, .output = try gpa.dupe(u8, ""), .dropped = false } };
         }
         const step = pollStepMs(waited, deadline);
-        io.sleep(.fromMilliseconds(@intCast(step)), .awake) catch {
-            waited = deadline;
-            continue;
-        };
-        waited += step;
+        const t0 = nowMs(io);
+        waitUntilProgress(io, job, step);
+        const dt = nowMs(io) - t0;
+        waited += if (dt <= 0) 1 else @intCast(dt);
         if (still.due(waited)) {
             var ebuf: [16]u8 = undefined;
             tool_pulse.emitNotice(io, "· bash still running · {s}", .{tool_pulse.formatElapsed(&ebuf, waited)});
@@ -91,12 +92,13 @@ pub fn waitForeground(gpa: Allocator, io: Io, id: u64, wait_ms: u64) !FgWait {
     }
 }
 
-/// Adaptive foreground poll ramp: 5ms + 10ms + 20ms + 65ms = 100ms, then 100ms
-/// ticks so fast commands (<35ms) return without a 100ms floor while 100ms
-/// deadlines and pulse boundaries stay aligned.
+/// Adaptive foreground poll ramp: five 1ms ticks + 10ms + 20ms + 65ms = 100ms,
+/// then 100ms ticks. Fast commands return without a 100ms floor; 100ms
+/// deadlines and pulse boundaries stay aligned. Linux waiters also wake on
+/// child exit (pidfd) with this timeout as the fallback.
 pub fn pollStepMs(waited: u64, deadline: u64) u64 {
     const base: u64 = if (waited < 5)
-        5
+        1
     else if (waited < 15)
         10
     else if (waited < 35)
@@ -105,18 +107,63 @@ pub fn pollStepMs(waited: u64, deadline: u64) u64 {
         100 - waited
     else
         100;
-    const rem = deadline -| waited;
-    return if (rem > 0 and rem < base) rem else base;
+    const rel = deadline -| waited;
+    return if (rel > 0 and rel < base) rel else base;
 }
 
-test "pollStepMs ramps 5 -> 10 -> 20 -> 65 to 100ms and respects shorter deadlines" {
+fn waitUntilProgress(io: Io, job: *Job, step_ms: u64) void {
+    const cap: u64 = if (step_ms == 0) 1 else step_ms;
+    if (builtin.os.tag == .linux and job.group_pid != 0) {
+        const t0 = nowMs(io);
+        if (waitPidfd(job.group_pid, cap)) {
+            waitJobDone(io, job, 5);
+            return;
+        }
+        const elapsed: u64 = blk: {
+            const d = nowMs(io) - t0;
+            break :blk if (d <= 0) 0 else @intCast(d);
+        };
+        if (elapsed >= cap) {
+            waitJobDone(io, job, 1);
+            return;
+        }
+        waitJobDone(io, job, cap - elapsed);
+        return;
+    }
+    waitJobDone(io, job, cap);
+}
+
+fn waitJobDone(io: Io, job: *Job, cap_ms: u64) void {
+    g_jobs.mutex.lockUncancelable(io);
+    defer g_jobs.mutex.unlock(io);
+    if (job.done) return;
+    const timeout: Io.Timeout = .{
+        .duration = .{ .raw = .fromMilliseconds(@intCast(if (cap_ms == 0) 1 else cap_ms)), .clock = .awake },
+    };
+    g_jobs.progress.waitTimeout(io, &g_jobs.mutex, timeout) catch {};
+}
+
+fn waitPidfd(pid: i32, timeout_ms: u64) bool {
+    const rc = std.os.linux.pidfd_open(pid, 0);
+    if (std.os.linux.errno(rc) != .SUCCESS) return false;
+    const fd: std.posix.fd_t = @intCast(rc);
+    defer _ = std.posix.system.close(fd);
+    var fds = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
+    const n = std.posix.poll(&fds, @intCast(timeout_ms)) catch return false;
+    return n > 0 and fds[0].revents & std.posix.POLL.IN != 0;
+}
+
+test "pollStepMs ramps 1 -> 10 -> 20 -> 65 to 100ms and respects shorter deadlines" {
     var w: u64 = 0;
-    const steps = [_]u64{ 5, 10, 20, 65, 100, 100 };
+    const steps = [_]u64{ 1, 1, 1, 1, 1, 10, 20, 65, 100, 100 };
     for (steps) |expected| {
         const s = pollStepMs(w, 1_000);
         try std.testing.expectEqual(expected, s);
         w += s;
     }
     try std.testing.expectEqual(@as(u64, 300), w);
+    try std.testing.expectEqual(@as(u64, 1), pollStepMs(0, 1_000));
+    try std.testing.expectEqual(@as(u64, 1), pollStepMs(4, 1_000));
+    try std.testing.expectEqual(@as(u64, 10), pollStepMs(5, 1_000));
     try std.testing.expectEqual(@as(u64, 12), pollStepMs(200, 212));
 }
