@@ -295,6 +295,7 @@ def job_running():
 def load_job(path):
     """Start the job in `path` under the service manager, replacing a loaded one."""
     if sys.platform == 'darwin':
+        launchctl('enable', launchd_target())  # undo `graff mcp service stop`
         run_managed(['launchctl', 'bootout', launchd_target()], check=False)
         launchctl('bootstrap', launchd_target().rsplit('/', 1)[0], str(path))
         launchctl('kickstart', '-k', launchd_target())
@@ -377,6 +378,8 @@ def rollback(home, previous, child):
         return f'the previous service on port {port} was restored and restarted', errors
     if systemd:
         attempt(systemctl, 'daemon-reload')
+    elif sys.platform == 'darwin':
+        attempt(launchctl, 'disable', launchd_target())  # stopped stays stopped across logins
     return f'the previous service (port {port}) was put back, still stopped', errors
 
 
@@ -394,12 +397,140 @@ def failure_message(cause, outcome, errors, previous, path):
     return f'{message}. Restore the previous service with `{again}`'
 
 
+def wait_ready(url, token):
+    for _ in range(30):
+        if ready(url, token):
+            return True
+        time.sleep(.2)
+    return False
+
+
+def shown(path, home):
+    try:
+        return '~/' + str(Path(path).relative_to(home))
+    except ValueError:
+        return str(path)
+
+
+def service_status(home):
+    """What `graff mcp service status` reports; reads, never changes, anything."""
+    path = job_path(home)
+    if path is None:
+        raise ValueError('Service controls need macOS launchd or Linux user systemd')
+    info = {'state': 'not installed', 'job': str(path), 'manager': None, 'loaded': False, 'pid': None,
+            'port': None, 'url': None, 'answering': False, 'workspace': None}
+    if not path.exists():
+        return info
+    try:
+        content = managed_job(path)
+    except ValueError:
+        info['state'] = 'not managed by Codegraff'
+        return info
+    if sys.platform == 'darwin' or linux_user_systemd():
+        info['manager'] = 'launchd' if sys.platform == 'darwin' else 'systemd'
+        info['loaded'], info['pid'] = job_running()
+    info['port'] = job_port(content)
+    settings = home / '.graff/mcp/settings.json'
+    info['workspace'] = json.loads(settings.read_text()).get('directory') if settings.exists() else None
+    token = home / '.graff/mcp/token'
+    if info['port']:
+        info['url'] = f'http://127.0.0.1:{info["port"]}/mcp'
+        info['answering'] = token.exists() and ready(info['url'], token.read_text().strip())
+    if info['answering']:
+        info['state'] = 'running'
+    elif info['loaded'] or info['manager'] is None:
+        info['state'] = 'not answering'
+    else:
+        info['state'] = 'stopped'
+    return info
+
+
+def print_status(home, info):
+    print(f'MCP service: {info["state"]}')
+    if info['state'] == 'not installed':
+        print('  set it up with `graff mcp install`')
+        return
+    print(f'  job:       {shown(info["job"], home)}')
+    if info['state'] == 'not managed by Codegraff':
+        print('  that file was not written by `graff mcp install`; service controls leave it alone')
+        return
+    if info['manager']:
+        loaded = 'not loaded' if not info['loaded'] else f'loaded, pid {info["pid"]}' if info['pid'] else 'loaded, no process'
+        print(f'  manager:   {info["manager"]} ({loaded})')
+    else:
+        print('  manager:   none (the listener was started directly)')
+    if info['url']:
+        print(f'  url:       {info["url"]} ({"answering" if info["answering"] else "not answering"})')
+    if info['workspace']:
+        print(f'  workspace: {shown(info["workspace"], home)}')
+    if info['state'] == 'stopped':
+        print('  start it with `graff mcp service start`')
+    elif info['state'] == 'not answering':
+        print('  see ~/.graff/mcp/service.log' + ('; `graff mcp service stop` stops it' if info['manager'] else ''))
+
+
+def service_control(home, action):
+    """`graff mcp service start|stop|uninstall`. Stop and uninstall of a
+    service that is not installed say so and succeed, so both are idempotent."""
+    info = service_status(home)
+    if info['state'] == 'not managed by Codegraff':
+        raise ValueError(f'{shown(info["job"], home)} is not managed by Codegraff; left unchanged')
+    if info['state'] == 'not installed':
+        if action == 'start':
+            raise ValueError('the MCP service is not installed; set it up with `graff mcp install`')
+        return print(f'MCP service is not installed; nothing to {"remove" if action == "uninstall" else action}.')
+    if info['manager'] is None:
+        raise ValueError('this listener was started directly, without a user service manager; stop its process yourself')
+    (home / '.graff/mcp').mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock = acquire_install_lock(home / '.graff/mcp/install.lock')  # held until exit
+    path, darwin = Path(info['job']), sys.platform == 'darwin'
+    if action == 'start':
+        if info['state'] == 'running':
+            return print(f'MCP service is already running at {info["url"]}.')
+        load_job(path)
+        token = (home / '.graff/mcp/token').read_text().strip()
+        if not wait_ready(info['url'], token):
+            raise ValueError(f'started, but nothing answers at {info["url"]}; see ~/.graff/mcp/service.log, '
+                             'or stop it with `graff mcp service stop`')
+        print(f'MCP service running at {info["url"]}.')
+        return
+    if darwin:
+        if info['loaded']:
+            launchctl('bootout', launchd_target())
+        if action == 'stop':
+            launchctl('disable', launchd_target())
+    else:
+        systemctl('disable', '--now', UNIT)
+    if action == 'stop':
+        was = 'was already stopped' if not info['loaded'] else 'stopped'
+        print(f'MCP service {was}; it stays stopped, across logins too, until `graff mcp service start` '
+              f'or `graff mcp install`.\n  job file kept: {shown(path, home)}')
+        return
+    path.unlink(missing_ok=True)
+    if not darwin:
+        systemctl('daemon-reload')
+    receipt = home / '.graff/mcp/clients.json'
+    clients = sorted(json.loads(receipt.read_text())) if receipt.exists() else []
+    print(f'MCP service removed ({shown(path, home)}).\n'
+          '  kept: the token and settings in ~/.graff/mcp, so `graff mcp install` brings it back as it was')
+    if clients:
+        print('  client entries left in place: ' + ', '.join(clients) +
+              '\n  remove their `codegraff` entry if you no longer want it')
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--binary', required=True)
     parser.add_argument('--directory')
     parser.add_argument('--port', type=int)
+    parser.add_argument('--service', choices=['status', 'start', 'stop', 'uninstall'])
+    parser.add_argument('--json', action='store_true')
     args = parser.parse_args()
+    if args.service == 'status':
+        info = service_status(Path.home())
+        return print(json.dumps(info)) if args.json else print_status(Path.home(), info)
+    if args.service:
+        return service_control(Path.home(), args.service)
     if os.environ.get('GRAFF_NO_MCP') == '1':
         print('MCP setup skipped (GRAFF_NO_MCP=1)')
         return
@@ -441,11 +572,7 @@ def main():
     child = None
     try:
         child = service(home, binary, directory, args.port, token)
-        for _ in range(30):
-            if ready(url, token):
-                break
-            time.sleep(.2)
-        else:
+        if not wait_ready(url, token):
             raise ValueError(f'Service did not become ready on port {args.port}')
     except BaseException as error:
         # Interrupted or failed: nothing half-installed may stay loaded.
@@ -463,5 +590,8 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as error:
-        print(f'MCP setup failed: {type(error).__name__}: {error}', file=sys.stderr)
+        if '--service' in sys.argv:
+            print(f'graff mcp service: {error}', file=sys.stderr)
+        else:
+            print(f'MCP setup failed: {type(error).__name__}: {error}', file=sys.stderr)
         sys.exit(1)

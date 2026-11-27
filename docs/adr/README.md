@@ -376,6 +376,7 @@ record only when you need the evidence or the edge cases.
 | [0349](0349-native-flint-runtime-is-external.md) | Native Flint is a built-in local OpenAI-compatible provider, while its runtime and model files remain separately installed; use only validated loopback endpoints and never cloud-fallback. |
 | [0350](0350-nonblocking-catalog-refresh-and-slash-refresh.md) | Dynamic provider catalogs (including Codex) stay 0 ms non-blocking at boot while stale-while-revalidating in the background past 5 minutes and activating landed caches in-session; `graff/models` adds bounded `{"force": true}`, and `/refresh` refreshes all signed-in catalogs across REPL and ACP. |
 | [0351](0351-prefer-rlm-for-supported-work.md) | The shared RLM catalog entry prefers RLM for independent reads, JSON row counts, and field projection. It does not force tool choice or remove direct tools or the shell fallback. |
+| [0357](0357-the-managed-mcp-service-is-transactional-and-has-lifecycle-verbs.md) | `graff mcp install` rolls back a service that never answers (a first install removes its job; a reconfigure restores the previous job and its running state), writing settings and client entries only after readiness. `graff mcp service status\|stop\|start\|uninstall` (and `graff mcp uninstall`) run the same installer script; `stop` survives login, `uninstall` keeps token, settings and client configs, and neither asks for confirmation. |
 
 ## When to write one
 

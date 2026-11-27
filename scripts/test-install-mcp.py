@@ -93,6 +93,7 @@ class InstallTests(unittest.TestCase):
         commands = [tuple(call.args[0]) for call in run.call_args_list]
         domain = f'gui/{os.getuid()}/dev.codegraff.mcp'
         self.assertEqual(commands, [
+            ('launchctl', 'enable', domain),
             ('launchctl', 'bootout', domain),
             ('launchctl', 'bootstrap', f'gui/{os.getuid()}', str(path)),
             ('launchctl', 'kickstart', '-k', domain),
@@ -356,6 +357,8 @@ class TransactionalInstallTests(unittest.TestCase):
         self.assertIn('put back, still stopped', message)
         self.assertEqual(self.agent.read_bytes(), agent)
         self.assertFalse(launchd.loaded)
+        # The install enabled the job; a stopped one is disabled again so login keeps it stopped.
+        self.assertEqual(launchd.commands[-1], ('launchctl', 'disable', self.target))
 
     def test_a_failed_bootstrap_is_rolled_back_and_quoted(self):
         launchd = FakeLaunchd(loaded=True, fail={('launchctl', 'bootstrap'): b'Bootstrap failed: 5: Input/output error'})
@@ -383,7 +386,7 @@ class TransactionalInstallTests(unittest.TestCase):
         cursor.parent.mkdir()
         launchd = FakeLaunchd()
         self.install(launchd, 7731, is_ready=True)
-        self.assertEqual(launchd.verbs(), ['bootout', 'bootstrap', 'kickstart'])
+        self.assertEqual(launchd.verbs(), ['enable', 'bootout', 'bootstrap', 'kickstart'])
         self.assertTrue(launchd.loaded)
         self.assertEqual(json.loads(self.settings.read_text())['port'], 7731)
         self.assertEqual(plistlib.loads(self.agent.read_bytes())['ProgramArguments'][-1], '7731')

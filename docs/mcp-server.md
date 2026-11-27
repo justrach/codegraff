@@ -33,13 +33,35 @@ restores the previous job file and restarts it if it was running. The error
 says what was put back, and also quotes any step of that rollback that failed.
 
 Set `GRAFF_NO_MCP=1` when running the CLI installer to skip automatic setup.
-This does not stop a previously installed service. Stop/disable it using:
+This does not stop a previously installed service; use the commands below.
 
-- macOS: `launchctl bootout gui/$(id -u)/dev.codegraff.mcp`, then remove
-  `~/Library/LaunchAgents/dev.codegraff.mcp.plist` to prevent login startup.
-- Linux: `systemctl --user disable --now codegraff-mcp.service`.
+### Check, stop, start or remove the service
 
-Remove the `codegraff` entry from client configs if it is no longer wanted.
+The service runs whether or not a client is connected, and launchd or systemd
+starts it again if it exits, so stop it with these commands rather than by
+ending its process:
+
+```sh
+graff mcp service status        # installed? loaded, with its pid? port, job file, answering?
+graff mcp service status --json # the same for programs
+graff mcp service stop          # unload it; it stays off, across logins too
+graff mcp service start         # load it again and wait until it answers
+graff mcp uninstall             # unload it and delete its job file
+```
+
+`status` changes nothing; `graff mcp service` alone means `status`. `stop`
+keeps the job file (`~/Library/LaunchAgents/dev.codegraff.mcp.plist`, or
+`~/.config/systemd/user/codegraff-mcp.service` on Linux) and disables the job,
+so it does not come back at the next login until `start` or `graff mcp install`.
+`uninstall` (also `graff mcp service uninstall`) keeps the token and settings
+in `~/.graff/mcp`, so a later `graff mcp install` brings the service back on
+the same port, and it leaves client configs alone: it lists the files with a
+`codegraff` entry so you can remove it if you no longer want it. `stop` and
+`uninstall` on a service that is not installed say so and succeed. When
+launchd or systemd refuses, its own error text is shown and the command exits 1.
+A job file that `graff mcp install` did not write is reported and left alone.
+On Linux without user systemd the listener was started directly, and these
+commands only report it; stop that process yourself.
 
 ## Run the HTTP listener yourself
 
@@ -251,5 +273,6 @@ with `@playwright/test` resolvable and Chrome installed. It uses a
 local opaque iframe and checks the handshake, presentation controls, themes,
 mobile layout, text-only rendering, cancellation notification and teardown.
 
-HTTP and setup checks: `python3 scripts/test-mcp-http.py`
-and `python3 scripts/test-install-mcp.py`.
+HTTP and setup checks: `python3 scripts/test-mcp-http.py`,
+`python3 scripts/test-install-mcp.py` and `python3 scripts/test-mcp-service.py`
+(service-manager fakes only; no real launchd or systemd job is loaded).
