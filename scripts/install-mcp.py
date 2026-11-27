@@ -536,7 +536,8 @@ def main():
         print('MCP setup skipped (GRAFF_NO_MCP=1)')
         return
     settings_path = Path.home() / '.graff/mcp/settings.json'
-    settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+    previous_settings = settings_path.read_text() if settings_path.exists() else None
+    settings = json.loads(previous_settings) if previous_settings is not None else {}
     if args.port is None:
         args.port = settings.get('port', 7720)
     args.directory = args.directory or settings.get('directory', str(Path.home()))
@@ -572,14 +573,24 @@ def main():
     atomic(token_path, token + '\n')
     previous = snapshot(home)
     child = None
+    settings_attempted = False
     try:
         child = service(home, binary, directory, args.port, token)
         if not wait_ready(url, token):
             raise ValueError(f'Service did not become ready on port {args.port}')
+        settings_attempted = True
         atomic(settings_path, json.dumps({'port': args.port, 'directory': str(directory)}))
     except BaseException as error:
         # Interrupted or failed: nothing half-installed may stay loaded.
         outcome, errors = rollback(home, previous, child)
+        if settings_attempted:
+            try:
+                if previous_settings is None:
+                    settings_path.unlink(missing_ok=True)
+                elif settings_path.read_text() != previous_settings:
+                    atomic(settings_path, previous_settings)
+            except (OSError, ValueError) as rollback_error:
+                errors.append(str(rollback_error))
         if not isinstance(error, Exception):
             raise
         raise ValueError(failure_message(str(error), outcome, errors, previous, job_path(home))) from error

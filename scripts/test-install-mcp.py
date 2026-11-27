@@ -409,6 +409,24 @@ class TransactionalInstallTests(unittest.TestCase):
         self.assertEqual(json.loads(self.settings.read_text())['port'], 7730)
         self.assertEqual(plistlib.loads(self.agent.read_bytes())['ProgramArguments'][-1], '7730')
 
+    def test_interruption_after_settings_replace_restores_previous_settings(self):
+        write_agent(self.home, 7730)
+        self.settings.parent.mkdir(parents=True)
+        self.settings.write_text(json.dumps({'port': 7730, 'directory': str(self.home)}))
+        atomic = installer.atomic
+
+        def interrupt_after_replace(path, text):
+            atomic(path, text)
+            if path == self.settings and json.loads(text)['port'] == 7731:
+                installer.interrupted(None, None)
+
+        with patch.object(installer, 'atomic', interrupt_after_replace), \
+             patch.object(installer, 'wait_ready', return_value=True):
+            with self.assertRaisesRegex(KeyboardInterrupt, 'installer interrupted'):
+                self.install(FakeLaunchd(loaded=True), 7731)
+        self.assertEqual(json.loads(self.settings.read_text())['port'], 7730)
+        self.assertEqual(plistlib.loads(self.agent.read_bytes())['ProgramArguments'][-1], '7730')
+
     def test_ready_service_installs_as_before(self):
         cursor = self.home / '.cursor/mcp.json'
         cursor.parent.mkdir()
