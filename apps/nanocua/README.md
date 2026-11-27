@@ -101,7 +101,10 @@ brings the app forward.
   stops text being typed, until you press Resume. An agent may be moving the
   pointer, so it's also on a key, **⌃⌥⌘.**, and outside the panel (below).
 - **Allow input** is off at launch: agents can look but not click, type or
-  open apps until you turn it on.
+  open apps until you turn it on. Then it belongs to the first agent that acts:
+  other agents can still look, but not act, and input turns off again when that
+  agent's connection ends (its graff session, not just its turn). The next
+  agent's work needs you to turn it on again.
 - **Allow whole screen** is off at launch too: agents stay inside one app. Its
   switch asks first, on the same card as requests from outside: the click that
   brings this window forward also presses what's under it, and this switch hands

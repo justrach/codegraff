@@ -118,8 +118,9 @@ pub const App = struct {
         a.redraw();
     }
 
+    /// On opens input for the next agent work that acts; off ends it at once.
     pub fn setInput(a: *App, on: bool) void {
-        a.hub.policy.allow_input = on;
+        a.hub.setInput(on);
         a.redraw();
     }
 
@@ -165,6 +166,7 @@ pub const App = struct {
         return .{
             .stopped = p.stopped,
             .input = p.allow_input,
+            .inputHeld = p.actor() != 0,
             .wholeScreen = p.allow_whole_screen,
             .accessibility = a.perms.accessibility,
             .screenRecording = a.perms.screen,
@@ -332,6 +334,7 @@ pub const Platform = struct {
         if (comptime mac) {
             a.stop_flag = &p.impl.stopped;
             a.whole_flag = &p.impl.whole_screen;
+            a.hub.actor_flag = &p.impl.actor;
             a.read_perms = readPerms;
             a.ask = ask;
             a.real_pointer = @import("mac/pointer.zig").real;

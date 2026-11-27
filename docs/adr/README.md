@@ -376,6 +376,7 @@ record only when you need the evidence or the edge cases.
 | [0349](0349-native-flint-runtime-is-external.md) | Native Flint is a built-in local OpenAI-compatible provider, while its runtime and model files remain separately installed; use only validated loopback endpoints and never cloud-fallback. |
 | [0350](0350-nonblocking-catalog-refresh-and-slash-refresh.md) | Dynamic provider catalogs (including Codex) stay 0 ms non-blocking at boot while stale-while-revalidating in the background past 5 minutes and activating landed caches in-session; `graff/models` adds bounded `{"force": true}`, and `/refresh` refreshes all signed-in catalogs across REPL and ACP. |
 | [0351](0351-prefer-rlm-for-supported-work.md) | The shared RLM catalog entry prefers RLM for independent reads, JSON row counts, and field projection. It does not force tool choice or remove direct tools or the shell fallback. |
+| [0354](0354-nanocua-input-belongs-to-the-work-that-uses-it.md) | nanocua's input grant belongs to the first connection that acts after a person turns it on; other connections may look but not act, and input turns off when that connection closes. It ends with the graff session, not its turn: a turn boundary needs graff to send one. Amends 0314. |
 
 ## When to write one
 

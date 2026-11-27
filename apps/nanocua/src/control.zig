@@ -111,6 +111,9 @@ pub const Status = struct {
     running: bool = true,
     stopped: bool = false,
     input: bool = false,
+    /// Input is on and one agent's work holds it (it ends when that work's
+    /// connection does); input on without it: nobody has acted yet.
+    inputHeld: bool = false,
     wholeScreen: bool = false,
     accessibility: bool = false,
     screenRecording: bool = false,
@@ -176,11 +179,11 @@ test "who's asking is cut to plain characters" {
 
 test "the status is the wire format" {
     const gpa = std.testing.allocator;
-    const out = try statusJson(gpa, .{ .input = true, .pending = "resume" });
+    const out = try statusJson(gpa, .{ .input = true, .inputHeld = true, .pending = "resume" });
     defer gpa.free(out);
     const parsed = try std.json.parseFromSlice(Status, gpa, out, .{});
     defer parsed.deinit();
-    try std.testing.expect(parsed.value.input and !parsed.value.wholeScreen);
+    try std.testing.expect(parsed.value.input and parsed.value.inputHeld and !parsed.value.wholeScreen);
     try std.testing.expectEqualStrings("resume", parsed.value.pending.?);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"wholeScreen\":false") != null);
 }
