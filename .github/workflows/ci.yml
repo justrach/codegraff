@@ -165,6 +165,9 @@ jobs:
       - name: A reloaded session keeps its compaction-state count (#1686)
         run: python3 scripts/test-acp-reload-compaction-count.py zig-out/bin/graff
 
+      - name: A compaction that spent its retries does not resend the turn (#1930)
+        run: python3 scripts/test-acp-compaction-failure-resend.py zig-out/bin/graff
+
       - name: Over-cap tool output spills to a session artifact (#409)
         run: python3 scripts/test-spill-artifact.py zig-out/bin/graff
 

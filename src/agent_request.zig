@@ -108,6 +108,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
     var attempts: budget_gate.Attempts = .{}; // #1932: every send below draws from --max-model-attempts
     self.last_request_context_overflow = false;
     self.last_request_write_failed = false;
+    self.last_request_ladder_spent = false;
     self.last_usage_includes_output = false;
     var force = !self.review_mode and !self.compaction_request and !self.synthesis.keepsCatalogOrLanded(self) and (self.strict or self.eval_cmd != null or self.named_work_nudges > 0) and tools != null;
     var stream_usage = true; // openai stream_options; dropped if rejected
@@ -269,6 +270,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                             continue :rebuild;
                         }
                         // Budget gone: the turn is ending. Mid-turn cuts stayed silent.
+                        self.last_request_ladder_spent = true; // #1930
                         @import("engine_sink.zig").forAgent(self).emit(self.io, .{ .transport_aborted = .{ .reason = if (stalled) .stalled else .dropped, .turn_ending = true } });
                         if (stalled) {
                             self.last_api_error = @import("agent_stream.zig").stallGiveUpMessage(self, reconnect.max_stall_retries); // #680: reports the wait that tripped, not the configured total
@@ -355,6 +357,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     const down: []const u8 = if (err == error.ConnectionRefused and @import("keys_cli.zig").isLocalUrl(self.provider.url)) self.provider.url else "";
                     try @import("provider_error_copy.zig").reportTransportGiveUp(self, err, max_attempts, main_mod.g_5xx_body_buf[0..main_mod.g_5xx_body_len], down);
                     self.last_request_write_failed = std.mem.eql(u8, @errorName(err), "WriteFailed");
+                    self.last_request_ladder_spent = true; // #1930: the full ladder went out
                     try scratch.preserveFailedRequest(self);
                     if (telemetry.g_telem) |t| t.errorEvent("net", @errorName(err));
                     if (self.tracer) |tr| tr.api(self.label, self.sub, self.provider.model, 0, body.len, 0, 0, 0, true);

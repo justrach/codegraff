@@ -51,7 +51,7 @@ const learn_cli = @import("learn_cli.zig");
 test {
     _ = .{ @import("http2_buffered.zig"), @import("clipboard_native.zig"), @import("clipboard_edge_tests.zig"), @import("clipboard_failure_tests.zig"), @import("process_runner_clipboard_tests.zig") };
     _ = .{ @import("server_orphan.zig"), @import("term_sender.zig"), @import("linux_landlock.zig") };
-    _ = .{ @import("repo_transaction.zig"), @import("agent_request_budget.zig") };
+    _ = .{ @import("repo_transaction.zig"), @import("compact_send_gate.zig"), @import("agent_request_budget.zig") };
     _ = .{ @import("pr_command.zig"), @import("pr_evidence.zig"), @import("artifact_repository.zig"), @import("artifact_claim_ledger.zig"), @import("artifact_claim_store.zig"), @import("artifact_claim_stale.zig"), @import("artifact_claim_unresolved.zig"), @import("artifact_claim_inventory.zig") };
     _ = .{ @import("argstream_citation_tests.zig"), @import("acp_reauth_tests.zig"), @import("auth_recovery.zig") }; // unit_tests' root is main.zig only, so reference every split-out module or its tests silently never run
     _ = pricing;

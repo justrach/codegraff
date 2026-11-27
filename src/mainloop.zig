@@ -509,8 +509,9 @@ pub fn run(ctx: *Ctx) !void {
                 // isn't doomed to fail at the same size (#88). Match every other
                 // automatic compaction path: a failed summary may destructively
                 // trim only when the best meter says we're genuinely near 95%.
+                // #1930: not after a spent retry ladder — ACP does not resend either.
                 const recovery_meter = ctx.root.effectiveContextTokens();
-                if (recovery_meter >= ctx.root.provider.compactAt()) {
+                if (recovery_meter >= ctx.root.provider.compactAt() and !ctx.root.last_request_ladder_spent) {
                     ctx.root.autocompact(recovery_meter);
                 }
                 try @import("turn_dedup.zig").settleFailedTurn(ctx.root, ctx.arena, err); // #1729: a retry of this prompt is a new ask

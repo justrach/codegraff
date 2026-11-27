@@ -377,6 +377,7 @@ record only when you need the evidence or the edge cases.
 | [0350](0350-nonblocking-catalog-refresh-and-slash-refresh.md) | Dynamic provider catalogs (including Codex) stay 0 ms non-blocking at boot while stale-while-revalidating in the background past 5 minutes and activating landed caches in-session; `graff/models` adds bounded `{"force": true}`, and `/refresh` refreshes all signed-in catalogs across REPL and ACP. |
 | [0351](0351-prefer-rlm-for-supported-work.md) | The shared RLM catalog entry prefers RLM for independent reads, JSON row counts, and field projection. It does not force tool choice or remove direct tools or the shell fallback. |
 | [0355](0355-model-attempts-are-a-separate-strict-ceiling.md) | `--max-model-calls` counts logical calls; an admitted call's transport retries share its permit. `--max-model-attempts N` is the strict ceiling: every provider request sent, including each retry, reconnect and compaction, draws one, and when it runs out the run ends with `RunBudgetExhausted` and the last provider error instead of resending. |
+| [0356](0356-failed-compaction-does-not-resend-the-turn.md) | When the pre-send compaction's request spent its full retry ladder and history is unchanged, the turn ends with a compaction-failed error rather than sending the same conversation under a fresh ladder (REPL and ACP). A compaction the provider answered, or one that changed history, still sends. |
 
 ## When to write one
 
