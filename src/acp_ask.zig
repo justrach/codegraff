@@ -62,9 +62,13 @@ pub fn wait(arena: Allocator) !Reply {
     defer mutex.unlock(lock_io);
     waiting = true;
     defer waiting = false;
-    while (!pending) ready.waitUncancelable(lock_io, &mutex);
+    // A client can cancel after seeing the question but before this waiter
+    // acquires the mutex. The inbox latches turn cancellation even if nobody
+    // is waiting yet, so check it alongside the mailbox predicate.
+    const cancelled = &@import("agent.zig").Agent.esc_cancel;
+    while (!pending and !cancelled.load(.acquire)) ready.waitUncancelable(lock_io, &mutex);
     pending = false;
-    const how = outcome;
+    const how: Outcome = if (cancelled.load(.acquire)) .dismissed else outcome;
     outcome = .answered;
     const src = text;
     text = null;
@@ -144,4 +148,26 @@ test "cancelIfWaiting is a no-op when nobody is blocked" {
     defer arena_state.deinit();
     const got = try wait(arena_state.allocator());
     try testing.expectEqualStrings("later", got.text);
+}
+
+test "ACP question observes cancellation before wait and accepts the next turn's answer" {
+    const cancel_source = @import("cancel_source.zig");
+    cancel_source.clear();
+    defer cancel_source.clear();
+    attach(testing.io, testing.allocator);
+    defer detach();
+
+    cancel_source.cancel(.acp_cancel);
+    cancelIfWaiting();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const cancelled = try wait(arena.allocator());
+    try testing.expect(cancelled.cancelled);
+    try testing.expectEqual(Outcome.dismissed, cancelled.outcome);
+
+    cancel_source.clear();
+    try testing.expect(reply("next answer", false));
+    const next = try wait(arena.allocator());
+    try testing.expect(!next.cancelled);
+    try testing.expectEqualStrings("next answer", next.text);
 }
