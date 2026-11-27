@@ -8,6 +8,12 @@
 //! every later turn once a workflow fan-out hits it — and the Workflow layer
 //! already carries its own 1000-agent runaway backstop. Depth and concurrency
 //! stay bounded: those cap recursion and parallel connections, not whole turns.
+//!
+//! Two count ceilings, both opt-in (ADR 0355). `max_model_calls` admits
+//! LOGICAL calls: one permit per request, and that request's transport retries
+//! share it. `max_model_attempts` is the strict one: every provider request the
+//! run sends — a first send, a transport retry, a reconnect, a compaction —
+//! draws one attempt, so a one-shot can fail closed instead of resending.
 
 const std = @import("std");
 const Io = std.Io;
@@ -17,6 +23,14 @@ const orch_rows = @import("orchestration_rows.zig");
 
 /// Independent aggregate ceiling; the legacy --max-tool-calls remains per-turn.
 pub var cli_max_tool_calls: ?u64 = null;
+/// --max-model-attempts: every request sent, retries included. 0 = unlimited.
+pub var cli_max_model_attempts: u64 = 0;
+
+/// #1932: may one more provider request be sent, `sent` having gone out
+/// already? Unlimited (0) always may; a finite ceiling counts every send.
+pub fn attemptAllowed(limit: u64, sent: u64) bool {
+    return limit == 0 or sent < limit;
+}
 
 pub const default_max_concurrency: u32 = 8;
 pub const default_max_depth: u8 = 1;
@@ -50,6 +64,8 @@ pub const Permit = struct {
 
 pub const RunBudget = struct {
     max_model_calls: u64 = default_max_model_calls,
+    max_model_attempts: u64 = 0, // 0 = unlimited; see attemptAllowed
+    model_attempts: std.atomic.Value(u64) = .init(0),
     max_tool_calls: ?u64 = null,
     tool_calls: std.atomic.Value(u64) = .init(0),
     tool_exhausted: std.atomic.Value(bool) = .init(false),
@@ -63,7 +79,27 @@ pub const RunBudget = struct {
     waiting: std.atomic.Value(u32) = .init(0),
 
     pub fn hasFiniteLimits(self: *const RunBudget) bool {
-        return self.max_model_calls != 0 or self.max_tool_calls != null;
+        return self.max_model_calls != 0 or self.max_model_attempts != 0 or self.max_tool_calls != null;
+    }
+
+    /// Draw one send from the strict attempt ceiling, right before the bytes go
+    /// out. Unlimited still counts. Refusal is RunBudgetExhausted, the same
+    /// outcome a dry model-call pool has; nothing is sent.
+    pub fn reserveAttempt(self: *RunBudget) !u64 {
+        var current = self.model_attempts.load(.acquire);
+        while (attemptAllowed(self.max_model_attempts, current)) {
+            if (self.model_attempts.cmpxchgWeak(current, current + 1, .acq_rel, .acquire)) |observed| {
+                current = observed;
+                continue;
+            }
+            return current + 1;
+        }
+        return error.RunBudgetExhausted;
+    }
+
+    /// Advisory, like canAfford: skip a retry's backoff when no send is left.
+    pub fn attemptLeft(self: *const RunBudget) bool {
+        return attemptAllowed(self.max_model_attempts, self.model_attempts.load(.acquire));
     }
 
     /// Every executable tool, including descendant/MCP/RLM dispatch, reserves
@@ -133,8 +169,9 @@ pub const RunBudget = struct {
     }
 
     /// Admit one logical provider request. Transport retries remain inside the
-    /// same permit; a workflow retry constructs a new Agent and therefore takes
-    /// a new call from the same shared ceiling.
+    /// same permit (each still draws from reserveAttempt); a workflow retry
+    /// constructs a new Agent and therefore takes a new call from the same
+    /// shared ceiling.
     pub fn acquire(self: *RunBudget, io: Io, depth: u8, kind: CallKind) !Permit {
         if (self.tool_exhausted.load(.acquire)) return error.ToolBudgetExhausted;
         if (depth > self.max_depth) return error.AgentDepthExceeded;
@@ -321,4 +358,25 @@ test "aggregate tool denial prevents actual root and descendant file mutation" {
         try std.testing.expectEqual(@as(i64, 0), event.value.object.get("limit").?.integer);
     }
     try std.testing.expectError(error.FileNotFound, dir.dir.access(std.testing.io, "must-not-exist", .{}));
+}
+
+test "#1932: the strict attempt ceiling counts every send, retries included" {
+    try std.testing.expect(attemptAllowed(0, std.math.maxInt(u64) - 1)); // 0 = unlimited
+    try std.testing.expect(attemptAllowed(1, 0)); // the first send
+    try std.testing.expect(!attemptAllowed(1, 1)); // its retry is a second send
+    try std.testing.expect(!attemptAllowed(2, 3));
+    var budget: RunBudget = .{ .max_model_calls = 1, .max_model_attempts = 2 };
+    try std.testing.expect(budget.hasFiniteLimits());
+    var permit = try budget.acquire(std.testing.io, 0, .root); // one logical call...
+    defer permit.release();
+    try std.testing.expectEqual(@as(u64, 1), try budget.reserveAttempt()); // ...its first send
+    try std.testing.expect(budget.attemptLeft());
+    try std.testing.expectEqual(@as(u64, 2), try budget.reserveAttempt()); // one retry
+    try std.testing.expect(!budget.attemptLeft());
+    try std.testing.expectError(error.RunBudgetExhausted, budget.reserveAttempt()); // no third send
+    try std.testing.expectEqual(@as(u64, 1), budget.used()); // the logical count is unchanged
+    var unlimited: RunBudget = .{};
+    for (0..100) |_| _ = try unlimited.reserveAttempt();
+    try std.testing.expect(unlimited.attemptLeft());
+    try std.testing.expect(!unlimited.hasFiniteLimits());
 }

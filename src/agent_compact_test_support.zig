@@ -29,6 +29,7 @@ pub fn subAgent(a: std.mem.Allocator, sub: bool) Agent {
     // here or an `undefined` pointer gets dereferenced instead of skipped.
     agent.snapshots = null;
     agent.session_name = "";
+    agent.run_budget = null; // #1932: direct compaction POSTs consult the attempt ceiling
     // compactPrelude reports the token figure compact() prints, so the estimate
     // path has to be reachable: system prompt, tool json, provider context and
     // the two meter anchors it reads.

@@ -62,6 +62,13 @@ budgets take precedence. A forced tools-off final-budget landing is reported
 as budget exhaustion, even if its prose sounds successful; it is not proof
 that the requested work finished.
 
+`--max-model-calls N` counts logical calls: the transport retries of an
+admitted call share its permit, so a cap of 1 can still send a request twice
+after a 5xx. To cap what is sent, add `--max-model-attempts N`: every
+provider request draws one attempt, first sends and every retry, reconnect
+and compaction alike. When none is left the run stops with exit 3 and the
+last provider error instead of resending (ADR 0355).
+
 Empty completions are transient failures, with cancellation-aware jittered
 backoff rather than immediate identical calls. Billing/auth refusals take
 precedence over generic retryable HTTP envelopes. Exhausting recovery is a

@@ -18,8 +18,6 @@ const tools_mod = @import("tools.zig");
 const apiErrorMessage = tools_mod.apiErrorMessage;
 const telemetry = @import("telemetry.zig");
 const tool_spill = @import("tool_spill.zig"); // #409: did the cap preserve the bytes, or destroy them?
-const run_budget_mod = @import("run_budget.zig");
-const wire_messages = @import("messages.zig");
 const policy = @import("agent_request_policy.zig");
 
 const overflow = @import("agent_overflow.zig");
@@ -62,13 +60,8 @@ const req_stats = @import("req_stats.zig"); // GRAFF_REQ_STATS anatomy (session_
 const scratch = @import("agent_request_scratch.zig");
 const jitter = @import("retry_jitter.zig"); // #1274: every computed backoff is jittered upward
 
-/// #390 — appended once, on the run's final admitted model call, right where
-/// the tools disappear, so the model knows WHY and lands instead of retrying.
-pub const landing_note =
-    "[budget landing] This is the final model call this run's --max-model-calls budget admits, so " ++
-    "no tools are offered. Land the answer NOW from the evidence already gathered: state what was " ++
-    "completed and what was verified, then name what remains unchecked. Honestly-labeled partial " ++
-    "results beat dying mid-tool-call.";
+const budget_gate = @import("agent_request_budget.zig"); // #390 landing + #1932 per-send attempt ceiling
+pub const landing_note = budget_gate.landing_note;
 
 fn sayTypedApiError(self: *Agent, etype: []const u8, ecode: ?[]const u8, emsg: []const u8, request_id: ?[]const u8, attempts: usize) !void {
     return @import("provider_error_copy.zig").reportEnvelope(self, etype, ecode, emsg, request_id, attempts);
@@ -105,37 +98,14 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             tools_now = self.toolsJson();
         };
     }
-    var budget_permit: ?run_budget_mod.Permit = null;
-    if (self.run_budget) |budget| {
-        const kind: run_budget_mod.CallKind = if (self.compaction_request) .compaction else self.call_kind;
-        budget_permit = budget.acquire(self.io, self.depth, kind) catch |err| {
-            self.last_api_error = switch (err) {
-                error.RunBudgetExhausted => "model-call budget exhausted for this graff run — restart or raise --max-model-calls",
-                error.AgentDepthExceeded => "agent depth limit reached (max depth 1)",
-                else => @errorName(err),
-            };
-            if (self.tracer) |tr| tr.note("budget", self.last_api_error.?);
-            return err;
-        };
-    }
+    var budget_permit = try budget_gate.acquire(self); // one logical call (--max-model-calls)
     defer if (budget_permit) |*permit| permit.release();
-    // #390 — the landing reserve's root half: the pool's FINAL admitted call
-    // belongs to the answer. Offer no tools (compaction's trick) and say why,
-    // so the model lands a text answer now instead of asking for a tool the
-    // budget can never pay for — which is how the audit smoke died narrating.
-    // compaction/title requests pass tools=null already and skip this whole.
     var tools = try @import("jev_tool.zig").refreshCatalogForRequest(self, tools_now);
     if (self.tracer) |tr| {
         if (tools) |t| if (t.len == 0) tr.note("tools", "empty catalog at request time (#695)");
     }
-    if (self.run_budget) |b| if (budget_permit) |p| {
-        if (!self.compaction_request and b.max_model_calls != 0 and p.call_number == b.max_model_calls and tools != null) {
-            b.model_landed.store(true, .release);
-            if (!@import("workflow_synthesis.zig").wireSupportsToolChoiceNone(self)) tools = null;
-            try self.messages.append(try wire_messages.userNote(self.arena, self.provider.kind, landing_note));
-            if (self.tracer) |tr| tr.note("budget", "final call: tools withheld so the run lands its answer (#390)");
-        }
-    };
+    try budget_gate.land(self, budget_permit, &tools); // #390: the final admitted call lands the answer
+    var attempts: budget_gate.Attempts = .{}; // #1932: every send below draws from --max-model-attempts
     self.last_request_context_overflow = false;
     self.last_request_write_failed = false;
     self.last_usage_includes_output = false;
@@ -237,6 +207,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                 ordinary_attempts += 1;
                 var conv_buf: [96]u8 = undefined;
                 const conv = http_headers.requestCacheKey(self.io, self.label, self, self.provider, &conv_buf);
+                try attempts.admit(self); // #1932: the one gate every send passes, whatever retry led here
                 usage_attempts.begin();
                 self.h2_reset.clear();
                 main_mod.g_retry_after_ms = 0; // #1795: clear per attempt so a prior Retry-After cannot leak
@@ -249,6 +220,8 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                 else
                     postWatched(self.gpa, self.io, self.client, self.provider, body, conv);
                 if (attempt_body) |ok| break :blk ok else |err| {
+                    if (err == error.RunBudgetExhausted) return err; // a send inside this attempt was refused (agent_ws fallback)
+                    attempts.failed(err);
                     if (@import("agent_async_tools.zig").started(self)) return err;
                     if (err == error.ModelLoop or err == error.ReplyRunaway) return err; // #743: repeated prose ends the turn WITHOUT retry (tier2 model-loop-bounded-prose)
                     if (self.streamed_text) if (self.out) |w| {
@@ -348,6 +321,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                         if (err == error.TlsRequestConstructionCaWarmFailed) "rotated shared HTTP client generation; replacement CA prewarm failed" else "rotated shared HTTP client generation",
                     );
                     if (attempt + 1 < max_attempts) {
+                        try attempts.beforeRetry(self); // no send left: end now, not after the backoff
                         if (throttled) {
                             // #retry-after: prefer the provider's Retry-After
                             // (429/503) over our computed backoff, capped — like
@@ -426,6 +400,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                 },
                 .err => |failure| {
                     const msg = failure.message;
+                    attempts.rejected(msg);
                     const ws_error_frame = self.ws_api_error_pending;
                     self.ws_api_error_pending = false;
                     const diagnostic = try responses.failureDiagnostic(self.arena, self.provider.id, failure);
@@ -491,6 +466,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
                     const etype = if (eo) |e| (if (e.get("type")) |tv| (if (tv == .string) tv.string else "error") else "error") else "error";
                     const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
                     const ecode = errorCode(root);
+                    attempts.rejected(emsg);
                     if (try quota.handle(self, etype, ecode, emsg, &auth_refreshed)) continue;
                     if (@import("interactions_chain.zig").dropRejected(self, body)) continue; // stored Interaction gone → full replay
                     if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: streamed error event overflow (by code or phrasing) → trim + retry
@@ -544,6 +520,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
             const etype = if (eo) |e| (if (e.get("type")) |tv| (if (tv == .string) tv.string else "error") else "error") else "error";
             const emsg = if (eo) |e| (if (e.get("message")) |mv| (if (mv == .string) mv.string else "") else "") else "";
             const ecode = errorCode(root);
+            attempts.rejected(emsg);
             if (try quota.handle(self, etype, ecode, emsg, &auth_refreshed)) continue;
             if (@import("interactions_chain.zig").dropRejected(self, body)) continue; // stored Interaction gone → full replay
             if (recoverContextOverflow(self, emsg, ecode, &context_retried)) continue; // #193/#203: {"type":"error"} overflow (by code or phrasing) → trim + retry
@@ -556,6 +533,7 @@ pub fn request(self: *Agent, tools_in: ?[]const u8) !std.json.ObjectMap {
         if (apiErrorMessage(root)) |msg| {
             const etype = @import("provider_error_copy.zig").errorType(root);
             const ecode = errorCode(root);
+            attempts.rejected(msg);
             if (try quota.handle(self, etype, ecode, msg, &auth_refreshed)) continue;
             if (@import("interactions_chain.zig").dropRejected(self, body)) continue; // stored Interaction gone → full replay
             if (policy.retryWithout(self, msg, &force, &stream_usage)) continue;
