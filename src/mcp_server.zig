@@ -326,6 +326,7 @@ pub fn taskArgv(a: Allocator, ctx: *Context, task: Task, appended: ?[]const u8) 
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(a, &.{ ctx.exe, "--no-resume", if (ctx.yolo) "--yolo" else "--safe", "--max-model-calls", try std.fmt.allocPrint(a, "{d}", .{task.max_model_calls}), "--max-tool-calls", "64" });
     if (ctx.model) |model| try argv.appendSlice(a, &.{ "--model", model });
+    if (@import("http.zig").RetryPlan.no_model_resends) try argv.append(a, "--no-model-resends");
     if (appended) |text| try argv.appendSlice(a, &.{ "--append-system-prompt", text });
     try argv.appendSlice(a, &.{ "-p", task.prompt });
     return argv.items;
@@ -434,6 +435,7 @@ fn summarizeContext(a: Allocator, ctx: *Context, context: []const u8) !Summary {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(a, &.{ ctx.exe, "--no-resume", "--safe", "--json", "--max-model-calls", "1", "--max-tool-calls", "0" });
     if (ctx.model) |model| try argv.appendSlice(a, &.{ "--model", model });
+    if (@import("http.zig").RetryPlan.no_model_resends) try argv.append(a, "--no-model-resends");
     const summary_run = try runner.runCappedWithOptions(a, ctx.io, argv.items, summary_stdout_cap, 8 * 1024, summarize_deadline_ms, .{ .environ_map = ctx.env, .kill_process_tree = true, .stdin_file = stdin_file });
     if (!runner.ranOk(summary_run) or summary_run.timed_out or summary_run.cancelled) return error.ContextSummarizationFailed;
     return try parseTurn(a, summary_run.stdout);

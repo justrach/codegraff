@@ -25,9 +25,17 @@ pub const guidance =
     \\agent may grant itself. Respect a user app switch or pointer movement: stop
     \\foreground interaction rather than reactivating or reclaiming focus.
     \\Explicitly requested computer-use remains available within its authorized
-    \\scope and tool permissions. A denied/unavailable computer-use tool is not
-    \\permission to fall back to activation or global input through shell helpers;
-    \\report the actual denial without inventing permission controls.
+    \\scope and tool permissions. For a local preview, identify the app surface
+    \\first: use its documented launch, render or fixture command when that
+    \\can produce the preview. A standalone native window is not a localhost
+    \\web page. Use computer-use only when the requested result needs direct UI
+    \\interaction and project tools cannot provide it. After denial, return to
+    \\an available project fixture. Report the actual denial without inventing
+    \\permission controls or substituting activation or global input.
+    \\If the app started but computer-use cannot select it (for example, a
+    \\standalone JavaFX process absent from the app inventory), report app
+    \\selection as unavailable through that bridge and keep launch evidence
+    \\separate. Use a project-owned snapshot fixture when available.
     \\Keep functional assertions separate from desktop-isolation evidence: only
     \\an OS-observed check in an isolated graphical session establishes preserved
     \\focus, cursor and cleanup; a mock launch test or screenshot does not.
@@ -36,7 +44,7 @@ pub const guidance =
     \\erase an earlier crash or desktop side effect.
 ;
 
-test "#832 GUI safety survives root variants, subagents and absent local tools" {
+test "#832 #1334 #1610 GUI guidance survives root variants, subagents and absent local tools" {
     const prompts = @import("prompts.zig");
     for ([_][]const u8{
         prompts.main_system_prompt,
@@ -55,4 +63,16 @@ test "#832 GUI safety survives root variants, subagents and absent local tools" 
         .constraints = false,
     });
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, mcp_only, guidance));
+    const lean = try prompts.composeBase(arena.allocator(), .{
+        .local_tools = true,
+        .subagents = false,
+        .todos = false,
+        .constraints = false,
+    });
+    for ([_][]const u8{
+        "use its documented launch, render or fixture command",
+        "an available project fixture",
+        "standalone JavaFX process absent from the app inventory",
+        "selection as unavailable through that bridge",
+    }) |clause| try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, lean, clause));
 }

@@ -233,3 +233,52 @@ test "wsEligible: native Responses providers qualify; Platform OpenAI and chat w
     agent.provider.kind = .openai;
     try std.testing.expect(!agent_ws.wsEligible(&agent)); // chat wire: never WS
 }
+
+test "#1932: strict WS request stops on upgrade refusal and next request can use SSE" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const RetryPlan = @import("http.zig").RetryPlan;
+    const previous = RetryPlan.no_model_resends;
+    RetryPlan.no_model_resends = true;
+    defer RetryPlan.no_model_resends = previous;
+    const saved_ws = main_mod.g_codex_ws;
+    main_mod.g_codex_ws = true;
+    defer main_mod.g_codex_ws = saved_ws;
+
+    var address = try Io.net.IpAddress.parseLiteral("127.0.0.1:0");
+    var server = try Io.net.IpAddress.listen(&address, io, .{});
+    defer server.deinit(io);
+    var dials: std.atomic.Value(u8) = .init(0);
+    var sse: std.atomic.Value(u8) = .init(0);
+    var done: std.atomic.Value(bool) = .init(false);
+    var peer = try io.concurrent(mock.refuseUpgrade, .{
+        io, &server, @as([]const u8, "426 Upgrade Required"), @as(u8, 1), &dials, &sse, &done,
+    });
+    defer peer.await(io);
+    defer mock.releaseAccept(io, &server);
+    defer done.store(true, .release);
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    var out: Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const url = try std.fmt.allocPrint(arena.allocator(), "http://127.0.0.1:{d}/x", .{server.socket.address.getPort()});
+    var agent = mockAgent(gpa, arena.allocator(), io, url);
+    defer @import("agent_render.zig").deinitMarkdown(&agent);
+    agent.client = &client;
+    agent.out = &out.writer;
+    const body = "{\"model\":\"gpt-5\",\"input\":[]}";
+
+    try std.testing.expectError(error.UpgradeRequired, agent_ws.postLive(&agent, body));
+    try std.testing.expect(agent.ws_off);
+    try std.testing.expectEqual(@as(u8, 1), dials.load(.acquire));
+    try std.testing.expectEqual(@as(u8, 0), sse.load(.acquire));
+
+    const reply = try agent_ws.postLive(&agent, body);
+    defer gpa.free(reply);
+    try std.testing.expectEqual(@as(u8, 1), dials.load(.acquire));
+    try std.testing.expectEqual(@as(u8, 1), sse.load(.acquire));
+    try std.testing.expect(std.mem.indexOf(u8, reply, mock.completed_event) != null);
+}

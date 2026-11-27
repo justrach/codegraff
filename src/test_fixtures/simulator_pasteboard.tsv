@@ -1,0 +1,6 @@
+running	closed-command	read-pref
+running	opens-gui	read-pref
+stopped	closed-command	isolated
+stopped	opens-gui	read-pref
+unknown	closed-command	unknown
+unknown	opens-gui	unknown

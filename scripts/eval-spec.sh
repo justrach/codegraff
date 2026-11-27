@@ -43,6 +43,17 @@ if ((lean)); then
   echo
   echo "==> lake build + graff-spec-report"
   (cd lean-proofs && lake build && lake exe graff-spec-report)
+
+  echo
+  echo "==> Lean decision fixtures match the Zig test inputs"
+  while read -r name fixture; do
+    (cd lean-proofs && lake env lean --run Fixtures.lean "$name") | diff -u "$fixture" -
+  done <<'FIXTURES'
+preview-grace src/test_fixtures/preview_grace.txt
+remote-answer src/remote_answer_lean.txt
+scope-reminder src/test_fixtures/scope_reminder.txt
+simulator-pasteboard src/test_fixtures/simulator_pasteboard.tsv
+FIXTURES
 fi
 
 if ((impl)); then

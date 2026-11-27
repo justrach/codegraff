@@ -20,7 +20,8 @@ real provider to run the same cases against one.
   python3 scripts/eval-tier2.py --dump goal-checklist-completes
 
 A case can send structured setup controls with `controls_before_prompt`, such
-as selecting a local vision model before its first user message.
+as selecting a local vision model before its first user message. A
+provider field of "$fixture_provider" uses the selected route.
 `prompt_options` supplies explicit user-request fields; `github_fixture` installs
 a local-only GitHub CLI with scripted head/check evidence.
 
@@ -107,7 +108,7 @@ class Run:
     """One harness run: the events it emitted and the requests it sent."""
 
     def __init__(self, events: list[dict[str, Any]], requests: list[dict[str, Any]],
-                 stderr: str, exit_code: int | None, files=None, verification=None, stdout="") -> None:
+                 stderr: str, exit_code: int | None, files=None, verification=None, stdout="", fixture_provider=None) -> None:
         self.events = events
         self.requests = requests
         self.stderr = stderr
@@ -115,6 +116,7 @@ class Run:
         self.exit_code = exit_code
         self.files = files or {}
         self.verification = verification
+        self.fixture_provider = fixture_provider
 
     def final_text(self) -> str:
         for event in reversed(self.events):
@@ -129,6 +131,12 @@ class Run:
             return json.dumps(self.requests[index])
         except IndexError:
             return None
+
+
+def resolve_fixture_provider(obj: dict[str, Any], provider: str | None) -> dict[str, Any]:
+    if obj.get("provider") == "$fixture_provider":
+        return dict(obj, provider=provider)
+    return obj
 
 
 def execute(case: dict[str, Any], graff: str, port: int,
@@ -172,6 +180,7 @@ def execute(case: dict[str, Any], graff: str, port: int,
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(content, encoding="utf-8")
             selected_model = model or "lmstudio"
+            fixture_provider = provider or "lmstudio"
             if not provider and bound != 1234:
                 # lmstudio has a fixed endpoint, not an LMSTUDIO_URL override.
                 # Use the existing workspace router so chat AND catalog calls
@@ -184,6 +193,7 @@ def execute(case: dict[str, Any], graff: str, port: int,
                 }), encoding="utf-8")
                 env["TIER2_API_KEY"] = "local"
                 selected_model = f"tier2/{selected_model}"
+                fixture_provider = "tier2"
             if case.get("claude_transcripts"):
                 canonical = str(pathlib.Path(workspace).resolve())
                 slug = "".join(c if c.isascii() and c.isalnum() else "-" for c in canonical)
@@ -208,19 +218,26 @@ def execute(case: dict[str, Any], graff: str, port: int,
             # session does, and a real peer announces (and probes) better than
             # any fixture — a forged record can never carry a live start-id.
             if case.get("live_peer"):
+                peer_cwd = pathlib.Path(workspace)
+                if case.get("peer_in_nested_worktree"):
+                    peer_cwd /= "nested"
+                    if not provider and bound != 1234:
+                        # Router configuration belongs to the checkout, while
+                        # presence still belongs to the shared temporary HOME.
+                        peer_router = peer_cwd / ".graff" / ".config.router"
+                        peer_router.parent.mkdir(exist_ok=True)
+                        shutil.copyfile(router, peer_router)
                 peer = subprocess.Popen(
                     [graff, "--json", "--yolo", "--model", selected_model],
-                    cwd=str(pathlib.Path(workspace) / "nested") if case.get("peer_in_nested_worktree") else workspace, env=env, stdin=subprocess.PIPE,
+                    cwd=peer_cwd, env=env, stdin=subprocess.PIPE,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True)
-                live_dir = pathlib.Path(workspace) / ".graff" / "live"
-                deadline = time.time() + 30
-                while time.time() < deadline:
-                    if live_dir.is_dir() and any(live_dir.glob("*.json")):
-                        break
-                    if peer.poll() is not None:
+                live_dir = pathlib.Path(env["HOME"]) / ".graff" / "live"
+                deadline = time.monotonic() + 30
+                while peer.poll() is None and time.monotonic() < deadline:
+                    if any(live_dir.glob(f"{peer.pid}-*.json")):
                         break
                     time.sleep(0.1)
-                if peer.poll() is not None or not live_dir.is_dir() or not any(live_dir.glob("*.json")):
+                else:
                     raise RuntimeError("Live-peer fixture did not announce before the deadline")
             extra_args = list(case.get("args", []))
             plain_oneshot = "-p" in extra_args and "--json" not in extra_args
@@ -229,7 +246,10 @@ def execute(case: dict[str, Any], graff: str, port: int,
                 argv += ["--subagent-provider", provider]
             argv += extra_args
 
-            stdin_lines = [json.dumps(control) for control in case.get("controls_before_prompt", [])]
+            stdin_lines = [
+                json.dumps(resolve_fixture_provider(control, fixture_provider))
+                for control in case.get("controls_before_prompt", [])
+            ]
             stdin_lines.append(json.dumps({"type": "user", "text": case["prompt"], **case.get("prompt_options", {})}))
             for control in case.get("controls_after_turn", []):
                 stdin_lines.append(json.dumps(control))
@@ -292,7 +312,8 @@ def execute(case: dict[str, Any], graff: str, port: int,
                     source = pathlib.Path(workspace) / ".graff" / folder
                     if source.exists():
                         shutil.copytree(source, destination / folder, dirs_exist_ok=True)
-            return Run(events, list(scripted.requests), stderr, code, files, verification, stdout)
+            return Run(events, list(scripted.requests), stderr, code, files,
+                       verification, stdout, fixture_provider)
     finally:
         if peer is not None:
             peer.kill()
@@ -313,6 +334,7 @@ def evaluate(case: dict[str, Any], run: Run, live: bool = False) -> list[str]:
             if run.files.get(spec["path"]) != spec["content"]:
                 failures.append(f"workspace file {spec['path']!r} does not match the required outcome")
         elif kind == "event":
+            spec = resolve_fixture_provider(spec, run.fixture_provider)
             if not any(subset_matches(e, spec) for e in run.events):
                 failures.append(f"no event matched {json.dumps(spec)}")
         elif kind == "no_event":

@@ -237,6 +237,11 @@ pub var stream_stall_ms: u64 = 120 * 1000;
 /// shrink it; anything that does must restore it (shared process-wide).
 pub var head_stall_ms: u64 = 30 * 1000;
 
+/// Resolver failures establish that changing only the request body cannot help.
+pub fn dnsFailure(err: anyerror) bool {
+    return err == error.UnknownHostName or err == error.NameServerFailure or err == error.NoAddressReturned;
+}
+
 /// Retry policy for request() after a failed attempt. Transport flakes
 /// (HttpConnectionClosing / WriteFailed / reset / truncated TLS) are now far
 /// more patient: a real network blip (wifi hiccup, gateway redeploy) outlasts
@@ -250,6 +255,7 @@ pub const RetryPlan = struct {
     /// #1826: only rotated request-construction TLS failures: 15 waits, 47.75s base
     /// (at most ~60s with jitter), still interruptible. Never shared with 429/auth/read failures.
     pub const tls_construction_attempts: usize = 16;
+    pub var no_model_resends: bool = false; // --no-model-resends, set at startup
     pub var flake_base_ms: u64 = 250; // GRAFF_FLAKE_RETRY_MS override for loaded cancellation tests (#1795)
 
     /// Total attempts before the turn gives up.

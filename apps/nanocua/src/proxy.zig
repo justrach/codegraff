@@ -11,6 +11,7 @@ const sockpath = @import("sockpath.zig");
 const server = @import("server.zig");
 const mcp = @import("mcp.zig");
 const tools = @import("tools.zig");
+const turn_input = @import("turn_input.zig");
 
 extern "c" fn socket(domain: c_int, kind: c_int, protocol: c_int) c_int;
 extern "c" fn close(fd: c_int) c_int;
@@ -19,10 +20,11 @@ extern "c" fn _NSGetExecutablePath(buf: [*]u8, size: *u32) c_int;
 
 const stdout = 1;
 
-pub fn run(init: std.process.Init) !u8 {
+pub fn run(init: std.process.Init, scoped: bool) !u8 {
     var buf: [512]u8 = undefined;
     var p: Proxy = .{
         .gpa = init.gpa,
+        .scoped = scoped,
         .path = try sockpath.path(&buf, init.environ_map, sockpath.realHome()),
         .hub = .{
             .gpa = init.gpa,
@@ -74,6 +76,7 @@ const not_listening = "nanocua didn't start listening. Ask the user to open nano
 
 const Proxy = struct {
     gpa: std.mem.Allocator,
+    scoped: bool,
     path: [:0]const u8,
     hub: mcp.Hub,
     /// The app's socket, once a call has needed it.
@@ -111,15 +114,29 @@ const Proxy = struct {
     }
 
     fn line(p: *Proxy, l: []const u8) void {
+        if (p.scoped and p.protocolProbe(l)) return;
         if (!needsApp(p.gpa, l)) return p.hub.handle(0, l);
         const fd = p.fd orelse p.open(l) orelse return;
         if (!server.writeAll(fd, l) or !server.writeAll(fd, "\n")) p.done = true;
     }
 
+    fn protocolProbe(p: *Proxy, line_text: []const u8) bool {
+        var arena: std.heap.ArenaAllocator = .init(p.gpa);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const msg = std.json.parseFromSliceLeaky(std.json.Value, a, line_text, .{}) catch return false;
+        if (msg != .object) return false;
+        const method = msg.object.get("method") orelse return false;
+        if (method != .string or !std.mem.eql(u8, method.string, "nanocua/turnProtocol")) return false;
+        const id = std.json.Stringify.valueAlloc(a, msg.object.get("id") orelse return false, .{}) catch return false;
+        p.hub.sendResult(0, id, "{}");
+        return true;
+    }
+
     /// Connects to the app, opening it if need be. On failure answers the
     /// call that wanted it and returns null: the next call tries again.
     fn open(p: *Proxy, l: []const u8) ?c_int {
-        if (connect(p.path)) |fd| return p.keep(fd);
+        if (connect(p.path)) |fd| return p.keep(fd, l);
         if (!launch()) {
             p.answer(l, not_running);
             return null;
@@ -128,15 +145,34 @@ const Proxy = struct {
         // user something first.
         for (0..100) |_| {
             _ = usleep(100_000);
-            if (connect(p.path)) |fd| return p.keep(fd);
+            if (connect(p.path)) |fd| return p.keep(fd, l);
         }
         p.answer(l, not_listening);
         return null;
     }
 
-    fn keep(p: *Proxy, fd: c_int) c_int {
+    fn keep(p: *Proxy, fd: c_int, l: []const u8) ?c_int {
+        if (p.scoped and !confirmScope(fd)) {
+            _ = close(fd);
+            p.answer(l, "The open NanoCUA app does not support turn-scoped input. Quit it and open the updated version.");
+            return null;
+        }
         p.fd = fd;
         return fd;
+    }
+
+    fn confirmScope(fd: c_int) bool {
+        if (!server.writeAll(fd, turn_input.hello ++ "\n")) return false;
+        var received: [turn_input.ack.len]u8 = undefined;
+        var offset: usize = 0;
+        while (offset < received.len) {
+            var fds = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 }};
+            if ((std.posix.poll(&fds, 250) catch return false) == 0) return false;
+            const n = std.c.read(fd, received[offset..].ptr, received.len - offset);
+            if (n <= 0) return false;
+            offset += @intCast(n);
+        }
+        return std.mem.eql(u8, &received, turn_input.ack);
     }
 
     fn answer(p: *Proxy, l: []const u8, why: []const u8) void {

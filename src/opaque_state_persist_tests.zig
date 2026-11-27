@@ -40,7 +40,7 @@ fn agent(msgs: std.json.Array) Agent {
 const Saved = struct { context: u64, local: u64, obj: std.json.ObjectMap };
 
 fn countAndSave(a: std.mem.Allocator, root: *Agent) !Saved {
-    context_tokens.learnState(state_len, 80_000, root.fullRequestEstimateTokens());
+    context_tokens.learnState(context_tokens.compactionStateIdentity(.{ .array = root.messages }), 80_000, root.fullRequestEstimateTokens());
     const local = root.fullRequestEstimateTokens();
     var aw: std.Io.Writer.Allocating = .init(a);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
@@ -95,17 +95,17 @@ test "a saved state count applies only to the same state, provider, and model (#
     // Same length, different blob: the digest refuses it.
     var other = agent(try history(a, 'B'));
     reload(&other, saved);
-    try std.testing.expect(context_tokens.calibratedState(state_len) == null);
+    try std.testing.expect(context_tokens.calibratedState(context_tokens.compactionStateIdentity(.{ .array = other.messages })) == null);
     try std.testing.expect(other.inputOverCompactThreshold());
 
     var moved = agent(counted.messages);
     moved.provider.model = "gpt-6";
     reload(&moved, saved);
-    try std.testing.expect(context_tokens.calibratedState(state_len) == null);
+    try std.testing.expect(context_tokens.calibratedState(context_tokens.compactionStateIdentity(.{ .array = moved.messages })) == null);
     moved.provider.model = "gpt-5";
     moved.provider.id = "openai";
     reload(&moved, saved);
-    try std.testing.expect(context_tokens.calibratedState(state_len) == null);
+    try std.testing.expect(context_tokens.calibratedState(context_tokens.compactionStateIdentity(.{ .array = moved.messages })) == null);
 
     const malformed = [_][]const u8{
         "{\"opaque_state_count\":{\"provider\":\"codex\",\"model\":\"gpt-5\",\"state_bytes\":8000000,\"state_digest\":\"zz\",\"tokens\":72000}}",
@@ -116,7 +116,7 @@ test "a saved state count applies only to the same state, provider, and model (#
     for (malformed) |text| {
         const parsed = try std.json.parseFromSliceLeaky(Value, a, text, .{});
         reload(&counted, .{ .context = saved.context, .local = saved.local, .obj = parsed.object });
-        try std.testing.expect(context_tokens.calibratedState(state_len) == null);
+        try std.testing.expect(context_tokens.calibratedState(context_tokens.compactionStateIdentity(.{ .array = counted.messages })) == null);
     }
 }
 
@@ -127,7 +127,12 @@ test "an uncounted compaction state writes no record (#1686)" {
     context_tokens.resetStateCountsForTest();
     defer context_tokens.resetStateCountsForTest();
 
-    const root = agent(try history(a, 'A'));
+    var counted = agent(try history(a, 'A'));
+    _ = try countAndSave(a, &counted);
+    // A different blob of the same size must not be persisted with the warm
+    // session's count, even while the original calibration is still cached.
+    var root = agent(try history(a, 'B'));
+    try std.testing.expect(root.inputOverCompactThreshold());
     var aw: std.Io.Writer.Allocating = .init(a);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.beginObject();
@@ -146,7 +151,7 @@ test "session save and load both carry the compaction-state count (#1686)" {
     try std.testing.expect(restore_at < rebase_at);
 }
 
-test "a session saved after a counted request loads without a forced compaction (#1686)" {
+fn savedAndLoadedCountedHistory(comptime reasoning_only: bool) !void {
     const writer = @import("session_writer.zig");
     const transcript = @import("session_transcript.zig");
     const gpa = std.testing.allocator;
@@ -181,10 +186,18 @@ test "a session saved after a counted request loads without a forced compaction 
     };
     try root.ensureRootTools(root.provider.kind);
 
-    // Warm process: the provider counted a full request carrying the state at 80k.
-    context_tokens.learnState(state_len, 80_000, root.fullRequestEstimateTokens());
-    root.last_context_tokens = 80_001;
-    root.context_local_tokens = root.fullRequestEstimateTokens();
+    if (reasoning_only) {
+        try root.messages.items[0].object.put(a, "type", .{ .string = "reasoning" });
+        try std.testing.expectEqual(@as(usize, 0), context_tokens.compactionStateIdentity(.{ .array = root.messages }).bytes);
+    } else {
+        const id = context_tokens.compactionStateIdentity(.{ .array = root.messages });
+        context_tokens.learnState(id, 80_000, root.fullRequestEstimateTokens());
+    }
+    // Warm process: a full Responses request counts this history below the
+    // local byte estimate. The encrypted-reasoning case has no blob count.
+    @import("agent_context.zig").replaceContextTokens(&root, 80_001);
+    const warm = root.effectiveContextTokens();
+    if (reasoning_only) try std.testing.expect(root.context_local_tokens > window);
     try std.testing.expect(!root.inputOverCompactThreshold());
     try session.saveSessionTo(&root, a, tmp.dir, "reload-1686");
     session.flushSaves();
@@ -195,8 +208,24 @@ test "a session saved after a counted request loads without a forced compaction 
     root.context_local_tokens = 0;
     try session.loadSession(&root, &keys, a, "reload-1686");
     root.provider.context = window;
-    try std.testing.expect(root.effectiveContextTokens() < 100_000);
+    // Loading rebuilds the catalog and normalizes history. Allow their small
+    // local delta while rejecting any return to the ciphertext byte estimate.
+    try std.testing.expectApproxEqAbs(@as(f64, @floatFromInt(warm)), @as(f64, @floatFromInt(root.effectiveContextTokens())), 1_000);
     try std.testing.expect(!root.inputOverCompactThreshold());
+    if (reasoning_only) {
+        const new_text = try a.alloc(u8, 1_000_000);
+        @memset(new_text, 'z');
+        try root.messages.append(try @import("messages.zig").textMessage(a, "user", new_text));
+        try std.testing.expect(root.inputOverCompactThreshold());
+    }
+}
+
+test "a session saved after a counted request loads without a forced compaction (#1686)" {
+    try savedAndLoadedCountedHistory(false);
+}
+
+test "reasoning-only reload preserves a below-estimate provider count and still detects growth (#1686)" {
+    try savedAndLoadedCountedHistory(true);
 }
 
 /// An opaque reasoning item (not a compaction item, so no state record is
@@ -359,6 +388,6 @@ test "a chained response teaches the compaction-state count (#1686)" {
     root.codex_prev_id = "resp_1";
     const response = try std.json.parseFromSliceLeaky(Value, a, "{\"usage\":{\"input_tokens\":80000}}", .{});
     @import("opaque_state_usage.zig").learn(&root, response.object);
-    try std.testing.expect(context_tokens.calibratedState(state_len) != null);
+    try std.testing.expect(context_tokens.calibratedState(context_tokens.compactionStateIdentity(.{ .array = root.messages })) != null);
     try std.testing.expect(!root.inputOverCompactThreshold());
 }

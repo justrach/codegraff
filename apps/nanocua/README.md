@@ -80,7 +80,7 @@ spent on making it key.
 
 | tool | does | needs |
 | --- | --- | --- |
-| `list_apps` | running apps with windows, which is frontmost | |
+| `list_apps` | regular running apps, which is frontmost | |
 | `get_ui_tree` | an app's elements, with refs | Accessibility |
 | `screenshot` | a JPEG of an app's window, scaled | Screen Recording |
 | `click` | by ref (pressed) or at x,y; right, double | input on |
@@ -91,6 +91,11 @@ spent on making it key.
 | `set_value` | sets a field's value through accessibility | input on |
 | `open_app` | opens an app by name, behind your work | input on |
 
+Standalone processes, including some JavaFX launches, may be absent from
+`list_apps` or unavailable by app name. If you have verified the intended
+process is running, pass its exact `pid` to `get_ui_tree` or `screenshot`.
+The process still needs to expose an accessible UI or capturable window.
+
 With `whole_screen: true`, once you've allowed it, `screenshot` takes the main
 display or a region of it, input uses the real pointer and keyboard, and `open_app`
 brings the app forward.
@@ -100,11 +105,11 @@ brings the app forward.
 - **Stop** refuses every call, even looking, including calls already waiting, and
   stops text being typed, until you press Resume. An agent may be moving the
   pointer, so it's also on a key, **⌃⌥⌘.**, and outside the panel (below).
-- **Allow input** is off at launch: agents can look but not click, type or
-  open apps until you turn it on. Then it belongs to the first agent that acts:
-  other agents can still look, but not act, and input turns off again when that
-  agent's connection ends (its graff session, not just its turn). The next
-  agent's work needs you to turn it on again.
+- **Allow input for the next Graff turn that needs it** grants access when
+  that turn first tries to act. Its permission ends when the turn connection
+  closes. NanoCUA stays open. The separate input switch for other MCP clients belongs to
+  the first connection that acts and turns off when that connection closes.
+  Both start off.
 - **Allow whole screen** is off at launch too: agents stay inside one app. Its
   switch asks first, on the same card as requests from outside: the click that
   brings this window forward also presses what's under it, and this switch hands
@@ -126,7 +131,7 @@ settings page. All of them run the app's `nanocua ctl`:
 nanocua ctl status [--json]                what's on, what macOS has granted
 nanocua ctl stop                           refuse every call, at once
 nanocua ctl off input                      turn a switch off, at once
-nanocua ctl allow input                    ask; you answer in nanocua's window
+nanocua ctl allow input                    ask to arm input for one Graff turn
 nanocua ctl grant screen                   open macOS's prompt
 nanocua ctl open                           bring the window forward
 ```

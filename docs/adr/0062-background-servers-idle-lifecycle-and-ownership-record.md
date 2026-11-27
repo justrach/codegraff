@@ -71,6 +71,28 @@ outlives the process that wrote it, and a place to see it all.
 * `jobs.zig` moved its `graff worktree` commands to `worktree_cmd.zig` to
   stay under the file cap; callers are unchanged.
 
+## Preview consumer inventory
+
+Live job supervisors may ask a managed listener to exit when a trusted
+publisher continuously reports zero consumers for every listening port.
+The publisher writes the existing per-port count object to
+`~/.codegraff/preview-consumers.json` atomically and refreshes it at least
+once every ten seconds. A fresh snapshot must postdate the job start.
+Changing listeners or losing visibility resets the grace period. Output
+does not extend the grace. `GRAFF_PREVIEW_GRACE_SECS` defaults to 30 and
+accepts zero to disable this path.
+
+Before sending TERM the supervisor rechecks the publication and verifies
+the process group's recorded start identity. Pinning exempts a job.
+After the supervisor exits, retained listeners remain discoverable through
+`graff servers`. A matching session can resume supervision of durable jobs.
+
+The desktop preview proxy discovers arbitrary listeners and the embedded
+browser sees only its own tabs. Zero requires a publisher with visibility
+into all consumers, including browsers opened outside the embedded pane
+and deliberate non-browser use. Missing or stale inventory leaves those
+listeners running.
+
 ## Not decided
 
 A port proxy that wakes a stopped server on the next request. It would

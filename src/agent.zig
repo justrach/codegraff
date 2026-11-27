@@ -114,6 +114,7 @@ pub const Agent = struct {
     /// process mode (engine_sink.forAgent); set to inject a custom frontend.
     sink: ?@import("engine_sink.zig").EngineSink = null,
     registry: ?*mcp.Registry = null,
+    nanocua_turn: ?*@import("nanocua_turn.zig").Turn = null,
     permission: ?@import("engine_permission.zig").Handler = null,
     approvals: ?*approvals_mod.Approvals = null, // shared bash-approval state, set by main()
     tracer: ?*trace.Tracer = null, // shared JSONL event trace, set by main()
@@ -265,7 +266,6 @@ pub const Agent = struct {
     output_schema: ?[]const u8 = null, // --output-schema: JSON schema the final answer must satisfy (response_format / text.format, #502)
     next_ask_id: u64 = 1,
     tui_header_shown: bool = false,
-
     // Width-budgeted status-line rendering lives in agent_prompt.zig (#209,
     // 600-line goal); member-aliased so `self.prompt()` still reads as one
     // of Agent's own methods.

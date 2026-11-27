@@ -47,6 +47,14 @@ pub fn stop(pid: i32, start_id: u64, ops: anytype) Result {
     return .unverifiable;
 }
 
+/// Preview expiry is a graceful request. An owner can explicitly stop a
+/// process that chooses to ignore it.
+pub fn terminatePreview(pid: i32, start_id: u64, ops: anytype) bool {
+    if (pid <= 1 or !eligible(pid, start_id, ops)) return false;
+    ops.signal(pid, .term) catch return false;
+    return true;
+}
+
 fn eligible(pid: i32, start_id: u64, ops: anytype) bool {
     const own = ops.ownGroup() orelse return false;
     if (own <= 0 or own == pid) return false;

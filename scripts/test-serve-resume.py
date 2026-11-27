@@ -7,8 +7,9 @@ network, no real provider):
 1. every event of a turn carries a monotonic `seq`, contiguous from 1;
 2. `GET /v1/sessions/<id>/events?from=N` after completion replays byte-identical
    events with no gaps and no duplicates;
-3. a supervisor that drops the socket MID-TURN loses nothing: the bridge keeps
-   draining the child into the persisted log, and `?from=N` delivers the tail;
+3. the first event reaches the client while the provider is held open. If the
+   client drops the socket then, the bridge keeps persisting the turn and
+   `?from=N` delivers the tail without another provider request;
 4. killing the whole bridge and starting a REPLACEMENT process, then posting the
    same session name, continues the conversation - the mock sees turn one's
    history in turn three's request;
@@ -70,15 +71,26 @@ def reply(text: str, ordinal: int) -> list[dict]:
     ]
 
 
-slow_turn = threading.Event()  # armed while the mid-stream-disconnect turn runs
+rejected_resend_fixture = threading.Event()
+slow_turn_started = threading.Event()
+release_slow_turn = threading.Event()
 
 
 def events_for_request(request: RecordedRequest) -> list[dict]:
     """Echo back exactly what history the model was handed, so the transcript
     itself proves whether context survived the process boundary."""
     body = json.dumps(request.body.get("input", []))
-    if slow_turn.is_set():
-        time.sleep(1.5)  # long enough for the client to walk away mid-turn
+    if "RESEND_POLICY_FIXTURE" in body and not rejected_resend_fixture.is_set():
+        rejected_resend_fixture.set()
+        return [{
+            "type": "response.failed",
+            "response": {"status": "failed", "error": {"type": "server_error", "code": "server_error",
+                                                         "message": "Scripted transient model failure"}},
+        }]
+    if "TURN_TWO" in body and not slow_turn_started.is_set():
+        slow_turn_started.set()
+        if not release_slow_turn.wait(timeout=25):
+            raise AssertionError("client never released the gated provider turn")
     return reply(
         f"call#{request.ordinal} items={len(request.body.get('input', []) or [])} "
         f"saw_sentinel={SENTINEL in body}",
@@ -123,10 +135,10 @@ def environment(tmp: str, mock_port: int) -> dict[str, str]:
     return env
 
 
-def start_serve(tmp: str, mock_port: int, port: int) -> subprocess.Popen:
+def start_serve(tmp: str, mock_port: int, port: int, *flags: str) -> subprocess.Popen:
     proc = subprocess.Popen(
         [GRAFF, "serve", "--host", "127.0.0.1", "--port", str(port),
-         "--model", "codex", "--yolo", "--no-telemetry"],
+         "--model", "codex", "--yolo", "--no-telemetry", *flags],
         cwd=tmp,
         env=environment(tmp, mock_port),
         stdout=subprocess.DEVNULL,
@@ -155,17 +167,17 @@ def post_json(port: int, path: str, body: dict) -> dict:
 
 
 def stream(port: int, method: str, path: str, body: dict | None = None,
-           stop_after: int | None = None) -> list[dict]:
+           stop_after: int | None = None, timeout: float = 60) -> list[dict]:
     """Read an NDJSON stream. stop_after=N closes the socket after N events -
     that is a supervisor crashing mid-turn, not a graceful end."""
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
     payload = None if body is None else json.dumps(body)
-    conn.request(method, path, payload, {"content-type": "application/json"})
-    resp = conn.getresponse()
-    if resp.status != 200:
-        raise AssertionError(f"{method} {path} -> {resp.status}: {resp.read()[:200]!r}")
     out: list[dict] = []
     try:
+        conn.request(method, path, payload, {"content-type": "application/json"})
+        resp = conn.getresponse()
+        if resp.status != 200:
+            raise AssertionError(f"{method} {path} -> {resp.status}: {resp.read()[:200]!r}")
         while True:
             line = resp.readline()
             if not line:
@@ -262,22 +274,23 @@ def main() -> None:
         print(f"  resend: message_id m-1285 replayed its {len(again)} events, one model call")
 
         # 3 ── drop the socket mid-turn; the run continues, ?from=N catches up ─
-        slow_turn.set()
-        partial: list[dict] = []
-        runner = threading.Thread(
-            target=lambda: partial.extend(
-                stream(serve_port, "POST", f"/v1/sessions/{SESSION}",
-                       {"type": "user", "text": "TURN_TWO"}, stop_after=2)))
-        runner.start()
-        runner.join(timeout=30)
+        calls = len(mock.recorded_requests())
+        try:
+            partial = stream(serve_port, "POST", f"/v1/sessions/{SESSION}",
+                             {"type": "user", "text": "TURN_TWO"}, stop_after=1, timeout=10)
+            assert len(partial) == 1 and partial[0]["type"] == "started", partial
+            assert slow_turn_started.wait(timeout=10), "the accepted request never reached the provider"
+            print("  initial event: started reached the client before the gated provider was released")
+        finally:
+            release_slow_turn.set()
         expect_contiguous(partial, last + 1, "turn two (before the crash)")
         seen = partial[-1]["seq"]
         rest = stream(serve_port, "GET", f"/v1/sessions/{SESSION}/events?from={seen + 1}")
-        slow_turn.clear()
         last = expect_contiguous(rest, seen + 1, "turn two (after reconnect)")
         text_two = final_text(rest)
         if any(e["seq"] <= seen for e in rest):
             raise AssertionError("reconnect re-delivered events the client already had")
+        assert len(mock.recorded_requests()) == calls + 1, "reattachment reissued the turn"
         print(f"  mid-stream: client died after seq {seen}; reconnect delivered "
               f"seq {seen + 1}..{last} -> {text_two!r}")
 
@@ -285,13 +298,24 @@ def main() -> None:
         serve.kill()
         serve.wait(timeout=30)
         serve_port_2 = free_port()
-        serve = start_serve(tmp, mock_port, serve_port_2)
+        serve = start_serve(tmp, mock_port, serve_port_2, "--no-model-resends")
         resumed = post_json(serve_port_2, "/v1/sessions", {"session": SESSION})
         if not resumed["resumed"] or resumed["session_id"] != SESSION:
             raise AssertionError(f"replacement bridge did not resume: {resumed!r}")
         if resumed["last_seq"] != last:
             raise AssertionError(
                 f"replacement bridge lost the tape end: {resumed['last_seq']} != {last}")
+
+        strict = "resend-policy"
+        post_json(serve_port_2, "/v1/sessions", {"session": strict, "maxModelCalls": 1})
+        calls = len(mock.recorded_requests())
+        rejected = stream(serve_port_2, "POST", f"/v1/sessions/{strict}",
+                          {"type": "user", "text": "RESEND_POLICY_FIXTURE"})
+        assert rejected_resend_fixture.is_set(), "the strict child failed before reaching the provider"
+        assert len(mock.recorded_requests()) == calls + 1, "the strict child resent the model request"
+        assert any(e.get("type") == "error" and "Scripted transient model failure" in e.get("message", "")
+                   for e in rejected), rejected
+        print("  strict session child: one model POST before reporting a transient failure")
 
         # ?from=1 on a real request: the whole tape replays, THEN the live turn,
         # as one gap-free sequence spanning both bridge processes.

@@ -7,6 +7,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const nanoui = @import("nanoui");
 const mcp = @import("mcp.zig");
+const turn_input = @import("turn_input.zig");
 
 pub const supported = builtin.os.tag == .macos or (builtin.os.tag == .linux and !builtin.abi.isAndroid());
 const fdwatch = nanoui.fdwatch;
@@ -52,6 +53,9 @@ const Conn = struct {
     lines: Lines = .{},
     /// It uses the switches, so it isn't an agent.
     control: bool = false,
+    turn_scoped: bool = false,
+    reading: bool = false,
+    close_pending: bool = false,
 
     fn readable(ctx: ?*anyopaque) callconv(.c) void {
         if (comptime !supported) return;
@@ -59,11 +63,20 @@ const Conn = struct {
         var buf: [64 * 1024]u8 = undefined;
         const n = std.c.read(c.fd, &buf, buf.len);
         if (n <= 0) return c.server.drop(c.id);
-        if (!c.lines.feed(c.server.gpa, buf[0..@intCast(n)], c, line)) c.server.drop(c.id);
+        c.reading = true;
+        const ok = c.lines.feed(c.server.gpa, buf[0..@intCast(n)], c, line);
+        c.reading = false;
+        if (!ok or c.close_pending) c.server.drop(c.id);
     }
 
     fn line(c: *Conn, l: []const u8) void {
-        c.server.hub.handle(c.id, l);
+        if (c.close_pending) return;
+        if (std.mem.eql(u8, l, turn_input.hello)) {
+            c.turn_scoped = true;
+            if (!writeAll(c.fd, turn_input.ack)) c.close_pending = true;
+        } else {
+            c.server.hub.handleScoped(c.id, l, c.turn_scoped);
+        }
     }
 };
 
@@ -144,7 +157,11 @@ pub const Server = struct {
     fn send(ptr: *anyopaque, id: u64, line: []const u8) void {
         const s: *Server = @ptrCast(@alignCast(ptr));
         const c = s.conns.get(id) orelse return;
-        if (!writeAll(c.fd, line) or !writeAll(c.fd, "\n")) s.drop(id);
+        if (!writeAll(c.fd, line) or !writeAll(c.fd, "\n")) {
+            // Sending a synchronous response can happen inside Lines.feed.
+            // Keep its connection and line buffer alive until feed unwinds.
+            if (c.reading) c.close_pending = true else s.drop(id);
+        }
     }
 
     fn drop(s: *Server, id: u64) void {

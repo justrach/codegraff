@@ -27,10 +27,11 @@ class ScriptedPorts(unittest.TestCase):
         server.start.return_value = bound
         server.requests = []
         process = Mock()
+        process.pid = 1729
         process.poll.return_value = None
         case = {'prompt': 'local test'}
         if peer:
-            case.update(live_peer=True, workspace_seed={'.graff/live/fixture.json': '{}'})
+            case.update(live_peer=True, workspace_seed={'.graff/live/1729-fff.json': '{}'})
         with patch.dict(os.environ, {}, clear=True), \
                 patch.object(tier2, 'ScriptedModel', return_value=server), \
                 patch.object(tier2.subprocess, 'run', side_effect=capture), \

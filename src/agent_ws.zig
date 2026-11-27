@@ -130,6 +130,10 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
         // body died with the socket — never replay previous_response_id on HTTP.
         const declined = e == error.UpgradeRequired;
         const fallback = signal.shouldLatchSse(e == error.WsConnectStalled, e, self.ws_transport_failures);
+        if (@import("http.zig").RetryPlan.no_model_resends) {
+            if (fallback) self.ws_off = true;
+            return e;
+        }
         if (std.mem.indexOf(u8, body, "\"previous_response_id\"") != null) {
             if (fallback) self.ws_off = true;
             if (self.tracer) |tr| tr.note("ws", if (fallback)
@@ -421,7 +425,7 @@ pub fn postResponsesWs(self: *Agent, body: []const u8) ![]u8 {
     // Codex-style prewarm (generate:false) on a fresh socket: prepare
     // instructions+tools server-side, chain turn 1 onto the warmup id.
     // Best-effort — on any failure warm() returns the original frame.
-    const frame_to_send: []const u8 = if (reused)
+    const frame_to_send: []const u8 = if (reused or @import("http.zig").RetryPlan.no_model_resends)
         frame
     else
         @import("agent_ws_prewarm.zig").warm(self, arena, client, frame);

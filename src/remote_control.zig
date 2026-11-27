@@ -27,6 +27,7 @@ const Allocator = std.mem.Allocator;
 
 const root = @import("main.zig");
 const serve = @import("serve.zig");
+const serve_answer = @import("serve_answer.zig");
 const serve_create = @import("serve_create.zig");
 const events = @import("serve_events.zig");
 const upload = @import("remote_upload.zig");
@@ -274,11 +275,12 @@ fn runCommand(self: *State, arena: Allocator, cmd: Command) void {
     if (std.mem.eql(u8, cmd.kind, "close")) return spawn(self, .close, null, cmd.id, sid, "", null);
     if (!std.mem.eql(u8, cmd.kind, "request")) return sendResult(self, client, arena, cmd.id, sid, 400, "{\"error\":\"unknown command kind\"}");
 
-    const rtype = events.stringField(cmd.body, "type") orelse "";
+    const body = std.json.parseFromSliceLeaky(Value, arena, cmd.body, .{ .allocate = .alloc_always }) catch .null;
+    if (body != .object)
+        return sendResult(self, client, arena, cmd.id, sid, 400, "{\"error\":\"body must be one protocol request object\"}");
+    const rtype = util.strFieldObj(body.object, "type") orelse "";
     const from: ?u64 = blk: {
-        const v = std.json.parseFromSliceLeaky(Value, arena, cmd.body, .{ .allocate = .alloc_always }) catch break :blk null;
-        if (v != .object) break :blk null;
-        const f = v.object.get("resume_from") orelse v.object.get("from") orelse break :blk null;
+        const f = body.object.get("resume_from") orelse body.object.get("from") orelse break :blk null;
         break :blk if (f == .integer and f.integer > 0) @as(u64, @intCast(f.integer)) else null;
     };
     // A pure reconnect replays the tape and sends nothing to the child — and
@@ -295,13 +297,8 @@ fn runCommand(self: *State, arena: Allocator, cmd: Command) void {
     // answer/cancel bypass the per-session busy lock exactly as serve's do:
     // they are how a viewer reaches a turn that is running right now.
     if (std.mem.eql(u8, rtype, "answer")) {
-        s.answer_mu.lockUncancelable(io);
-        defer s.answer_mu.unlock(io);
-        if (!s.awaiting_answer) return sendResult(self, client, arena, cmd.id, sid, 409, "{\"error\":\"no active ask_user prompt\"}");
-        serve.writeChildLine(io, s, cmd.body) catch return sendResult(self, client, arena, cmd.id, sid, 502, "{\"error\":\"session process is gone\"}");
-        s.awaiting_answer = false;
-        s.answer_call_id_len = 0;
-        return sendResult(self, client, arena, cmd.id, sid, 200, "{\"ok\":true,\"type\":\"answer\"}");
+        const result = serve_answer.submit(io, s, cmd.body, body.object);
+        return sendResult(self, client, arena, cmd.id, sid, @backingInt(result.status), result.body);
     }
     if (std.mem.eql(u8, rtype, "cancel")) {
         if (!s.in_flight.load(.acquire)) return sendResult(self, client, arena, cmd.id, sid, 409, "{\"error\":\"no request is in flight\"}");

@@ -45,7 +45,8 @@ pub const Tool = enum {
     pub fn description(t: Tool) []const u8 {
         return switch (t) {
             .list_apps =>
-            \\Lists the running apps with windows: name, bundle id, pid, and which one is frontmost.
+            \\Lists regular running apps: name, bundle id, pid, and which one is frontmost.
+            \\Standalone processes can be absent. If you already verified the intended process, pass its exact pid to get_ui_tree or screenshot.
             ++ guidance,
             .get_ui_tree =>
             \\The accessibility tree of an app, in the background (pid or app; else the app you last read, else the
@@ -214,4 +215,14 @@ test "arguments read leniently" {
 test "the guidance reaches clients that ignore a server's instructions" {
     for ([_]Tool{ .list_apps, .get_ui_tree }) |t|
         try std.testing.expect(std.mem.indexOf(u8, t.description(), "permissions yourself") != null);
+}
+
+test "#1610: discoverability guidance names the supported process-scoped observation route" {
+    try std.testing.expect(std.mem.indexOf(u8, Tool.list_apps.description(), "Standalone processes can be absent") != null);
+    for ([_]Tool{ .get_ui_tree, .screenshot }) |t| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, t.schema(), .{});
+        defer parsed.deinit();
+        const pid = parsed.value.object.get("properties").?.object.get("pid").?.object;
+        try std.testing.expectEqualStrings("integer", pid.get("type").?.string);
+    }
 }

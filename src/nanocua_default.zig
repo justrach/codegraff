@@ -510,3 +510,45 @@ test "load_tool_schemas surfaces missing nanocua.app on macOS and hot-connects i
     try testing.expect(shapes.lookup(io, "mcp__nanocua__get_ui_tree") != null);
     try testing.expect(agent.rebuilds >= 1);
 }
+
+test "NanoCUA scoped proxy receives EOF for successful failed and interrupted turns" {
+    if (@import("builtin").os.tag != .macos and @import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var state: std.heap.ArenaAllocator = .init(gpa);
+    defer state.deinit();
+    const a = state.allocator();
+    const home = try tmpHome(io, a, &tmp, false);
+    const command = try std.fmt.allocPrint(a, "{s}/proxy", .{home});
+    const script =
+        \\#!/bin/sh
+        \\test "$1" = mcp && test "$2" = --turn-scoped || exit 4
+        \\while read -r line; do
+        \\  case "$line" in
+        \\    *'nanocua/turnProtocol'*) printf '{"jsonrpc":"2.0","id":1,"result":{}}\n' ;;
+        \\    *) exit 5 ;;
+        \\  esac
+        \\done
+        \\printf 'closed\n' >>"$0.eof"
+        \\
+    ;
+    try tmp.dir.writeFile(io, .{ .sub_path = "proxy", .data = script, .flags = .{ .permissions = .fromMode(0o755) } });
+    var reg = @import("mcp.zig").Registry.empty(gpa, io);
+    defer reg.deinit();
+    const fixture = struct {
+        fn turn(registry: *@import("mcp.zig").Registry, exe: []const u8, outcome: anyerror!void) !void {
+            var scope: @import("nanocua_turn.zig").Turn = .{};
+            defer scope.close(registry.io);
+            const first = try scope.connect(registry, exe);
+            try testing.expectEqual(first, try scope.connect(registry, exe));
+            return outcome;
+        }
+    };
+    try fixture.turn(&reg, command, {});
+    try testing.expectError(error.ModelFailure, fixture.turn(&reg, command, error.ModelFailure));
+    try testing.expectError(error.Interrupted, fixture.turn(&reg, command, error.Interrupted));
+    const closed = try Io.Dir.cwd().readFileAlloc(io, try std.fmt.allocPrint(a, "{s}.eof", .{command}), a, .limited(128));
+    try testing.expectEqualStrings("closed\nclosed\nclosed\n", closed);
+}

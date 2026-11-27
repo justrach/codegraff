@@ -71,46 +71,59 @@ pub fn touch(job: anytype, now: i64) void {
 }
 
 pub fn mayStop(result: Probe, pinned: bool, before: i64, after: i64, still_idle: bool) bool {
-    return mayStopWith(result, pinned, before, after, still_idle, .unknown);
+    return result == .closed and !pinned and before == after and still_idle;
 }
 
-/// Listening jobs stop only after an explicit zero consumer count. Unknown
-/// visibility is never treated as "no one is using this."
-pub fn mayStopWith(result: Probe, pinned: bool, before: i64, after: i64, still_idle: bool, consumers: @import("preview_consumers.zig").Kind) bool {
-    if (pinned or before != after or !still_idle) return false;
-    return switch (result) {
-        .closed => true,
-        .listening => consumers == .none,
-        .unknown => false,
+const preview = @import("preview_consumers.zig");
+
+/// Called with the pool locked, from every live job pump. Output cannot renew
+/// a browser observation. Confirm inventory and identity before requesting TERM.
+pub fn checkPreview(pool: anytype, job: anytype, gpa: std.mem.Allocator, io: std.Io, pid: i32, now: i64) void {
+    const home = @import("job_registry.zig").home;
+    if (home.len == 0 or preview.grace == 0 or job.pinned or job.stopped_idle or pid <= 1 or now < job.preview_probe_after_ms) return;
+    job.preview_probe_after_ms = now + preview.poll_ms;
+    var scratch: std.heap.ArenaAllocator = .init(gpa);
+    defer scratch.deinit();
+    const a = scratch.allocator();
+    const snapshot = preview.read(io, a, home) orelse {
+        _ = job.preview_grace.observe(null, preview.grace);
+        return;
     };
+    if (!snapshot.hasExplicitZero() or !snapshot.isFresh(job.started_ms, @import("util.zig").unixMs(io))) {
+        _ = job.preview_grace.observe(null, preview.grace);
+        return;
+    }
+    const expected_start = job.start_id;
+    if (expected_start == 0) return;
+    pool.mutex.unlock(io);
+    const ports = @import("job_registry.zig").checkedListenPorts(gpa, io, a, pid);
+    pool.mutex.lockUncancelable(io);
+    if (job.kill_requested or job.detach or job.exit_cleanup or job.pinned) return;
+    const confirmed = preview.read(io, a, home);
+    const empty = if (confirmed) |latest| observation: {
+        if (!latest.isFresh(job.started_ms, @import("util.zig").unixMs(io))) break :observation null;
+        const listeners = ports orelse break :observation null;
+        if (!latest.allListenersEmpty(listeners)) break :observation null;
+        break :observation preview.Empty{ .timestamp = latest.modified_ms, .listeners = std.hash.Wyhash.hash(0, listeners) };
+    } else null;
+    if (!job.preview_grace.observe(empty, preview.grace)) return;
+    const stop = @import("job_registry_stop.zig");
+    if (!stop.terminatePreview(pid, expected_start, stop.Native{ .io = io })) return;
+    job.stopped_idle = true;
 }
 
 /// Called with the pool locked; returns locked. The bounded subprocess runs
 /// outside the mutex, then activity, pinning and shutdown are checked again.
 pub fn checkIdle(pool: anytype, job: anytype, gpa: std.mem.Allocator, io: std.Io, pid: i32, now: i64) void {
-    if (now < job.browser_probe_after_ms) return;
+    if (job.stopped_idle or now < job.browser_probe_after_ms) return;
     job.browser_probe_after_ms = now + retry_ms;
     const activity = job.activity_revision;
     pool.mutex.unlock(io);
     const result = probe(gpa, io, pid);
     pool.mutex.lockUncancelable(io);
-    var consumers: @import("preview_consumers.zig").Kind = .unknown;
-    if (result == .listening) {
-        var scratch = std.heap.ArenaAllocator.init(gpa);
-        defer scratch.deinit();
-        const ports = @import("job_registry.zig").listenPorts(gpa, io, scratch.allocator(), pid);
-        if (@import("preview_consumers.zig").firstPort(ports)) |port| {
-            if (@import("preview_consumers.zig").path(scratch.allocator(), @import("job_registry.zig").home)) |file| {
-                if (@import("preview_consumers.zig").load(io, scratch.allocator(), file)) |counts| {
-                    consumers = @import("preview_consumers.zig").kindOf(counts, port);
-                }
-            }
-        }
-    }
     const idle_ms: u64 = @intCast(@max(now - job.last_active_ms, 0));
-    const stop_ms: u64 = if (consumers == .none) @intCast(@import("preview_consumers.zig").grace_ms) else idle.policy.stop_ms;
-    const still_idle = idle.verdictUnder(.{ .warn_ms = 0, .stop_ms = stop_ms }, idle_ms, job.idle_warned, job.pinned) == .stop;
-    if (!job.kill_requested and !job.detach and !job.exit_cleanup and mayStopWith(result, job.pinned, activity, job.activity_revision, still_idle, consumers)) {
+    const still_idle = idle.verdictUnder(.{ .warn_ms = 0, .stop_ms = idle.policy.stop_ms }, idle_ms, job.idle_warned, job.pinned) == .stop;
+    if (!job.kill_requested and !job.detach and !job.exit_cleanup and mayStop(result, job.pinned, activity, job.activity_revision, still_idle)) {
         job.kill_requested = true;
         job.stopped_idle = true;
     }
@@ -128,9 +141,6 @@ test "browser guard listeners and unknown never imply closed tabs" {
     try std.testing.expectEqual(Probe.listening, classify(true, false, "p12\nf4\ntIPv6\n", ""));
     try std.testing.expect(!mayStop(.listening, false, 1, 1, true));
     try std.testing.expect(!mayStop(.unknown, false, 1, 1, true));
-    try std.testing.expect(mayStopWith(.listening, false, 1, 1, true, .none));
-    try std.testing.expect(!mayStopWith(.listening, false, 1, 1, true, .some));
-    try std.testing.expect(!mayStopWith(.unknown, false, 1, 1, true, .none));
 }
 
 test "browser guard failures and incomplete inventory fail closed" {

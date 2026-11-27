@@ -1,12 +1,8 @@
-//! `render_html` — the model draws something for the user, and the desktop
-//! app renders it inline in the transcript instead of making them imagine it.
+//! `render_html` — save an HTML page the user can open from its tool row.
 //!
 //! The snapshot is the model's page VERBATIM: no wrapper document, no host
-//! script, no handshake. Isolation is a response header, not a shell — the
-//! desktop's `/api/views` serves this file with a CSP `sandbox` plus
-//! `default-src 'none'`, so the page runs in an opaque origin with no network
-//! and no reach into the app, whether it is framed by the transcript or opened
-//! straight from disk in a browser.
+//! script, no handshake. The desktop applies its sandboxed rendering policy
+//! when opening the saved page.
 //!
 //! Same private-snapshot shape as an MCP app result (mcp_apps.zig): a random
 //! 32-hex id under `$HOME/.graff/views`, 0700 directory, 0600 file, and a

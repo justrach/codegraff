@@ -22,15 +22,21 @@ recomputes the local component without the count.
 The session file records the count as `opaque_state_count`:
 
 - `provider` and `model` the count was made under,
-- `state_bytes`, the history's total compaction-state size (the calibration key),
+- `state_bytes`, the history's total compaction-state size,
 - `state_digest`, an order-independent digest of every state blob, in hex,
 - `tokens`, the provider's count for that state.
 
-It is written only when the process has a count for the saved history's state.
+Size and digest jointly identify state in the process cache, so equal-length
+ciphertexts do not share counts. The record is written only when the process
+has a count for the saved history's state.
 `loadSession` reapplies it before rebasing the context meter, and only when the
 restored history has the same size and digest and the session's provider and
 model match. A changed state, a different model or provider, or a missing or
 malformed record leaves the bytes/16 estimate in place.
+
+Restore uses the same paired meter rebase as a live turn. This also preserves
+a provider reading below the local estimate when encrypted reasoning is
+retained without a compaction item. New input still increases the meter.
 
 The count is learned from every Responses reply that carries usage, chained
 or not. With `previous_response_id` (the WebSocket delta, chatgpt-new's

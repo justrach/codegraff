@@ -101,6 +101,9 @@ elif args[:1]==['issue'] and len(args)>1 and args[1] in ('list','view','comment'
                     issues[number]=dict(number=int(number),title=option('--title','-t',default='fixture'),body=body,state='OPEN',stateReason='',comments=[],url='https://github.com/'+selected+'/issues/'+number)
                 else:issues[number].setdefault('comments',[]).append({'body':body})
             save()
+            if action=='create' and state.get('issue_create_response_lost'):
+                print('issue create: response lost after server accepted the report',file=sys.stderr)
+                sys.exit(1)
             print(issues[number].get('url','https://github.com/'+selected+'/issues/'+number))
 elif args[:2]==['pr','list']:
     print('[]')

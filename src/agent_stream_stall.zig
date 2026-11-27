@@ -21,5 +21,6 @@ pub fn noteStallRetry(self: *Agent, retries: usize) void {
 pub fn stallGiveUpMessage(self: *Agent, retries: usize) ?[]const u8 {
     const base = http_stall.streamPolicy(self.provider.model, self.provider.url, http.stream_stall_ms).silence_ms;
     const waited = if (self.stall.tripped_ms != 0) self.stall.tripped_ms else base;
+    if (retries == 0) return std.fmt.allocPrint(self.arena, "stream stalled: no data from the model for {d}s — automatic resends disabled", .{waited / 1000}) catch null;
     return std.fmt.allocPrint(self.arena, "stream stalled: no data from the model for {d}s — ended the turn after {d} reconnect attempts, each waiting longer (stream silence allowance {d}s; set GRAFF_STREAM_STALL_SECS to override)", .{ waited / 1000, retries, base / 1000 }) catch null;
 }

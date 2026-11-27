@@ -369,6 +369,33 @@ test "EventLog + Follower: appended lines tail without gaps or duplicates" {
     try testing.expectEqual(@as(u64, 4), lastSeqOnDisk(io, tmp.dir, testing.allocator, path));
 }
 
+test "reattach after started preserves a late bridge error as one terminal record" {
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var log = EventLog.open(io, tmp.dir, "events.jsonl");
+    defer log.close();
+    log.append("{\"seq\":1,\"type\":\"started\"}");
+
+    var buf: [256]u8 = undefined;
+    var follower = Follower.open(io, tmp.dir, "events.jsonl", &buf, 0);
+    defer follower.close();
+    var out: [256]u8 = undefined;
+    var writer: Io.Writer = .fixed(&out);
+    const quiet = try replay(&writer, follower.poll(), 2);
+    try testing.expectEqual(@as(usize, 0), quiet.emitted);
+    try testing.expect(!quiet.terminal);
+
+    const failure = "{\"seq\":2,\"type\":\"error\",\"message\":\"session process exited mid-request\"}";
+    log.append(failure);
+    const resumed = try replay(&writer, follower.poll(), 2);
+    try testing.expectEqual(@as(usize, 1), resumed.emitted);
+    try testing.expectEqual(@as(u64, 2), resumed.last_seq);
+    try testing.expect(resumed.terminal);
+    try testing.expectEqualStrings(failure ++ "\n", writer.buffered());
+    try testing.expectEqualStrings("", follower.poll());
+}
+
 test "terminal_events covers every control ack mainloop can emit" {
     // The list is only correct relative to the emitter, so read the emitter.
     // mainloop.zig's --json control block answers each between-turn request

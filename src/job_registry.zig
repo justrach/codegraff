@@ -116,14 +116,20 @@ pub fn ownerAlive(io: Io, rec: Record) bool {
 /// style, or "" (Windows, no lsof, nothing listening). The leader was spawned
 /// as its own group, so the group id is its pid.
 pub fn listenPorts(gpa: Allocator, io: Io, arena: Allocator, pid: i32) []const u8 {
-    if (!posix) return "";
+    return checkedListenPorts(gpa, io, arena, pid) orelse "";
+}
+
+/// An incomplete inventory can be displayed as unknown, but never grants cleanup.
+pub fn checkedListenPorts(gpa: Allocator, io: Io, arena: Allocator, pid: i32) ?[]const u8 {
+    if (!posix) return null;
     var pidbuf: [16]u8 = undefined;
-    const pid_s = std.fmt.bufPrint(&pidbuf, "{d}", .{pid}) catch return "";
-    const run = process_runner.runCapped(gpa, io, &.{ "lsof", "-a", "-P", "-n", "-iTCP", "-sTCP:LISTEN", "-g", pid_s, "-Fn" }, 64 * 1024, 4096, 5_000) catch return "";
+    const pid_s = std.fmt.bufPrint(&pidbuf, "{d}", .{pid}) catch return null;
+    const run = process_runner.runCapped(gpa, io, &.{ "lsof", "-a", "-P", "-n", "-iTCP", "-sTCP:LISTEN", "-g", pid_s, "-Fn" }, 64 * 1024, 4096, 1_500) catch return null;
     defer {
         gpa.free(run.stdout);
         gpa.free(run.stderr);
     }
+    if (!process_runner.ranOk(run) or run.stdout_truncated or run.stderr_truncated or run.stderr.len != 0) return null;
     return parseLsofPorts(arena, run.stdout);
 }
 

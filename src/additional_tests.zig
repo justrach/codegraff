@@ -10,6 +10,7 @@ test {
     _ = @import("agent_server_compact_tests.zig");
     _ = @import("agent_server_compact_route_tests.zig");
     _ = @import("compaction_quiet_delivery_tests.zig");
+    _ = @import("serve_answer.zig");
     _ = @import("compact_at.zig");
     _ = @import("client_tags.zig");
     _ = @import("provider_codegraff_tests.zig");

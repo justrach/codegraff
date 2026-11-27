@@ -107,13 +107,17 @@ pub const harness_issue_note =
     \\
     \\If you hit a bug or limitation in the harness itself (this graff/codegraff
     \\agent — its tools, prompts, streaming, sessions, or behavior — as opposed
-    \\to the project you happen to be working in), report it by opening a GitHub
-    \\issue at justrach/codegraff (`gh issue create --repo justrach/codegraff
-    \\...`), never in the current working repository's issue tracker.
+    \\to the project you happen to be working in), look for a canonical report
+    \\at justrach/codegraff. Create one only for a materially new failure
+    \\(`gh issue create --repo justrach/codegraff ...`).
     \\Search open and closed issues there first, by the error text and the
     \\operation (`gh issue list --repo justrach/codegraff --state all --search
     \\'...'`). If one already tracks the failure, file nothing new.
-    \\If the search fails, keep the finding in your reply instead of filing.
+    \\If the search fails or is incomplete, keep the finding in your reply instead
+    \\of filing. An unchanged recurrence needs no public write.
+    \\If no equivalent issue is found, recheck the tracker immediately before
+    \\creating one. If a create result is uncertain, search again and inspect any
+    \\match before considering a retry. Never retry an unconfirmed create.
     \\Open the body with the versions it was seen on: the running graff's
     \\`--version` (inside Harness that is `~/.harness/bin/graff`, not the one on
     \\PATH) beside the latest release (`gh release view --repo justrach/codegraff

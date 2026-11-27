@@ -77,6 +77,7 @@ pub const App = struct {
     pub fn deinit(a: *App) void {
         if (comptime mac) if (a.hotkey) |*h| h.deinit();
         a.server.deinit();
+        a.hub.turn_input_grants.connections.deinit(a.gpa);
     }
 
     /// Opens the socket at `path`; on failure the panel says why.
@@ -114,6 +115,7 @@ pub const App = struct {
 
     pub fn setStopped(a: *App, stopped: bool) void {
         a.hub.policy.stopped = stopped;
+        if (stopped) a.hub.turn_input_grants.revoke(a.gpa);
         if (a.stop_flag) |f| f.store(stopped, .release);
         a.redraw();
     }
@@ -121,6 +123,16 @@ pub const App = struct {
     /// On opens input for the next agent work that acts; off ends it at once.
     pub fn setInput(a: *App, on: bool) void {
         a.hub.setInput(on);
+        a.redraw();
+    }
+
+    pub fn setTurnInput(a: *App, on: bool) void {
+        if (on) {
+            if (!a.clickIsReal() or a.hub.policy.stopped) return;
+            a.hub.turn_input_grants.armed = true;
+        } else {
+            a.hub.turn_input_grants.revoke(a.gpa);
+        }
         a.redraw();
     }
 
@@ -165,7 +177,10 @@ pub const App = struct {
         const p = a.hub.policy;
         return .{
             .stopped = p.stopped,
-            .input = p.allow_input,
+            .input = p.allow_input or a.hub.turn_input_grants.armed or a.hub.turn_input_grants.connections.count() > 0,
+            .inputArmed = a.hub.turn_input_grants.armed,
+            .inputTurns = a.hub.turn_input_grants.connections.count(),
+            .persistentInput = p.allow_input,
             .inputHeld = p.actor() != 0,
             .wholeScreen = p.allow_whole_screen,
             .accessibility = a.perms.accessibility,
@@ -181,7 +196,7 @@ pub const App = struct {
     fn isOn(a: *const App, want: control.Want) bool {
         const p = a.hub.policy;
         return switch (want) {
-            .input => p.allow_input,
+            .input => a.hub.turn_input_grants.armed,
             .whole_screen => p.allow_whole_screen,
             .@"resume" => !p.stopped,
         };
@@ -210,7 +225,10 @@ pub const App = struct {
         if (eql(u8, name, "off")) {
             const what = control.Want.parse(args.string("what") orelse "") orelse .@"resume";
             switch (what) {
-                .input => a.setInput(false),
+                .input => {
+                    a.setInput(false);
+                    a.setTurnInput(false);
+                },
                 .whole_screen => a.setWholeScreen(false),
                 // Off means off: nothing here can turn anything on.
                 .@"resume" => return a.hub.sendError(conn, id, -32602, "Say input or whole_screen"),
@@ -229,6 +247,7 @@ pub const App = struct {
     fn onAsk(a: *App, conn: u64, id: []const u8, args: tools.Args) void {
         const want = control.Want.parse(args.string("what") orelse "") orelse
             return a.hub.sendError(conn, id, -32602, "Say input, whole_screen or resume");
+        if (want == .input and a.hub.policy.stopped) return a.reply(conn, id, "stopped");
         if (a.isOn(want)) return a.reply(conn, id, "already_on");
         a.settleRequest();
         switch (a.gate.ask(want, args.string("from") orelse "", conn, id, a.hub.clock())) {
@@ -277,7 +296,10 @@ pub const App = struct {
             if (!a.gate.armed(now) or !a.clickIsReal()) return;
             const r = a.gate.take() orelse return;
             switch (r.want) {
-                .input => a.setInput(true),
+                .input => {
+                    if (a.hub.policy.stopped) return a.finishRequest(r, "stopped");
+                    a.hub.turn_input_grants.armed = true;
+                },
                 .whole_screen => a.setWholeScreen(true),
                 .@"resume" => a.setStopped(false),
             }

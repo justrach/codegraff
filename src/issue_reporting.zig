@@ -1,5 +1,8 @@
 //! Shared issue-lifecycle guidance for ordinary reports and `/issue`.
 pub const guidance =
+    \\Search open and closed issues by the error signature and affected operation.
+    \\Keep the report local when search fails or is incomplete. Recheck immediately
+    \\before creating, and reconcile any uncertain create before another write.
     \\For a matching issue, inspect its state, closure reason, and latest
     \\resolution before reporting. Add only genuinely new reproduction evidence
     \\or diagnostics. If a current reproduction or new evidence shows that the

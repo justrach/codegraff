@@ -190,7 +190,7 @@ fn execToolInner(ctx: ToolCtx, call: ToolCall) !ToolOutput {
         };
         defer prepared.deinit(gpa);
         if (@import("mcp_run_task_guard.zig").preflight(gpa, io, ctx, reg, call.name, call.input)) |refusal| return refusal;
-        const r = reg.callAt(gpa, call.name, prepared.value, ctx.call_seq) catch |err| {
+        const r = reg.callAt(gpa, call.name, prepared.value, ctx.call_seq, ctx.nanocua_turn) catch |err| {
             codedbpro_report.onFailure(ctx, call.name, @errorName(err));
             return failure(gpa, err);
         };

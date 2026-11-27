@@ -115,7 +115,8 @@ pub const usage_text =
     \\  --max-run-tool-calls N  aggregate root/descendant tool ceiling for this invocation
     \\  --max-tool-calls N  reject root tool calls after N per turn (JSON-safe budget)
     \\  --compact-at PCT    start automatic compaction at PCT% of the context window (10-95, default 80)
-    \\  --max-model-calls N total provider calls allowed across this run (default 0 = unlimited; includes children/title/judges)
+    \\  --max-model-calls N logical model calls across this run (0 = unlimited; transport retries share a call)
+    \\  --no-model-resends   disable automatic resends within each model request
     \\  --dedupe-tool-calls reject duplicate root tool name+input calls per turn
     \\  --no-telemetry   disable anonymous usage telemetry for this run
     \\  --learning-privacy <mode>       learning egress ceiling: local|aggregate|templates|examples (default aggregate)

@@ -319,9 +319,13 @@ pub fn stripHarnessNotes(text: []const u8) []const u8 {
         "\n\n[harness note:",
         "\n\n[pace:",
         "\n\nAttached images (",
+        "\n\nAttached images:",
         "\n\nAttached files (",
+        "\n\nAttached files:",
         "\n\nAttached documents (",
+        "\n\nAttached documents:",
         "\n\nAttached PDFs (",
+        "\n\nAttached PDFs:",
     };
     for (markers) |m| {
         if (std.mem.indexOf(u8, text, m)) |idx| cut = @min(cut, idx);

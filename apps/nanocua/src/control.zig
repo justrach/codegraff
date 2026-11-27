@@ -16,7 +16,7 @@ pub const Want = enum {
 
     pub fn question(w: Want) []const u8 {
         return switch (w) {
-            .input => "Turn on input? Agents could click, type, press keys and open apps, one app at a time.",
+            .input => "Allow input for the next Graff turn that needs it? The turn could click, type, press keys or open apps.",
             .whole_screen => "Turn on the whole screen? Agents could use your pointer and keyboard, and take pictures of everything.",
             .@"resume" => "Resume? Agents' calls run again, as far as the switches below allow.",
         };
@@ -114,6 +114,9 @@ pub const Status = struct {
     /// Input is on and one agent's work holds it (it ends when that work's
     /// connection does); input on without it: nobody has acted yet.
     inputHeld: bool = false,
+    inputArmed: bool = false,
+    inputTurns: usize = 0,
+    persistentInput: bool = false,
     wholeScreen: bool = false,
     accessibility: bool = false,
     screenRecording: bool = false,

@@ -249,6 +249,26 @@ def exercise(root, binary):
             assert chunks(after_cancel_updates) == ['OK'], after_cancel_updates
             print('PASS ACP retry cancellation: interrupts backoff, no extra POST or answer, same session remains usable')
             print('PASS ACP HTTP/2 retry chrome: recovery, six-attempt exhaustion, explicit retry; no retry text in answers')
+
+            # The fixture's fault counter is process-local. Its first fault
+            # happens after the H2 peer records the full request body.
+            strict = case/'strict'
+            strict.mkdir()
+            before = sum(row['event'] == 'post' for row in map(json.loads, log.read_text().splitlines()))
+            run = subprocess.run(
+                [str(binary), '--model', 'vercel', '--yolo', '--json',
+                 '--max-model-calls', '1', '--no-model-resends'],
+                cwd=strict, env=env, input=json.dumps({'type':'user', 'text':'Say OK.'})+'\n',
+                capture_output=True, text=True, timeout=30,
+            )
+            assert run.returncode == 0, run.stderr
+            strict_events = [json.loads(line) for line in run.stdout.splitlines()]
+            assert any(event.get('type') == 'error' and 'EndOfStream' in event.get('message', '')
+                       for event in strict_events), strict_events
+            strict_posts = [row for row in map(json.loads, log.read_text().splitlines())
+                            if row['event'] == 'post'][before:]
+            assert len(strict_posts) == 1 and strict_posts[0]['protocol'] == 'h2', strict_posts
+            print('PASS strict HTTP/2: one POST and terminal failure after the injected post-flush error')
         finally:
             fixture.terminate(worker)
             fixture.terminate(server)

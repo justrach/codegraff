@@ -19,7 +19,7 @@ pub const field = "opaque_state_count";
 /// Write the record when this process has counted the history's state.
 pub fn write(s: *std.json.Stringify, provider: Provider, history: Value) !void {
     const id = context_tokens.compactionStateIdentity(history);
-    const tokens = context_tokens.calibratedState(id.bytes) orelse return;
+    const tokens = context_tokens.calibratedState(id) orelse return;
     var digest_buf: [16]u8 = undefined;
     try s.objectField(field);
     try s.beginObject();
@@ -44,7 +44,7 @@ pub fn restore(provider: Provider, history: Value, session: std.json.ObjectMap) 
     if (!std.mem.eql(u8, saved.provider, provider.id) or !std.mem.eql(u8, saved.model, provider.model)) return;
     const id = context_tokens.compactionStateIdentity(history);
     if (id.bytes != saved.state_bytes or id.digest != saved.state_digest) return;
-    context_tokens.calibrateState(saved.state_bytes, saved.tokens);
+    context_tokens.calibrateState(id, saved.tokens);
 }
 
 const Record = struct {

@@ -25,7 +25,8 @@ pub const Stream = struct {
         defer parsed.deinit();
         const text = delta(agent.provider.kind, parsed.value);
         if (self.size.feed(agent, parsed.value, text.len)) return error.ReplyRunaway;
-        const enabled = !agent.compaction_request and agent.output_schema == null;
+        if (agent.compaction_request) return;
+        const enabled = agent.output_schema == null;
         if (enabled and !self.size.tool_seen and text.len == 0) {
             const r_text = @import("agent_length_cutoff.zig").reasoningDelta(agent.provider.kind, parsed.value);
             if (r_text.len > 0) {

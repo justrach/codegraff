@@ -30,7 +30,6 @@ const off_this_space = "That app's window isn't on the user's current Space, or 
 /// one's tree mean nothing to another, and neither moves the other's target.
 pub const Session = struct {
     refs: ax.Refs,
-    /// The app it last read or opened.
     last: ?i32 = null,
 };
 
@@ -67,11 +66,8 @@ pub const Sessions = struct {
 pub const Mac = struct {
     gpa: std.mem.Allocator,
     queue: objc.dispatch_queue_t,
-    /// Each agent's refs and target: the queue's alone.
     sessions: Sessions,
-    /// The kill switch as the queue sees it.
     stopped: std.atomic.Value(bool) = .init(false),
-    /// The whole-screen switch as the queue sees it.
     whole_screen: std.atomic.Value(bool) = .init(false),
     /// The connection that may act, as the queue sees it (Policy.actor): 0 is
     /// nobody, so a call let through before input ended can't act after.
@@ -233,7 +229,6 @@ const Job = struct {
             .button = null,
         };
         const al = j.arena.allocator();
-        // Whichever string the tool takes, under one name.
         const t = a.string("text") orelse a.string("keys") orelse a.string("value");
         if (t) |s| j.text = try al.dupe(u8, s);
         if (a.string("name")) |s| j.name = try al.dupe(u8, s);
@@ -274,12 +269,17 @@ const Job = struct {
         j.out.writer.print(fmt, args) catch {};
     }
 
+    fn inputGate(j: *const Job) input.Gate {
+        if (j.reply.turn_input_token) |token| return .{ .stopped = &j.mac.stopped, .live = &token.live };
+        return .{ .stopped = &j.mac.stopped, .actor = &j.mac.actor, .conn = j.reply.conn };
+    }
+
     fn perform(j: *Job) !void {
         const w = &j.out.writer;
         const m = j.mac;
         if (j.tool.kind() == .act) {
             if (m.stopped.load(.acquire)) return j.fail("nanocua is stopped: the user pressed Stop.", .{});
-            if (m.actor.load(.acquire) != j.reply.conn) return j.fail("Input in nanocua ended before this ran: the user turned it off, or the work that held it ended.", .{});
+            if (!j.inputGate().allowed()) return j.fail("Input in nanocua ended before this ran.", .{});
             if (!accessibility()) return j.fail("nanocua has no Accessibility permission, which input needs: ask the user to grant it in nanocua's window.", .{});
         }
         switch (j.tool) {
@@ -302,22 +302,22 @@ const Job = struct {
                 if (j.ref) |r| {
                     const el = j.element(r) orelse return;
                     const t = j.events(ax.pidOf(el)) orelse return;
-                    if (button == .left and count == 1 and !hit.inWebPage(el) and ax.perform(el, "AXPress")) return w.print("Pressed [{d}].", .{r});
+                    if (button == .left and count == 1 and !hit.inWebPage(el) and j.inputGate().allowed() and ax.perform(el, "AXPress")) return w.print("Pressed [{d}].", .{r});
                     const f = ax.frame(el) orelse return j.fail("[{d}] has no frame to click.", .{r});
                     const c = j.inWindow(t, f) orelse return j.fail("[{d}] is out of sight in its window: scroll to it first.", .{r});
                     const aimed = j.aim(t, c[0], c[1]) orelse return;
-                    input.click(aimed, c[0], c[1], button, count);
+                    input.click(aimed, c[0], c[1], button, count, j.inputGate());
                     return j.sent(aimed, "a click to", c);
                 }
                 const t = j.events(null) orelse return;
                 const p = j.point(t) orelse return;
                 const aimed = j.aim(t, p[0], p[1]) orelse return;
-                if (aimed == .app and button == .left and count == 1) {
+                if (aimed == .app and button == .left and count == 1 and j.inputGate().allowed()) {
                     var buf: [64]u8 = undefined;
                     if (hit.press(&buf, aimed.app.pid, p[0], p[1])) |what|
                         return w.print("Pressed the {s} at {d:.0},{d:.0}.", .{ what, p[0], p[1] });
                 }
-                input.click(aimed, p[0], p[1], button, count);
+                input.click(aimed, p[0], p[1], button, count, j.inputGate());
                 try j.sent(aimed, "a click to", p);
             },
             .type_text => {
@@ -330,11 +330,12 @@ const Job = struct {
                 } else null;
                 const t = j.events(el_pid) orelse return;
                 if (el) |e| {
-                    if (!ax.focus(e)) if (ax.center(e)) |c| if (j.aim(t, c[0], c[1])) |aimed| input.click(aimed, c[0], c[1], .left, 1);
+                    if (!j.inputGate().allowed()) return j.fail("Input for this turn has expired or stopped.", .{});
+                    if (!ax.focus(e)) if (ax.center(e)) |c| if (j.aim(t, c[0], c[1])) |aimed| input.click(aimed, c[0], c[1], .left, 1, j.inputGate());
                     _ = usleep(60_000);
                 }
                 if (!j.keyboardIsOthers(t)) return;
-                const typed = input.typeText(t, text, &m.stopped);
+                const typed = input.typeText(t, text, j.inputGate());
                 try w.print("Typed {d} characters.", .{typed});
             },
             .press_key => {
@@ -343,6 +344,7 @@ const Job = struct {
                     return j.fail("Write keys like \"cmd+s\", \"shift+tab\", \"enter\", \"escape\", \"left\", \"f5\".", .{});
                 const t = j.events(null) orelse return;
                 if (!j.keyboardIsOthers(t)) return;
+                if (!j.inputGate().allowed()) return j.fail("Input for this turn has expired or stopped.", .{});
                 if (!input.press(t, combo)) return j.fail("No key code for that key.", .{});
                 try w.print("Pressed {s}.", .{j.text.?});
             },
@@ -368,12 +370,14 @@ const Job = struct {
                 const t = j.events(null) orelse return;
                 const p = j.point(t) orelse return;
                 const aimed = j.aim(t, p[0], p[1]) orelse return;
+                if (!j.inputGate().allowed()) return j.fail("Input for this turn has expired or stopped.", .{});
                 input.move(aimed, p[0], p[1]);
                 try if (aimed == .hid) w.print("Moved the pointer to {d:.0},{d:.0}.", .{ p[0], p[1] }) else j.sent(aimed, "a hover to", p);
             },
             .set_value => {
                 const r = j.ref orelse return j.fail("set_value needs ref.", .{});
                 const el = j.element(r) orelse return;
+                if (!j.inputGate().allowed()) return j.fail("Input for this turn has expired or stopped.", .{});
                 const err = ax.setText(el, j.text orelse "");
                 if (err != 0) return j.fail("[{d}] refused the value (AXError {d}): it may not be editable; try type_text.", .{ r, err });
                 try w.print("Set [{d}].", .{r});
@@ -381,14 +385,13 @@ const Job = struct {
             .open_app => {
                 const n = j.name orelse return j.fail("open_app needs name.", .{});
                 if (j.whole_screen and !m.whole_screen.load(.acquire)) return j.fail("The whole screen is off in nanocua: open it behind the user's work (leave out whole_screen).", .{});
+                if (!j.inputGate().allowed()) return j.fail("Input for this turn has expired or stopped.", .{});
                 switch (apps.open(n, j.whole_screen)) {
                     .running => try w.print("{s} is running, behind what the user is doing. Read it with get_ui_tree.", .{n}),
                     .activated => try w.print("Brought {s} forward.", .{n}),
                     .launched => try w.print("Opening {s} in the background. Read it with get_ui_tree once it has started.", .{n}),
                     .not_found => return j.fail("Found no app named \"{s}\".", .{n}),
                 }
-                // A later get_ui_tree without app reads this one. (One just
-                // launching isn't in the running list yet.)
                 if (apps.pidNamed(n)) |pid| if (pid != m.self_pid) {
                     j.session.last = pid;
                 };
@@ -419,13 +422,12 @@ const Job = struct {
         return el;
     }
 
-    /// The pid the call names, which may be none. Null if it names an app
-    /// that isn't running (it says so).
+    /// The pid the call names, which may be none. Null if name selection fails.
     fn namedPid(j: *Job) ??i32 {
         if (j.pid) |p| return @as(?i32, @intCast(std.math.clamp(p, 0, std.math.maxInt(i32))));
         const n = j.app orelse return @as(?i32, null);
         if (apps.pidNamed(n)) |pid| return @as(?i32, pid);
-        j.fail("No running app is named \"{s}\" (see list_apps).", .{n});
+        j.fail("No running app is selectable by the name \"{s}\". See list_apps for discoverable apps. For a standalone process you have verified is running, pass its exact pid to get_ui_tree or screenshot.", .{n});
         return null;
     }
 
@@ -490,18 +492,19 @@ const Job = struct {
     fn scrollAt(j: *Job, t: input.Target, p: [2]f64, dx: f64, dy: f64) !void {
         const w = &j.out.writer;
         if (t == .hid) {
-            input.scroll(t, p[0], p[1], dx, dy);
+            input.scroll(t, p[0], p[1], dx, dy, j.inputGate());
             return w.print("Scrolled the screen {d} down, {d} right at {d:.0},{d:.0}.", .{ dy, dx, p[0], p[1] });
         }
         const pid = t.app.pid;
         const before = hit.position(pid, p[0], p[1]);
-        input.scroll(t, p[0], p[1], dx, dy);
+        input.scroll(t, p[0], p[1], dx, dy, j.inputGate());
         if (!before.known()) return j.sent(t, "a scroll to", p);
         // Scrolling can animate.
         _ = usleep(200_000);
         if (hit.position(pid, p[0], p[1]).moved(before))
             return w.print("Scrolled {d} down, {d} right at {d:.0},{d:.0}.", .{ dy, dx, p[0], p[1] });
         if (before.atEnd(dx, dy)) return w.print("Nothing moved: it's already at the end that way.", .{});
+        if (!j.inputGate().allowed()) return j.fail("Input for this turn has expired or stopped.", .{});
         hit.scrollBars(pid, p[0], p[1], dx, dy);
         _ = usleep(50_000);
         if (hit.position(pid, p[0], p[1]).moved(before))

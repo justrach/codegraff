@@ -12,7 +12,7 @@ const builtin = @import("builtin");
 pub fn main(init: std.process.Init) !u8 {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len > 1 and std.mem.eql(u8, args[1], "mcp"))
-        return if (comptime @import("server.zig").supported) @import("proxy.zig").run(init) else 1;
+        return if (comptime @import("server.zig").supported) @import("proxy.zig").run(init, args.len == 3 and std.mem.eql(u8, args[2], "--turn-scoped")) else 1;
 
     if (args.len > 1 and std.mem.eql(u8, args[1], "ctl"))
         return if (comptime @import("server.zig").supported) @import("ctl.zig").run(init, args[2..]) else 1;

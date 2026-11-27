@@ -126,6 +126,7 @@ pub fn createFromBody(st: *ServeState, arena: Allocator, body: []const u8) !Crea
     if (no_subagent_tier) try argv.append(arena, "--no-subagent-tier");
     if (max_tools) |n| try argv.appendSlice(arena, &.{ "--max-tool-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
     if (max_models) |n| try argv.appendSlice(arena, &.{ "--max-model-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
+    if (@import("http.zig").RetryPlan.no_model_resends) try argv.append(arena, "--no-model-resends");
     if (dedupe_tools) try argv.append(arena, "--dedupe-tool-calls");
     if (sys) |s| try argv.appendSlice(arena, &.{ "--system-prompt", s });
     if (append_sys) |s| try argv.appendSlice(arena, &.{ "--append-system-prompt", s });
