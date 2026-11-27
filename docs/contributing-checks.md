@@ -4,7 +4,7 @@ Detailed templates and command references linked from [AGENTS.md](../AGENTS.md).
 
 ## Issue report template
 
-Every issue, whether filed by a person or an agent, opens with this version header:
+Every issue, whether filed by a person or an agent, opens with this version header (`Surface: Harness` means graff misbehaved under the app; see [Which repository](#which-repository) for the app's own bugs):
 
 ```markdown
 **graff:** 0.0.302.25 (latest: 0.0.302.25)
@@ -32,6 +32,22 @@ Version lookup commands:
 - If the binary is older than the latest release, check release notes and closed issues first, and reproduce on the latest release (or state in the header that it was not rechecked).
 - Cite source from a named version (`v0.0.302.25:src/x.zig:93` or commit hash), never a bare line number.
 - Search open and closed issues by error text before filing; never include model/provider names, account details, or private paths.
+
+## Which repository
+
+This repository is graff; the Harness app is `justrach/nanoharness`, whose `harness-engine` is not "the engine" here. File nothing new in `justrach/harness` (the previous desktop client), or here about the desktop GUI and iOS client that used to live here.
+
+1. Reproduce with `graff acp`, `graff -p` or the terminal. Wrong there: here. Right there, but the app shows, launches or stores it wrongly: `justrach/nanoharness`.
+2. For an ACP problem, read the frames graff wrote. A missing or wrong update, method or `_meta`: here. A right frame shown wrongly: the app.
+3. If both sides must change, file the primary issue where the wrong behavior starts and link a counterpart in the other.
+4. Move a misfiled issue with `gh issue transfer <n> <owner/repo>`, not by re-filing, so its author and history stay.
+
+Examples:
+
+- **A turn still shows as working.** graff ends a turn by answering `session/prompt` with a `stopReason` (`end_turn`, `cancelled`, `max_turn_requests`; `src/acp_engine.zig`). No answer: here. Answered and still spinning: the app.
+- **A model is missing from the picker.** Look for its row in the `graff/models` reply (`src/acp_models_rpc.zig`). Missing, or `authenticated` wrong for this install: here. Present but not offered: the app.
+- **Edits land in an unexpected folder.** Read `_meta["graff/worktree"]` and `_meta["graff/cwd"]` in the `session/new` or `session/load` reply and any `session_info_update` (`src/acp_workspace.zig`). Wrong tree or cwd: here. Right tree, the app opens another: the app.
+- **The context meter is wrong.** Compare `used` and `size` in graff's `usage_update` (`src/acp_context_meter.zig`). Wrong numbers: here. Right numbers drawn wrong: the app.
 
 ## Tier 1 & Tier 2 commands
 
