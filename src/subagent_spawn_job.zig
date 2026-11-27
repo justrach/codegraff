@@ -57,11 +57,17 @@ pub fn spawnSubBackground(ctx: ToolCtx, label: []const u8, prompt: []const u8, s
     job.feedback.setSubId(ordinal, cards.subagentId(&id_buf, ordinal, label_c, prompt_c));
     var hint_buf: [256]u8 = undefined;
     const hint = waitHint(&hint_buf, job.id, owner);
+    // An ignored pin is named on the receipt too, not only on the report that
+    // arrives later: the parent may plan around this worker before then. It
+    // goes under the `[agent N started: …]` line, which SDKs and the resume
+    // summary parse from the start of the text.
+    const pin_line = vision_ask.pinLine(&job.ask);
+    const pin_sep = if (pin_line.len > 0) "\n" else "";
     const receipt = (if (state) |saved| std.fmt.allocPrint(
         gpa,
-        "[agent {d} started: {s}] [task_id {s}]\nIt runs in the background and its report reaches you when it finishes: continue with independent work, or end your reply to wait for it. Do not poll; {s}. agent_message queues feedback; subagent_resume continues the retained conversation after completion.",
-        .{ job.id, job.label, saved.record.id, hint },
-    ) else std.fmt.allocPrint(gpa, "[agent {d} started: {s}]\nIt runs in the background and its report reaches you when it finishes: continue with independent work, or end your reply to wait for it. Do not poll; {s}.", .{ job.id, job.label, hint })) catch |err| {
+        "[agent {d} started: {s}] [task_id {s}]\n{s}{s}It runs in the background and its report reaches you when it finishes: continue with independent work, or end your reply to wait for it. Do not poll; {s}. agent_message queues feedback; subagent_resume continues the retained conversation after completion.",
+        .{ job.id, job.label, saved.record.id, pin_line, pin_sep, hint },
+    ) else std.fmt.allocPrint(gpa, "[agent {d} started: {s}]\n{s}{s}It runs in the background and its report reaches you when it finishes: continue with independent work, or end your reply to wait for it. Do not poll; {s}.", .{ job.id, job.label, pin_line, pin_sep, hint })) catch |err| {
         subagent.g_agent_jobs.mutex.unlock(ctx.io);
         gpa.destroy(job);
         return err;

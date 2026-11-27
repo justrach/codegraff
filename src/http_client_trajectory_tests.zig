@@ -98,6 +98,66 @@ test "background subagent tool recovers TLS and completes through agent_output" 
     try std.testing.expectEqual(@as(usize, 0), runtime.recovery.stats().active_refs);
 }
 
+/// One offline `subagent` call against a scripted child that answers
+/// "child-ok": the foreground result, or the background receipt plus the
+/// report agent_output collects.
+const PinRun = struct { first: []u8, collected: ?[]u8 = null };
+
+fn runPinnedSpawn(gpa: std.mem.Allocator, io: Io, args: []const u8, background: bool) !PinRun {
+    var runtime: http_client.Runtime = undefined;
+    runtime.init(gpa, io);
+    defer runtime.deinit(io);
+    http_client.waitForReady(io);
+    var address = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:0");
+    var server = try std.Io.net.IpAddress.listen(&address, io, .{});
+    defer server.deinit(io);
+    const replies = [_]support.Reply{.{ .body = support.chat_body }};
+    var accepted: std.atomic.Value(usize) = .init(0);
+    var server_future = io.async(support.serveReplies, .{ io, &server, @as([]const support.Reply, &replies), &accepted });
+    defer server_future.await(io);
+    defer support.releaseAccept(io, &server);
+    var url_buf: [64]u8 = undefined;
+    const url = try std.fmt.bufPrint(&url_buf, "http://127.0.0.1:{d}/v1/test", .{server.socket.address.getPort()});
+    const ctx: tools.ToolCtx = .{ .gpa = gpa, .io = io, .client = &runtime.client, .provider = support.provider(url), .agent_cwd = ".", .registry = null, .from_sub = false, .approvals = null, .tracer = null };
+    const parsed = try std.json.parseFromSlice(std.json.Value, gpa, args, .{});
+    defer parsed.deinit();
+    http_client.injectConstructionTlsForTest(0);
+    const first = try subagent.execSubagent(ctx, parsed.value);
+    if (!background) return .{ .first = first.text };
+    defer subagent.agentJobsReap(gpa, io);
+    const collected = try subagent.agentOutput(gpa, io, try parseAgentId(first.text), 1);
+    return .{ .first = first.text, .collected = collected.text };
+}
+
+test "an unresolved model pin is named in the foreground subagent result" {
+    const gpa = std.testing.allocator;
+    const run = try runPinnedSpawn(gpa, std.testing.io,
+        \\{"description":"summarize notes","prompt":"reply once","model":"made-up model 9.9","isolation":"shared_cwd"}
+    , false);
+    defer gpa.free(run.first);
+    try std.testing.expect(std.mem.startsWith(u8, run.first, "[model pin \"made-up model 9.9\" ignored: "));
+    try std.testing.expect(std.mem.indexOf(u8, run.first, "this agent ran on test (test) instead") != null);
+    try std.testing.expect(std.mem.indexOf(u8, run.first, "child-ok") != null);
+}
+
+test "an unresolved model pin is named in the background receipt and the collected report" {
+    const gpa = std.testing.allocator;
+    const run = try runPinnedSpawn(gpa, std.testing.io,
+        \\{"description":"summarize notes","prompt":"reply once","model":"made-up model 9.9","run_in_background":true,"isolation":"shared_cwd"}
+    , true);
+    defer gpa.free(run.first);
+    defer if (run.collected) |c| gpa.free(c);
+    // The receipt's first line stays `[agent N started: …]` (SDKs parse it);
+    // the pin line is the one right under it.
+    try std.testing.expect(std.mem.startsWith(u8, run.first, "[agent "));
+    const second = run.first[(std.mem.indexOfScalar(u8, run.first, '\n') orelse return error.TestUnexpectedResult) + 1 ..];
+    try std.testing.expect(std.mem.startsWith(u8, second, "[model pin \"made-up model 9.9\" ignored: "));
+    try std.testing.expect(std.mem.indexOf(u8, second, "this agent ran on test (test) instead") != null);
+    const collected = run.collected.?;
+    try std.testing.expect(std.mem.indexOf(u8, collected, "[model pin \"made-up model 9.9\" ignored: ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, collected, "child-ok") != null);
+}
+
 fn parseAgentId(text: []const u8) !u32 {
     const id_start = (std.mem.indexOf(u8, text, "[agent ") orelse return error.NoAgentId) + "[agent ".len;
     const id_end = std.mem.indexOfScalarPos(u8, text, id_start, ' ') orelse return error.NoAgentId;

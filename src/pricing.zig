@@ -410,6 +410,41 @@ pub fn modelAliasEquals(name: []const u8, query: []const u8) bool {
     return std.mem.eql(u8, normalizeModelAlias(&nb, name), normalizeModelAlias(&qb, query));
 }
 
+/// normalizeModelAlias that also drops '.': people write a version with a dot
+/// ("opus 5.5") where a catalogue id may use a hyphen ("claude-opus-5-5"), and
+/// the other way round. Kept apart from normalizeModelAlias, which also keys
+/// price, context and alias-equality lookups; this key is only consulted as a
+/// last resort, after every exact, alias and substring match found nothing.
+pub fn looseModelKey(dst: *[128]u8, s: []const u8) []const u8 {
+    var n: usize = 0;
+    for (s) |c| {
+        if (c == '-' or c == '_' or c == ' ' or c == '.') continue;
+        if (n >= dst.len) break;
+        dst[n] = std.ascii.toLower(c);
+        n += 1;
+    }
+    return dst[0..n];
+}
+
+pub const LooseMatch = enum { none, contains, equal };
+
+/// How `query` meets the catalogue row (`provider_id`, `name`) under
+/// looseModelKey, also after dropping a leading provider id
+/// ("anthropic claude opus 5.5").
+pub fn looseModelMatch(provider_id: []const u8, name: []const u8, query: []const u8) LooseMatch {
+    var nb: [128]u8 = undefined;
+    var qb: [128]u8 = undefined;
+    var pb: [128]u8 = undefined;
+    const n = looseModelKey(&nb, name);
+    const q = looseModelKey(&qb, query);
+    if (q.len == 0) return .none;
+    const p = looseModelKey(&pb, provider_id);
+    const tail = if (p.len > 0 and q.len > p.len and std.mem.startsWith(u8, q, p)) q[p.len..] else q;
+    if (std.mem.eql(u8, n, q) or std.mem.eql(u8, n, tail)) return .equal;
+    if (std.mem.indexOf(u8, n, q) != null or std.mem.indexOf(u8, n, tail) != null) return .contains;
+    return .none;
+}
+
 /// #377: `<provider><sep><name>` is the same model as the provider's own
 /// `<name>` row under a family-prefixed spelling (gateway catalogs do this).
 /// Alias-normalized so `kimi-k3` == kimi + `k3` and `kimi 3.1 pro` == kimi + `k3.1-pro`.
@@ -453,14 +488,26 @@ pub fn resolveModelName(keys: anytype, query: []const u8) ?[]const u8 {
     for (models()) |m| if (std.mem.eql(u8, m.name, query)) return m.name;
     for (models()) |m| if (modelAliasEquals(m.name, query)) return m.name;
     for (models()) |m| if (familyAliasEquals(m.provider, m.name, query)) return m.name;
+    // Only when nothing matched at all does a separator-insensitive needle
+    // ("opus 5.5" for claude-opus-5-5) get a turn — the same last resort a
+    // `subagent` model pin takes (subagent_selection.modelForProvider).
+    return fuzzyBest(keys, query, false) orelse fuzzyBest(keys, query, true);
+}
+
+fn fuzzyBest(keys: anytype, query: []const u8, comptime loose: bool) ?[]const u8 {
+    const key = if (loose) looseModelKey else normalizeModelAlias;
     var qbuf: [128]u8 = undefined;
-    const qnorm = normalizeModelAlias(&qbuf, query);
+    const qnorm = key(&qbuf, query);
     var best_name: ?[]const u8 = null;
     var best_score: i32 = std.math.minInt(i32);
     for (models()) |m| {
         var nbuf: [128]u8 = undefined;
-        const nnorm = normalizeModelAlias(&nbuf, m.name);
-        if (util.indexOfIgnoreCase(m.name, query) == null and std.mem.indexOf(u8, nnorm, qnorm) == null) continue;
+        const nnorm = key(&nbuf, m.name);
+        const hit = if (loose)
+            looseModelMatch(m.provider, m.name, query) != .none
+        else
+            util.indexOfIgnoreCase(m.name, query) != null or std.mem.indexOf(u8, nnorm, qnorm) != null;
+        if (!hit) continue;
         const keyed = keys.get(m.provider) != null;
         var s: i32 = if (keyed) 1_000_000 else 0;
         // A ChatGPT/Codex login beats a metered or gateway slug for the same
