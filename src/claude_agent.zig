@@ -146,6 +146,7 @@ pub fn post(self: *Agent, body: []const u8) ![]u8 {
         return e;
     };
     s.used_ms = nowMs(self.io);
+    s.awaiting = out.held_call;
     if (side or out.failed) s.stop() else session.put(self.io, owner, s, s.used_ms);
     return out.sse;
 }
@@ -154,7 +155,7 @@ pub fn post(self: *Agent, body: []const u8) ![]u8 {
 fn staleBecause(a: std.mem.Allocator, s: *const Session, props_fp: u64, rewrites: u32, items: []const Value, now: i64) ?[]const u8 {
     if (s.props_fp != props_fp) return "restart: model, effort, prompt or tools changed";
     if (s.rewrites != rewrites or s.seen > items.len) return "restart: history was compacted or trimmed";
-    if (session.expired(s, now)) return "restart: idle past 5 minutes";
+    if (session.stale(s, now)) |why| return why.note();
     if (history.hashMessages(a, items[0..s.seen]) != s.seen_fp) return "restart: earlier history changed";
     return null;
 }
@@ -337,7 +338,9 @@ fn toolUseId(params: ?std.json.ObjectMap) ?[]const u8 {
     return wire.strField(meta.object, "claudecode/toolUseId");
 }
 
-const TurnOut = struct { sse: []u8, failed: bool = false };
+/// `held_call`: the step stopped for graff's tool calls, so Claude Code's
+/// turn stays open until graff answers them.
+const TurnOut = struct { sse: []u8, failed: bool = false, held_call: bool = false };
 
 /// Read one model step: until a response stops for tool use (the held call
 /// is graff's to run) or Claude Code reports the turn's result.
@@ -350,6 +353,7 @@ fn turn(self: *Agent, a: std.mem.Allocator, s: *Session, tools: ?Value, poll: bo
     var skip_block: ?i64 = null;
     var responses: usize = 0;
     var first_token = false;
+    var held_call = false;
     while (true) {
         const line = try s.nextLine(a, poll, turn_budget_ms);
         switch (try wire.classify(a, line)) {
@@ -392,7 +396,10 @@ fn turn(self: *Agent, a: std.mem.Allocator, s: *Session, tools: ?Value, poll: bo
                 }
                 try full.writer.writeAll(sse_line);
                 try full.writer.writeByte('\n');
-                if (std.mem.eql(u8, kind, "message_stop") and std.mem.eql(u8, stop_reason, "tool_use") and graff_tool_use) break;
+                if (std.mem.eql(u8, kind, "message_stop") and std.mem.eql(u8, stop_reason, "tool_use") and graff_tool_use) {
+                    held_call = true;
+                    break;
+                }
             },
             .control => |c| try service(s, a, c, tools),
             .cancel => |id| s.cancel(id),
@@ -410,7 +417,7 @@ fn turn(self: *Agent, a: std.mem.Allocator, s: *Session, tools: ?Value, poll: bo
     }
     self.traceFirstToken();
     engine_sink.forAgent(self).emit(self.io, .{ .stream_complete = .{ .streamed_text = self.streamed_text } });
-    return .{ .sse = try full.toOwnedSlice() };
+    return .{ .sse = try full.toOwnedSlice(), .held_call = held_call };
 }
 
 fn isUsageLimitText(text: []const u8) bool {

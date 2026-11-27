@@ -2,7 +2,9 @@
 //! graff agent, held between model steps so a tool call can stay open while
 //! graff's own loop runs it, and between user turns so Claude Code keeps its
 //! prompt cache. A session idle past `idle_ms` is stopped; the next request
-//! starts a fresh one and replays graff's history as a checkpoint.
+//! starts a fresh one and replays graff's history as a checkpoint. A session
+//! whose child is waiting on graff's tool call is busy, not idle, and is kept
+//! up to `busy_ms` (ADR 0352).
 
 const std = @import("std");
 const Io = std.Io;
@@ -11,6 +13,11 @@ const wire = @import("claude_agent_wire.zig");
 const http = @import("http.zig");
 
 pub const idle_ms: i64 = 5 * std.time.ms_per_min;
+/// How long a busy session (Claude Code waiting on graff's tool call: a long
+/// build, a foreground subagent, a question to the user) is kept before it is
+/// stopped like an idle one. The bound that reclaims a child whose owner went
+/// away mid-call (a cancelled subagent, an abandoned turn).
+pub const busy_ms: i64 = 60 * std.time.ms_per_min;
 /// Lines carry whole assistant messages and echoed tool results; a line past
 /// this is skipped (it is always an echo graff does not read).
 const out_buf_len = 8 << 20;
@@ -53,6 +60,11 @@ pub const Session = struct {
     /// (a tool-list re-read while the model was already answering), kept in
     /// order for the turn that reads them.
     kept: Kept = .{},
+    /// The last step stopped for graff's tool calls, so Claude Code's turn is
+    /// still open, waiting on graff's results. Its `tools/call` usually comes
+    /// after that stop and is read by the next step, so `pending` is often
+    /// still empty while graff runs the tool.
+    awaiting: bool = false,
     used_ms: i64 = 0,
 
     pub fn start(gpa: Allocator, io: Io, argv: []const []const u8, parent_env: ?*const std.process.Environ.Map, cwd: ?[]const u8, props_fp: u64) !*Session {
@@ -96,6 +108,12 @@ pub const Session = struct {
         self.writer = self.child.stdin.?.writerStreaming(io, self.in_buf);
         self.reader = self.child.stdout.?.readerStreaming(io, self.out_buf);
         return self;
+    }
+
+    /// Claude Code is waiting on graff. Leftover `results` do not count: they
+    /// outlive a turn Claude Code ended by itself.
+    pub fn busy(self: *const Session) bool {
+        return self.awaiting or self.pending.items.len > 0;
     }
 
     pub fn send(self: *Session, line: []const u8) !void {
@@ -262,7 +280,8 @@ fn readLineTask(r: *Io.Reader) anyerror![]u8 {
 // address is harmless: the history hash no longer matches, and the stale
 // session is replaced.
 var mutex: Io.Mutex = .init;
-var sessions: std.AutoHashMapUnmanaged(usize, *Session) = .empty;
+pub const Held = std.AutoHashMapUnmanaged(usize, *Session);
+var sessions: Held = .empty;
 var map_gpa: ?Allocator = null;
 
 pub fn take(io: Io, owner: usize) ?*Session {
@@ -272,8 +291,8 @@ pub fn take(io: Io, owner: usize) ?*Session {
     return kv.value;
 }
 
-/// Return a session after a request, stopping any other session left idle
-/// past `idle_ms` (a finished subagent's, or the user walked away).
+/// Return a session after a request, stopping any other session `stale`
+/// says is done (a finished subagent's, or the user walked away).
 pub fn put(io: Io, owner: usize, s: *Session, now_ms: i64) void {
     var idle: std.ArrayList(*Session) = .empty;
     defer idle.deinit(s.gpa);
@@ -284,15 +303,7 @@ pub fn put(io: Io, owner: usize, s: *Session, now_ms: i64) void {
             map_gpa = s.gpa;
             break :blk s.gpa;
         };
-        var it = sessions.iterator();
-        while (it.next()) |kv| if (now_ms - kv.value_ptr.*.used_ms > idle_ms) idle.append(s.gpa, kv.value_ptr.*) catch {};
-        for (idle.items) |old| {
-            var it2 = sessions.iterator();
-            while (it2.next()) |kv| if (kv.value_ptr.* == old) {
-                _ = sessions.remove(kv.key_ptr.*);
-                break;
-            };
-        }
+        sweep(&sessions, s.gpa, now_ms, &idle);
         sessions.put(gpa, owner, s) catch {
             idle.append(s.gpa, s) catch {};
         };
@@ -316,7 +327,41 @@ pub fn stopAll(io: Io) void {
     if (gpa) |g| all.deinit(g);
 }
 
-/// The session held for `owner` is past its idle window.
-pub fn expired(s: *const Session, now_ms: i64) bool {
-    return s.used_ms != 0 and now_ms - s.used_ms > idle_ms;
+/// Why a held session is stopped rather than reused.
+pub const Reap = enum {
+    idle,
+    busy,
+
+    /// The trace note for a restart this causes.
+    pub fn note(r: Reap) []const u8 {
+        return switch (r) {
+            .idle => std.fmt.comptimePrint("restart: idle past {d} minutes", .{@divExact(idle_ms, std.time.ms_per_min)}),
+            .busy => std.fmt.comptimePrint("restart: tool call open past {d} minutes", .{@divExact(busy_ms, std.time.ms_per_min)}),
+        };
+    }
+};
+
+/// The one rule for when a held session is stopped, for the request-time
+/// check and `put`'s sweep alike: past `idle_ms` with nothing in flight, past
+/// `busy_ms` while Claude Code waits on graff, never before it was used.
+pub fn reapAt(now_ms: i64, used_ms: i64, busy: bool) ?Reap {
+    if (used_ms == 0) return null;
+    const age = now_ms - used_ms;
+    if (busy) return if (age > busy_ms) .busy else null;
+    return if (age > idle_ms) .idle else null;
+}
+
+/// Why the session held for `owner` cannot be reused now, or null.
+pub fn stale(s: *const Session, now_ms: i64) ?Reap {
+    return reapAt(now_ms, s.used_ms, s.busy());
+}
+
+/// Move every held session `stale` says is done out of `held` into `out`.
+pub fn sweep(held: *Held, gpa: Allocator, now_ms: i64, out: *std.ArrayList(*Session)) void {
+    var keys: std.ArrayList(usize) = .empty;
+    defer keys.deinit(gpa);
+    var it = held.iterator();
+    while (it.next()) |kv| if (stale(kv.value_ptr.*, now_ms) != null) keys.append(gpa, kv.key_ptr.*) catch break;
+    out.ensureUnusedCapacity(gpa, keys.items.len) catch return;
+    for (keys.items) |k| if (held.fetchRemove(k)) |kv| out.appendAssumeCapacity(kv.value);
 }
