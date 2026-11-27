@@ -71,7 +71,7 @@ test "the panel: stop and resume, input, the log, copying the command" {
     try std.testing.expect(t.hasText("2 calls, 1 refused"));
     try t.screenshot("/tmp/nanocua-panel.png");
 
-    try t.clickText("Allow persistent input for other clients");
+    try t.clickText("Allow input for other MCP clients");
     t.settle(0.5);
     try std.testing.expect(a.hub.policy.allow_input);
     // On but unused is not the same as an agent acting (#1931).
@@ -138,7 +138,7 @@ test "the switches stay as the user left them: calls and redraws don't flip them
     const whole = "Allow whole screen: your pointer and keyboard, pictures of everything";
 
     // Turning input on leaves the whole screen off, whatever comes after.
-    try t.clickText("Allow persistent input for other clients");
+    try t.clickText("Allow input for other MCP clients");
     t.settle(0.5);
     try std.testing.expect(a.hub.policy.allow_input);
     try std.testing.expect(!a.hub.policy.allow_whole_screen);
@@ -247,7 +247,7 @@ test "from outside: off at once, on only by a click in the window" {
     try std.testing.expect(t.hasText(view.ignored_click));
 
     // So are the panel's own switches, on the way on...
-    try t.clickText("Allow persistent input for other clients");
+    try t.clickText("Allow input for other MCP clients");
     t.settle(0.2);
     try std.testing.expect(!a.hub.policy.allow_input);
 

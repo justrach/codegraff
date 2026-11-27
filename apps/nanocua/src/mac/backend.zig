@@ -69,8 +69,7 @@ pub const Mac = struct {
     sessions: Sessions,
     stopped: std.atomic.Value(bool) = .init(false),
     whole_screen: std.atomic.Value(bool) = .init(false),
-    /// The connection that may act, as the queue sees it (Policy.actor): 0 is
-    /// nobody, so a call let through before input ended can't act after.
+    /// The connection that may act without a turn token. Zero grants nobody access.
     actor: std.atomic.Value(u64) = .init(0),
     self_pid: i32,
 
@@ -100,7 +99,6 @@ pub const Mac = struct {
         }
     };
 
-    /// After any calls of its still waiting on the queue.
     fn closed(ptr: *anyopaque, conn: u64) void {
         const m: *Mac = @ptrCast(@alignCast(ptr));
         const c = m.gpa.create(Closed) catch return;
@@ -109,7 +107,6 @@ pub const Mac = struct {
     }
 };
 
-/// Permissions, as the panel shows them.
 pub fn accessibility() bool {
     return cf.trusted(false);
 }

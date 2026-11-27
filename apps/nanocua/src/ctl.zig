@@ -95,7 +95,7 @@ pub fn describe(a: std.mem.Allocator, s: control.Status) ![]const u8 {
         try w.writeAll("nanocua isn't running.\n");
         return aw.written();
     }
-    const state = if (s.stopped) "stopped" else if (s.inputTurns != 0 or s.inputHeld) "acting" else if (s.inputArmed and !s.persistentInput) "input armed for one turn" else if (s.input) "input on, no agent has acted yet" else "looking only";
+    const state = if (s.stopped) "stopped" else if (s.inputTurns != 0) "acting for a Graff turn" else if (s.inputHeld) "acting for one agent's work" else if (s.inputArmed and !s.persistentInput) "input armed for one turn" else if (s.input) "input on, no agent has acted yet" else "looking only";
     try w.print("nanocua: {s}, whole screen {s}, {d} agent{s}, {d} call{s}\n", .{ state, if (s.wholeScreen) "on" else "off", s.agents, if (s.agents == 1) "" else "s", s.calls, if (s.calls == 1) "" else "s" });
     try w.print("macOS: Accessibility {s}, Screen Recording {s}\n", .{ if (s.accessibility) "allowed" else "not allowed", if (s.screenRecording) "allowed" else "not allowed" });
     if (s.pending) |p| try w.print("Waiting in nanocua's window: {s}\n", .{p});
