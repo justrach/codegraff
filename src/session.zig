@@ -185,8 +185,8 @@ fn fingerprint(root: *Agent, name: []const u8) u64 {
     f.text(root.session_title orelse sessionTitle(root));
     // The persisted meter's two inputs. Its third (system prompt + tool schema
     // size) shifts `context_tokens` and `context_local_tokens` together, and
-    // resume only keeps their difference, so it cannot change what a resume
-    // restores and is deliberately left out.
+    // resume carries the pair onto its own estimate, so that size moves what a
+    // resume restores by at most its own change and is deliberately left out.
     f.num(root.last_context_tokens);
     f.num(root.context_local_tokens);
     f.num(protocol_seq.current());
@@ -364,16 +364,15 @@ pub fn contextLocalTokensFromSession(obj: std.json.ObjectMap) ?u64 {
 
 pub fn restoreContextMeter(root: *Agent, saved_context_tokens: u64, saved_local_tokens: ?u64) void {
     const current_local = root.fullRequestEstimateTokens();
-    // A provider reading is meaningful across resume only after separating its
-    // locally measurable component. Preserve the server-only delta (encrypted
-    // reasoning, tokenizer differences, output usage), but replace the old
-    // prompt/tool-schema estimate with the current one. Files predating this
-    // paired field safely re-estimate instead of trusting an ungrounded meter.
-    const hidden_delta = if (saved_local_tokens) |saved_local|
-        saved_context_tokens -| saved_local
+    // The saved reading is the live meter paired with its local estimate, so
+    // carry it to today's estimate by the live meter's own rule: a reading
+    // above the estimate keeps its server-only surplus, one below it stays the
+    // meter (#1686: a saturating delta dropped it and re-estimated the
+    // over-counted history). Files predating the paired field re-estimate.
+    root.last_context_tokens = if (saved_local_tokens) |saved_local|
+        @import("context_tokens.zig").pairedMeter(saved_context_tokens, saved_local, current_local)
     else
-        0;
-    root.last_context_tokens = current_local +| hidden_delta;
+        current_local;
     root.context_local_tokens = current_local;
     root.last_cache_read = 0;
 }
@@ -476,7 +475,7 @@ pub fn loadSession(root: *Agent, keys: *Keys, arena: Allocator, name: []const u8
     // #1686: reapply the saved count of this exact compaction state first, so
     // the rebased meter does not fall back to bytes/16 in a new process.
     @import("opaque_state_persist.zig").restore(root.provider, .{ .array = root.messages }, obj);
-    // Rebase the saved server-only delta onto today's prompt/tool-schema input.
+    // Carry the saved meter onto today's prompt/tool-schema input (live rule).
     restoreContextMeter(root, saved_context_tokens, saved_local_tokens);
     root.cap_new = false; // per-provider (like sox/effort below); relearn on rejection
     root.sox_json_object = false; // #543

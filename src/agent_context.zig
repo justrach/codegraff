@@ -247,8 +247,7 @@ pub fn contextEstimate(self: *Agent) ContextEstimate {
 /// Reusing the observed byte count avoids a redundant full JSON walk.
 pub fn contextEstimateFromInputBytes(self: *Agent, input_bytes: usize) ContextEstimate {
     const local = requestEstimateFromInputBytes(self, input_bytes);
-    const last = self.last_context_tokens; // a provider sample may sit below the local estimate
-    return .{ .local = local, .effective = if (last == 0 or last >= self.context_local_tokens) local +| (last - @min(last, self.context_local_tokens)) else last +| (local -| self.context_local_tokens) };
+    return .{ .local = local, .effective = context_tokens.pairedMeter(self.last_context_tokens, self.context_local_tokens, local) };
 }
 
 /// Current context occupancy: today's locally measurable request plus the

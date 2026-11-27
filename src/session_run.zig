@@ -352,8 +352,8 @@ pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod
 /// Summarize a large restored context only after behavioral lifecycle start.
 /// This preprocessing is outside a root-turn scope, so its operational API
 /// trace is explicitly attributed to turn 0 rather than to a stale user turn.
-/// Cold cache: loadSession rebased the saved server-only token delta onto
-/// today's complete local request estimate; summarize up front when that
+/// Cold cache: loadSession carried the saved meter onto today's complete
+/// local request estimate (#1686); summarize up front when that
 /// conservative meter crosses compactAt. Resume itself is never permission to
 /// destructively trim on a transient/empty summary; a concrete provider
 /// overflow can still override this.
