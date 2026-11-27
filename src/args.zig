@@ -190,6 +190,9 @@ pub fn parse(init: std.process.Init) !Flags {
                 } else if (std.mem.eql(u8, arg, "--max-model-calls")) {
                     const mv = it.next() orelse std.process.fatal("--max-model-calls needs a non-negative integer — graff --help", .{});
                     main_mod.max_model_calls = std.fmt.parseInt(u64, mv, 10) catch std.process.fatal("--max-model-calls needs a non-negative integer, got '{s}'", .{mv});
+                } else if (std.mem.eql(u8, arg, "--max-model-attempts")) {
+                    const mv = it.next() orelse std.process.fatal("--max-model-attempts needs a non-negative integer — graff --help", .{});
+                    @import("run_budget.zig").cli_max_model_attempts = std.fmt.parseInt(u64, mv, 10) catch std.process.fatal("--max-model-attempts needs a non-negative integer, got '{s}'", .{mv});
                 } else if (std.mem.eql(u8, arg, "--dedupe-tool-calls")) {
                     main_mod.dedupe_tool_calls = true;
                 } else if (std.mem.eql(u8, arg, "--no-local-tools")) {

@@ -143,6 +143,7 @@ pub fn postLive(self: *Agent, body: []const u8) ![]u8 {
             return error.CodexWsReanchor;
         }
         self.ws_off = true;
+        try @import("agent_request_budget.zig").admitSend(self, e); // #1932: the SSE resend is another send
         engine_sink.forAgent(self).emit(self.io, .{ .session_notice = .{ .text = "using HTTPS SSE", .tone = .dim } });
         if (self.tracer) |tr| tr.note("ws", if (declined) "426 upgrade required — using persistent prewarmed SSE for this session" else if (e == error.WsConnectStalled) "connect stall — using persistent prewarmed SSE for this session" else "transport failed twice — using persistent prewarmed SSE for this session");
         return self.postStream(body);

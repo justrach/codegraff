@@ -50,6 +50,7 @@ pub fn run(ctx: ToolCtx, args_json: []const u8) ToolOutput {
         return .{ .text = ctx.gpa.dupe(u8, "rlm: llm_query could not build request") catch &.{}, .is_error = true };
     };
     defer ctx.gpa.free(body);
+    if (ctx.run_budget) |budget| _ = budget.reserveAttempt() catch return .{ .text = ctx.gpa.dupe(u8, "rlm: llm_query refused: model-call attempt budget exhausted (--max-model-attempts)") catch &.{}, .is_error = true }; // #1932
     // Claude Agent has no HTTP endpoint (ADR 0309). The query runs on its own
     // throwaway `claude` process, like a title; the chat's held session is
     // keyed by its Agent and never taken here.

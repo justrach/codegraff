@@ -463,6 +463,7 @@ pub fn compactViaGateway(self: *Agent) bool {
     gw.url = url;
     var conv_buf: [96]u8 = undefined;
     const conv = @import("http_headers.zig").requestCacheKey(self.io, self.label, self, self.provider, &conv_buf);
+    @import("agent_request_budget.zig").admitSend(self, null) catch return false; // #1932
     const resp = http.postWatched(self.gpa, self.io, self.client, gw, body, conv) catch |err| {
         if (self.tracer) |tr| tr.note("clef_compact_failed", @errorName(err));
         return false;

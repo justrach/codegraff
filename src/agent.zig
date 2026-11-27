@@ -227,6 +227,7 @@ pub const Agent = struct {
     responses_output_limit: ?u32 = null, // auxiliary override (title=64); compaction always uses 4096
     last_request_context_overflow: bool = false, // explicit provider rejection, not an inferred meter threshold
     last_request_write_failed: bool = false, // transport gave up specifically with WriteFailed this request
+    last_request_ladder_spent: bool = false, // #1930: this request gave up after its full transport/stall retry ladder
     compact_transport_failures: u8 = 0, // bounded escape for repeated opaque over-cap WriteFailed/network failures
     compact_summary_failures: u8 = 0, // #379: consecutive complete-but-unusable (empty/truncated) summaries
     compact_pin_degraded: bool = false, // #581: pinned suffix over budget — skip+say once per unresolved turn
@@ -392,8 +393,7 @@ pub const Agent = struct {
     pub const sayToolResult = @import("agent_tools.zig").sayToolResult;
     pub const renderTodos = goal_state.renderTodos; // body in goal_state.zig (600-line cap)
 
-    // Context management (compaction/emergency-trim) and the --eval/--until
-    // loop (+ optional LLM-as-judge) live in agent_compact.zig (#123).
+    // Compaction/emergency-trim and the --eval/--until loop (+ LLM judge) live in agent_compact.zig (#123).
     pub const runEval = @import("agent_compact.zig").runEval;
     pub const appendEvalLog = @import("agent_compact.zig").appendEvalLog;
     pub const runJudge = @import("agent_compact.zig").runJudge;

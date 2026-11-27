@@ -67,9 +67,11 @@ pub fn run(self: *Agent, root_turn_prepared: *std.atomic.Value(bool)) anyerror![
             // Match the between-turn policy: at the ordinary compactAt
             // threshold, a transient/empty summary must not immediately drop
             // real history. Destructive recovery is reserved for >=95%.
+            // #1930: a compaction that spent its retry ladder on an unchanged
+            // history ends the turn here rather than resend it (ADR 0356).
             const recovery_meter = self.effectiveContextTokens();
-            self.autocompact(recovery_meter);
-            self.closeCodexWs();
+            defer self.closeCodexWs();
+            try @import("compact_send_gate.zig").compact(self, recovery_meter);
         }
         // ADR 0030: showcase rlm once the existing compact meter is
         // actually large. Schema rides the tail; head bytes stay put.

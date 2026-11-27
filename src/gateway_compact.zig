@@ -155,6 +155,7 @@ pub fn run(self: *Agent) anyerror!?usize {
     // endpoint has nothing to decide, and above its cap it refuses.
     if (msgs.len <= wire.recent_kept + 1 or msgs.len > wire.max_messages) return null;
     const body = try wire.request(a, msgs, g_model, goalText(self));
+    @import("agent_request_budget.zig").admitSend(self, null) catch return null; // #1932: the local summary is refused next
 
     self.closeCodexWs(); // the history is about to be rewritten
     @import("agent_compact.zig").pinChildTask(self);

@@ -232,6 +232,7 @@ fn compactStandalone(self: *Agent) !usize {
     compact_provider.url = try compactEndpoint(self.historyAlloc(), self.provider.url);
     var conv_buf: [96]u8 = undefined;
     const conv = @import("http_headers.zig").requestCacheKey(self.io, self.label, self, self.provider, &conv_buf);
+    try @import("agent_request_budget.zig").admitSend(self, null); // #1932
     const response_body = try http.postWatched(self.gpa, self.io, self.client, compact_provider, body, conv);
     defer self.gpa.free(response_body);
     const response = std.json.parseFromSliceLeaky(std.json.Value, self.historyAlloc(), response_body, .{ .allocate = .alloc_always }) catch {
@@ -504,6 +505,7 @@ pub fn explicitCompact(self: *Agent) bool {
     if (!main_mod.json_mode and @import("repl.zig").g_debug) self.say("[compacting server-side: {d} item(s)…]\n", .{self.messages.items.len}) catch {};
     var conv_buf: [96]u8 = undefined;
     const conv = @import("http_headers.zig").requestCacheKey(self.io, self.label, self, self.provider, &conv_buf);
+    @import("agent_request_budget.zig").admitSend(self, null) catch return false; // #1932
     const resp = http.postWatched(self.gpa, self.io, self.client, cp, body, conv) catch |err| {
         if (self.tracer) |tr| tr.note("compact", @errorName(err));
         return false;
