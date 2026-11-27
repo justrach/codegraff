@@ -9,6 +9,7 @@ import plistlib
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -536,7 +537,8 @@ def main():
         return
     settings_path = Path.home() / '.graff/mcp/settings.json'
     settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
-    args.port = args.port or settings.get('port', 7720)
+    if args.port is None:
+        args.port = settings.get('port', 7720)
     args.directory = args.directory or settings.get('directory', str(Path.home()))
     if not 1 <= args.port <= 65535:
         raise ValueError('Invalid port')
@@ -574,22 +576,27 @@ def main():
         child = service(home, binary, directory, args.port, token)
         if not wait_ready(url, token):
             raise ValueError(f'Service did not become ready on port {args.port}')
+        atomic(settings_path, json.dumps({'port': args.port, 'directory': str(directory)}))
     except BaseException as error:
         # Interrupted or failed: nothing half-installed may stay loaded.
         outcome, errors = rollback(home, previous, child)
         if not isinstance(error, Exception):
             raise
         raise ValueError(failure_message(str(error), outcome, errors, previous, job_path(home))) from error
-    atomic(settings_path, json.dumps({'port': args.port, 'directory': str(directory)}))
     for client, result in register(home, url, token):
         print(f'{client}: {result}')
     print(f'MCP ready at {url}; workspace: {directory}; approval-gated tasks. Restart clients to load it.')
 
 
+def interrupted(_signum, _frame):
+    raise KeyboardInterrupt('installer interrupted')
+
+
 if __name__ == '__main__':
+    signal.signal(signal.SIGTERM, interrupted)
     try:
         main()
-    except Exception as error:
+    except (Exception, KeyboardInterrupt) as error:
         if '--service' in sys.argv:
             print(f'graff mcp service: {error}', file=sys.stderr)
         else:

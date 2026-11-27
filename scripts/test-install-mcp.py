@@ -381,6 +381,34 @@ class TransactionalInstallTests(unittest.TestCase):
         self.assertIn('job file was removed', message)
         self.assertFalse(self.agent.exists(), 'a job left on disk would start again at login')
 
+    def test_interruption_during_readiness_rolls_back_the_replacement(self):
+        write_agent(self.home, 7730)
+        launchd = FakeLaunchd(loaded=True)
+        with patch.object(installer, 'wait_ready', side_effect=lambda *_: installer.interrupted(None, None)):
+            with self.assertRaisesRegex(KeyboardInterrupt, 'installer interrupted'):
+                self.install(launchd, 7731)
+        self.assertTrue(launchd.loaded)
+        self.assertEqual(plistlib.loads(self.agent.read_bytes())['ProgramArguments'][-1], '7730')
+
+    def test_settings_write_failure_rolls_back_a_ready_replacement(self):
+        write_agent(self.home, 7730)
+        self.settings.parent.mkdir(parents=True)
+        self.settings.write_text(json.dumps({'port': 7730, 'directory': str(self.home)}))
+        atomic = installer.atomic
+
+        def fail_settings(path, text):
+            if path == self.settings:
+                raise OSError('settings write failed')
+            atomic(path, text)
+
+        with patch.object(installer, 'atomic', fail_settings):
+            # Simulate readiness separately from the helper's success assertion.
+            with patch.object(installer, 'wait_ready', return_value=True):
+                error = self.install(FakeLaunchd(loaded=True), 7731)
+        self.assertIn('settings write failed', error)
+        self.assertEqual(json.loads(self.settings.read_text())['port'], 7730)
+        self.assertEqual(plistlib.loads(self.agent.read_bytes())['ProgramArguments'][-1], '7730')
+
     def test_ready_service_installs_as_before(self):
         cursor = self.home / '.cursor/mcp.json'
         cursor.parent.mkdir()
