@@ -376,6 +376,7 @@ record only when you need the evidence or the edge cases.
 | [0349](0349-native-flint-runtime-is-external.md) | Native Flint is a built-in local OpenAI-compatible provider, while its runtime and model files remain separately installed; use only validated loopback endpoints and never cloud-fallback. |
 | [0350](0350-nonblocking-catalog-refresh-and-slash-refresh.md) | Dynamic provider catalogs (including Codex) stay 0 ms non-blocking at boot while stale-while-revalidating in the background past 5 minutes and activating landed caches in-session; `graff/models` adds bounded `{"force": true}`, and `/refresh` refreshes all signed-in catalogs across REPL and ACP. |
 | [0351](0351-prefer-rlm-for-supported-work.md) | The shared RLM catalog entry prefers RLM for independent reads, JSON row counts, and field projection. It does not force tool choice or remove direct tools or the shell fallback. |
+| [0358](0358-a-failed-childs-terminal-frame-says-why.md) | A child that ends `failed` or `cancelled` puts `reason` (the parent result's cause and class bracket, ≤280 bytes, UTF-8 cut with `…`, control bytes removed, `codedbpro_report.redact`, secret canary withholds) and `failureKind` (`FailKind` tag, omitted when unclassified) on its terminal frame: the last progress row's `_meta["graff/subagent"]`, the draft `subagent_update`'s `_meta["graff/subagent"]`, beside `state` in the background `terminal` event. Completed frames are byte-for-byte unchanged. |
 
 ## When to write one
 

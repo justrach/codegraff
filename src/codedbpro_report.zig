@@ -77,7 +77,8 @@ pub fn redact(gpa: Allocator, raw: []const u8) ![]u8 {
     var it = std.mem.tokenizeAny(u8, capped, " \t\r\n");
     while (it.next()) |tok| {
         const replacement: ?[]const u8 = blk: {
-            if (tok.len >= 2 and tok[0] == '/' or std.mem.startsWith(u8, tok, "~/")) break :blk "<path>";
+            // A bare `/word` is a slash command (`/model`), not a path.
+            if (tok.len >= 2 and tok[0] == '/' and std.mem.indexOfScalarPos(u8, tok, 1, '/') != null or std.mem.startsWith(u8, tok, "~/")) break :blk "<path>";
             if (std.mem.indexOf(u8, tok, "/Users/") != null or std.mem.indexOf(u8, tok, "/home/") != null) break :blk "<path>";
             if (tok.len >= 24 and std.mem.indexOfAny(u8, tok, "0123456789") != null) {
                 var all = true;
@@ -336,6 +337,9 @@ test "redact scrubs absolute paths, home paths and tokens, keeps relative refs" 
     try std.testing.expect(std.mem.indexOf(u8, out, "<path>") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "src/exec.zig:399") != null); // relative ref is the necessary detail
     try std.testing.expect(std.mem.indexOf(u8, out, "?key=") == null); // URL query strings are not
+    const command = try redact(a, "switch models with /model, or read /tmp/x/log");
+    defer a.free(command);
+    try std.testing.expectEqualStrings("switch models with /model, or read <path>", command);
 }
 
 test "redact caps its output" {
