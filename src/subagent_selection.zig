@@ -37,6 +37,12 @@ fn knownProvider(id: []const u8) bool {
 /// null). Provider-local by construction — this is the one resolver both the
 /// startup pins (--subagent-model, the #291 ladder) and the #292 per-persona /
 /// per-spawn pins go through, so all three agree on what a model name means.
+///
+/// When those find nothing at all (not when they find too much), the name is
+/// tried once more with '.' also ignored and a leading provider id dropped, so
+/// "opus 5.5" or "anthropic claude opus 5.5" reaches claude-opus-5-5 the way
+/// `/model` does. The same uniqueness rule holds there: a name that still
+/// matches several rows resolves to nothing.
 pub fn modelForProvider(provider_id: []const u8, query: []const u8) ?[]const u8 {
     for (pricing.models()) |model| {
         if (std.mem.eql(u8, model.provider, provider_id) and
@@ -57,7 +63,32 @@ pub fn modelForProvider(provider_id: []const u8, query: []const u8) ?[]const u8 
         if (candidate != null) return null;
         candidate = model.name;
     }
-    return candidate;
+    return candidate orelse looseModelForProvider(provider_id, query);
+}
+
+/// modelForProvider's last resort: a unique separator-insensitive equal row,
+/// else a unique separator-insensitive containing row, else nothing.
+fn looseModelForProvider(provider_id: []const u8, query: []const u8) ?[]const u8 {
+    var equal: ?[]const u8 = null;
+    var equal_n: usize = 0;
+    var contains: ?[]const u8 = null;
+    var contains_n: usize = 0;
+    for (pricing.models()) |model| {
+        if (!std.mem.eql(u8, model.provider, provider_id)) continue;
+        switch (pricing.looseModelMatch(provider_id, model.name, query)) {
+            .none => continue,
+            .equal => {
+                equal = model.name;
+                equal_n += 1;
+            },
+            .contains => {},
+        }
+        contains = model.name;
+        contains_n += 1;
+    }
+    if (equal_n == 1) return equal;
+    if (equal_n == 0 and contains_n == 1) return contains;
+    return null;
 }
 
 fn newerVer(maj_a: u16, min_a: u16, maj_b: u16, min_b: u16) bool {
