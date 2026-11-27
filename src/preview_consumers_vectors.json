@@ -1,0 +1,171 @@
+{
+  "format_version": 1,
+  "about": "Browser-consumer counts for graff's managed previews (justrach/codegraff#941). Identical copies: justrach/nanoharness apps/nano/src/preview_consumers_vectors.json (writer runner: apps/nano/src/preview_consumers.zig) and justrach/codegraff src/preview_consumers_vectors.json (reader runner: src/preview_consumers.zig). Change both in the same pair of pull requests.",
+  "semantics": {
+    "file": "$HOME/.codegraff/preview-consumers.json",
+    "counts": "Top-level keys that are decimal TCP ports hold integer counts of in-app browser tabs showing that loopback port. graff reads only these keys.",
+    "hold": "A port the app handed to a browser it cannot see (the system browser, or the browse window) is held for the writer's lifetime: it is never written as 0, and a holder that exits or dies clears its zero.",
+    "meta_key": "harness",
+    "zero": "0 means a tab that showed the port closed (or its writer exited or died) and no live writer shows or holds it. Only an explicit 0 lets graff stop a still-listening preview.",
+    "missing": "A missing, negative or non-integer entry, or an unreadable file, is unknown: graff keeps the preview.",
+    "stop": "Whether graff's idle check may stop an unpinned, idle, still-listening job whose first listening port is the key (job_browser_guard.mayStopWith with that port's consumer kind).",
+    "zero_ttl_ms": 86400000
+  },
+  "port_of": [
+    {"url": "http://localhost:5173/", "port": 5173},
+    {"url": "HTTP://LOCALHOST:5173", "port": 5173},
+    {"url": "http://localhost/", "port": 80},
+    {"url": "https://localhost/", "port": 443},
+    {"url": "http://127.0.0.1:3000/app?x=1#y", "port": 3000},
+    {"url": "http://127.1.2.3:3000/", "port": 3000},
+    {"url": "http://[::1]:4000/", "port": 4000},
+    {"url": "http://app.localhost:5173/", "port": 5173},
+    {"url": "http://0.0.0.0:8000/", "port": 8000},
+    {"url": "https://example.com/", "port": null},
+    {"url": "http://example.com:5173/", "port": null},
+    {"url": "http://192.0.2.10:5173/", "port": null},
+    {"url": "http://localhost.example.com:5173/", "port": null},
+    {"url": "http://user@localhost:5173/", "port": null},
+    {"url": "http://localhost:0/", "port": null},
+    {"url": "http://localhost:70000/", "port": null},
+    {"url": "graff-view://html/0123456789abcdef0123456789abcdef", "port": null},
+    {"url": "about:blank", "port": null},
+    {"url": "", "port": null}
+  ],
+  "writer": [
+    {
+      "name": "one preview tab counts 1",
+      "steps": [
+        {"tabs": ["http://localhost:5173/"], "counts": {"5173": 1}, "stop": {"5173": false}}
+      ]
+    },
+    {
+      "name": "open, open, close, close ends at an explicit zero",
+      "steps": [
+        {"tabs": ["http://localhost:5173/"], "counts": {"5173": 1}, "stop": {"5173": false}},
+        {"tabs": ["http://localhost:5173/", "http://localhost:5173/about"], "counts": {"5173": 2}, "stop": {"5173": false}},
+        {"tabs": ["http://localhost:5173/about"], "counts": {"5173": 1}, "stop": {"5173": false}},
+        {"tabs": [], "counts": {"5173": 0}, "stop": {"5173": true}}
+      ]
+    },
+    {
+      "name": "a website writes nothing",
+      "steps": [
+        {"tabs": ["https://example.com/", "about:blank"], "written": false, "counts": {}, "stop": {"443": false, "5173": false}}
+      ]
+    },
+    {
+      "name": "two previews are counted independently",
+      "steps": [
+        {"tabs": ["http://localhost:5173/", "http://127.0.0.1:3000/"], "counts": {"3000": 1, "5173": 1}},
+        {"tabs": ["http://localhost:5173/"], "counts": {"3000": 0, "5173": 1}, "stop": {"3000": true, "5173": false}},
+        {"tabs": [], "counts": {"3000": 0, "5173": 0}, "stop": {"3000": true, "5173": true}}
+      ]
+    },
+    {
+      "name": "navigating a tab moves its count in one write",
+      "steps": [
+        {"tabs": ["http://localhost:5173/"], "counts": {"5173": 1}},
+        {"tabs": ["http://localhost:3000/"], "counts": {"3000": 1, "5173": 0}, "stop": {"3000": false, "5173": true}}
+      ]
+    },
+    {
+      "name": "loopback spellings share one port",
+      "steps": [
+        {"tabs": ["http://127.0.0.1:8080/", "http://[::1]:8080/", "http://app.localhost:8080/"], "counts": {"8080": 3}}
+      ]
+    },
+    {
+      "name": "quitting zeroes this writer's ports",
+      "steps": [
+        {"tabs": ["http://localhost:5173/", "http://localhost:5173/"], "counts": {"5173": 2}},
+        {"event": "quit", "counts": {"5173": 0}, "stop": {"5173": true}}
+      ]
+    },
+    {
+      "name": "a crashed writer keeps its count until the next start retires it",
+      "steps": [
+        {"tabs": ["http://localhost:5173/"], "counts": {"5173": 1}},
+        {"event": "crash", "written": false, "counts": {"5173": 1}, "stop": {"5173": false}},
+        {"writer": "a2", "event": "start", "counts": {"5173": 0}, "stop": {"5173": true}}
+      ]
+    },
+    {
+      "name": "another live writer keeps the port in use",
+      "steps": [
+        {"writer": "a", "tabs": ["http://localhost:5173/"], "counts": {"5173": 1}},
+        {"writer": "b", "tabs": ["http://localhost:5173/"], "counts": {"5173": 2}},
+        {"writer": "a", "event": "quit", "counts": {"5173": 1}, "stop": {"5173": false}},
+        {"writer": "b", "tabs": [], "counts": {"5173": 0}, "stop": {"5173": true}}
+      ]
+    },
+    {
+      "name": "a crashed writer is retired by any live writer's update",
+      "steps": [
+        {"writer": "a", "tabs": ["http://localhost:5173/"], "counts": {"5173": 1}},
+        {"writer": "b", "tabs": ["http://localhost:5173/"], "counts": {"5173": 2}},
+        {"writer": "a", "event": "crash", "written": false, "counts": {"5173": 2}},
+        {"writer": "b", "tabs": ["http://localhost:5173/", "http://localhost:3000/"], "counts": {"3000": 1, "5173": 1}, "stop": {"5173": false}}
+      ]
+    },
+    {
+      "name": "a writer whose liveness is unknown is kept",
+      "steps": [
+        {"writer": "b", "tabs": ["http://localhost:5173/"], "counts": {"5173": 1}},
+        {"writer": "b", "event": "unknown", "written": false, "counts": {"5173": 1}},
+        {"writer": "a", "event": "start", "written": false, "counts": {"5173": 1}, "stop": {"5173": false}}
+      ]
+    },
+    {
+      "name": "a preview handed to another browser is never vouched for",
+      "steps": [
+        {"tabs": ["http://localhost:5173/"], "hold": [5173], "counts": {"5173": 1}},
+        {"tabs": [], "counts": {}, "stop": {"5173": false}},
+        {"tabs": ["http://localhost:5173/"], "counts": {"5173": 1}},
+        {"tabs": [], "counts": {}, "stop": {"5173": false}},
+        {"event": "quit", "counts": {}, "stop": {"5173": false}}
+      ]
+    },
+    {
+      "name": "a held port clears another writer's zero while the holder lives",
+      "steps": [
+        {"writer": "a", "tabs": ["http://localhost:5173/"], "counts": {"5173": 1}},
+        {"writer": "a", "tabs": [], "counts": {"5173": 0}, "stop": {"5173": true}},
+        {"writer": "b", "tabs": [], "hold": [5173], "counts": {}, "stop": {"5173": false}},
+        {"writer": "b", "event": "crash", "written": false, "counts": {}},
+        {"writer": "a", "event": "start", "counts": {}, "stop": {"5173": false}}
+      ]
+    },
+    {
+      "name": "zeros expire after a day",
+      "steps": [
+        {"at": 1800000000000, "tabs": ["http://localhost:5173/"], "counts": {"5173": 1}},
+        {"at": 1800000000001, "tabs": [], "counts": {"5173": 0}, "stop": {"5173": true}},
+        {"at": 1800086400002, "tabs": ["http://localhost:3000/"], "counts": {"3000": 1}, "stop": {"5173": false}}
+      ]
+    },
+    {
+      "name": "a legacy flat file is not evidence",
+      "initial": "{\"5173\":0,\"3000\":2}\n",
+      "steps": [
+        {"event": "start", "counts": {}, "stop": {"3000": false, "5173": false}}
+      ]
+    },
+    {
+      "name": "an unreadable file is replaced from this writer's state",
+      "initial": "not json",
+      "steps": [
+        {"tabs": ["http://localhost:5173/"], "counts": {"5173": 1}}
+      ]
+    }
+  ],
+  "reader": [
+    {"file": "{\"5173\":0}", "port": 5173, "kind": "none", "stop": true},
+    {"file": "{\"5173\":2}", "port": 5173, "kind": "some", "stop": false},
+    {"file": "{}", "port": 5173, "kind": "unknown", "stop": false},
+    {"file": "{\"5173\":-1}", "port": 5173, "kind": "unknown", "stop": false},
+    {"file": "{\"5173\":\"0\"}", "port": 5173, "kind": "unknown", "stop": false},
+    {"file": "{\"5173\":0,\"harness\":{\"v\":1,\"writers\":[],\"zeros\":{\"5173\":1800000000000}}}", "port": 5173, "kind": "none", "stop": true},
+    {"file": "{\"3000\":1,\"harness\":{\"v\":1,\"writers\":[{\"pid\":7,\"start\":9,\"ports\":{\"3000\":1},\"held\":[]}],\"zeros\":{}}}", "port": 3000, "kind": "some", "stop": false}
+  ]
+}
