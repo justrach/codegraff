@@ -2,8 +2,8 @@
 //! own, so a slow app's accessibility (or a screenshot) never holds the
 //! panel; each answers on the main thread. Calls work inside one app in the
 //! background (target.zig) unless they ask for the whole screen and the user
-//! allows it. Acting re-checks both switches on the queue (Stop wins over calls
-//! already waiting) and refuses to touch nanocua's own windows.
+//! allows it. Acting re-checks the switches on the queue (Stop and input win
+//! over calls already waiting) and refuses to touch nanocua's own windows.
 const std = @import("std");
 const nanoui = @import("nanoui");
 const objc = nanoui.objc;
@@ -73,6 +73,9 @@ pub const Mac = struct {
     stopped: std.atomic.Value(bool) = .init(false),
     /// The whole-screen switch as the queue sees it.
     whole_screen: std.atomic.Value(bool) = .init(false),
+    /// The connection that may act, as the queue sees it (Policy.actor): 0 is
+    /// nobody, so a call let through before input ended can't act after.
+    actor: std.atomic.Value(u64) = .init(0),
     self_pid: i32,
 
     pub fn init(gpa: std.mem.Allocator) Mac {
@@ -276,6 +279,7 @@ const Job = struct {
         const m = j.mac;
         if (j.tool.kind() == .act) {
             if (m.stopped.load(.acquire)) return j.fail("nanocua is stopped: the user pressed Stop.", .{});
+            if (m.actor.load(.acquire) != j.reply.conn) return j.fail("Input in nanocua ended before this ran: the user turned it off, or the work that held it ended.", .{});
             if (!accessibility()) return j.fail("nanocua has no Accessibility permission, which input needs: ask the user to grant it in nanocua's window.", .{});
         }
         switch (j.tool) {

@@ -93,7 +93,7 @@ pub fn describe(a: std.mem.Allocator, s: control.Status) ![]const u8 {
         try w.writeAll("nanocua isn't running.\n");
         return aw.written();
     }
-    const state = if (s.stopped) "stopped" else if (s.input) "acting" else "looking only";
+    const state = if (s.stopped) "stopped" else if (s.input and s.inputHeld) "acting for one agent's work" else if (s.input) "input on, no agent has acted yet" else "looking only";
     try w.print("nanocua: {s}, whole screen {s}, {d} agent{s}, {d} call{s}\n", .{ state, if (s.wholeScreen) "on" else "off", s.agents, if (s.agents == 1) "" else "s", s.calls, if (s.calls == 1) "" else "s" });
     try w.print("macOS: Accessibility {s}, Screen Recording {s}\n", .{ if (s.accessibility) "allowed" else "not allowed", if (s.screenRecording) "allowed" else "not allowed" });
     if (s.pending) |p| try w.print("Waiting in nanocua's window: {s}\n", .{p});
@@ -192,8 +192,9 @@ test "what a person reads" {
     defer arena.deinit();
     const a = arena.allocator();
     try std.testing.expectEqualStrings("nanocua isn't running.\n", try describe(a, .{ .running = false, .outcome = "not_running" }));
-    const on = try describe(a, .{ .input = true, .agents = 1, .calls = 2, .accessibility = true, .outcome = "allowed", .pending = "resume" });
-    try std.testing.expect(std.mem.startsWith(u8, on, "Allowed.\nnanocua: acting, whole screen off, 1 agent, 2 calls\n"));
+    const on = try describe(a, .{ .input = true, .inputHeld = true, .agents = 1, .calls = 2, .accessibility = true, .outcome = "allowed", .pending = "resume" });
+    try std.testing.expect(std.mem.startsWith(u8, on, "Allowed.\nnanocua: acting for one agent's work, whole screen off, 1 agent, 2 calls\n"));
+    try std.testing.expect(std.mem.startsWith(u8, try describe(a, .{ .input = true }), "nanocua: input on, no agent has acted yet,"));
     try std.testing.expect(std.mem.indexOf(u8, on, "Accessibility allowed, Screen Recording not allowed") != null);
     try std.testing.expect(std.mem.endsWith(u8, on, "Waiting in nanocua's window: resume\n"));
     try std.testing.expect(std.mem.indexOf(u8, try describe(a, .{ .stopped = true }), "nanocua: stopped") != null);

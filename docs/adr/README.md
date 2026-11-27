@@ -378,6 +378,7 @@ record only when you need the evidence or the edge cases.
 | [0351](0351-prefer-rlm-for-supported-work.md) | The shared RLM catalog entry prefers RLM for independent reads, JSON row counts, and field projection. It does not force tool choice or remove direct tools or the shell fallback. |
 | [0352](0352-claude-agent-sessions-waiting-on-a-tool-are-not-idle.md) | A Claude Agent session whose child is waiting on graff's tool call is busy, not idle: the request-time check and other sessions' sweeps keep it past five minutes, up to `busy_ms` (one hour). A session with nothing in flight still stops at five. |
 | [0353](0353-ignored-worker-pins-are-named-to-the-parent.md) | An ignored `subagent` model/tier pin stays soft, but the parent's tool result starts with one bracketed line naming the pin, why, the model that ran, and up to six exact ids; a name that matches nothing is retried ignoring `.` too (shared by pins and `/model`), and an ambiguous name still resolves to nothing. |
+| [0354](0354-nanocua-input-belongs-to-the-work-that-uses-it.md) | nanocua's input grant belongs to the first connection that acts after a person turns it on; other connections may look but not act, and input turns off when that connection closes. It ends with the graff session, not its turn: a turn boundary needs graff to send one. Amends 0314. |
 
 ## When to write one
 

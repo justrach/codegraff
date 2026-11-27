@@ -74,12 +74,18 @@ test "the panel: stop and resume, input, the log, copying the command" {
     try t.clickText("Allow input: clicks, typing, keys, opening apps");
     t.settle(0.5);
     try std.testing.expect(a.hub.policy.allow_input);
-    try std.testing.expect(t.hasText("Acting"));
+    // On but unused is not the same as an agent acting (#1931).
+    try std.testing.expect(t.hasText("Input on"));
+    try std.testing.expect(t.hasText(view.input_open));
+    try std.testing.expect(!t.hasText("Acting"));
     call(&a, 3, "click", "{\"ref\":9}");
     t.settle(0.5);
     try std.testing.expectEqual(@as(usize, 2), rec.calls);
     try std.testing.expect(t.hasText("failed"));
     try std.testing.expect(t.hasText("No element [9]"));
+    try std.testing.expect(t.hasText("Acting"));
+    try std.testing.expect(t.hasText(view.input_held));
+    try std.testing.expect(a.status(null).inputHeld);
 
     // The whole screen has its own switch, off until the user turns it on.
     call(&a, 30, "screenshot", "{\"whole_screen\":true}");
@@ -321,7 +327,7 @@ test "an agent's own connection can't reach the switches through MCP" {
 extern "c" fn socketpair(domain: c_int, kind: c_int, protocol: c_int, fds: *[2]c_int) c_int;
 extern "c" fn close(fd: c_int) c_int;
 
-test "the socket: a request in, its answer out, a closed agent dropped" {
+test "the socket: a request in, its answer out, a closed agent dropped with the input it held" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var rec: Recorder = .{};
@@ -332,12 +338,14 @@ test "the socket: a request in, its answer out, a closed agent dropped" {
     try std.testing.expectEqual(@as(c_int, 0), socketpair(1, 1, 0, &fds));
     _ = try a.server.adopt(fds[0]);
     try std.testing.expectEqual(@as(usize, 1), a.server.clients());
-    const req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_ui_tree\"}}\n";
+    a.setInput(true);
+    const req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_ui_tree\"}}\n" ++
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"click\",\"arguments\":{\"ref\":9}}}\n";
     try std.testing.expect(server.writeAll(fds[1], req));
     var got: std.ArrayList(u8) = .empty;
     defer got.deinit(gpa);
     var tries: usize = 0;
-    while (std.mem.count(u8, got.items, "\n") < 2 and tries < 50) : (tries += 1) {
+    while (std.mem.count(u8, got.items, "\n") < 3 and tries < 50) : (tries += 1) {
         nanoui.runFor(0.02);
         var buf: [4096]u8 = undefined;
         var fds_poll = [_]std.posix.pollfd{.{ .fd = fds[1], .events = std.posix.POLL.IN, .revents = 0 }};
@@ -347,8 +355,12 @@ test "the socket: a request in, its answer out, a closed agent dropped" {
     }
     try std.testing.expect(std.mem.startsWith(u8, got.items, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n"));
     try std.testing.expect(std.mem.indexOf(u8, got.items, "[1] Window \\\"Notes\\\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got.items, "No element [9]") != null);
+    try std.testing.expect(a.status(null).inputHeld);
     _ = close(fds[1]);
     tries = 0;
     while (a.server.clients() > 0 and tries < 50) : (tries += 1) nanoui.runFor(0.02);
     try std.testing.expectEqual(@as(usize, 0), a.server.clients());
+    // The connection that acted is gone, and input with it (#1931).
+    try std.testing.expect(!a.hub.policy.allow_input and !a.status(null).inputHeld);
 }

@@ -41,7 +41,7 @@ fn header(c: *ui.Context, a: *App, k: theme.Colors) void {
             const r = ui.div(c).row().itemsCenter().gap(8);
             defer r.end();
             ui.text(c, "nanocua", .{ .size = 20, .weight = .bold, .color = k.text });
-            if (p.stopped) ui.badge(c, "Stopped", k.red) else if (p.allow_input) ui.badge(c, "Acting", k.green) else ui.badge(c, "Looking only", k.yellow);
+            if (p.stopped) ui.badge(c, "Stopped", k.red) else if (p.actor() != 0) ui.badge(c, "Acting", k.green) else if (p.allow_input) ui.badge(c, "Input on", k.green) else ui.badge(c, "Looking only", k.yellow);
             if (p.allow_whole_screen and !p.stopped) ui.badge(c, "Whole screen", k.red);
         }
         ui.text(c, "Lets AI agents see and use this computer, as far as you allow here.", .{ .size = 12, .color = k.secondary, .wrap = true });
@@ -73,6 +73,9 @@ fn question(c: *ui.Context, a: *App, k: theme.Colors) void {
     if (ui.button(c, "Allow", .{ .variant = .primary, .disabled = !armed }).clicked) a.answer(true);
     if (ui.button(c, "Deny", .{}).clicked) a.answer(false);
 }
+
+pub const input_open = "The first agent to act gets input, for its work alone. Input turns off when that agent's session ends.";
+pub const input_held = "One agent's work has input; other agents can look but not act. It turns off when that agent's session ends.";
 
 pub const ignored_click = "That click came from a program, so it was ignored. Only your own mouse or trackpad turns things on.";
 
@@ -107,6 +110,7 @@ fn agents(c: *ui.Context, a: *App, k: theme.Colors) void {
     title(c, k, "Agents");
     var input = a.hub.policy.allow_input;
     if (ui.toggle(c, "Allow input: clicks, typing, keys, opening apps", &input)) a.fromPanel(.input, input);
+    if (a.hub.policy.allow_input) ui.text(c, if (a.hub.policy.actor() != 0) input_held else input_open, .{ .size = 12, .color = k.secondary, .wrap = true });
     var whole = a.hub.policy.allow_whole_screen;
     if (ui.toggle(c, "Allow whole screen: your pointer and keyboard, pictures of everything", &whole)) a.fromPanel(.whole_screen, whole);
     ui.text(c, "Off, agents work inside one app at a time, in the background.", .{ .size = 12, .color = k.secondary, .wrap = true });
