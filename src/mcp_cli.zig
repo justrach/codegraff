@@ -207,6 +207,8 @@ fn mcpCliUsage(w: *Io.Writer) !void {
     try w.writeAll(
         \\usage:
         \\  graff mcp install [--directory PATH] [--port N]   install HTTP service and client entries
+        \\  graff mcp service [status|start|stop|uninstall] [--json]   the installed HTTP service's state and lifecycle
+        \\  graff mcp uninstall            unload and remove the HTTP service (keeps client entries)
         \\  graff mcp serve [--http] [--port N] [--model NAME] [--yolo]   expose run_task over stdio or HTTP
         \\  graff mcp                      list servers in .mcp.json + ~/.codegraff/mcp.json
         \\  graff mcp list --json          the same as JSON, with each server's source (no secret values)
@@ -283,30 +285,11 @@ fn addInferred(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, envir
 
 pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, environ_map: anytype, args: []const []const u8) !void {
     @import("mcp_lazy.zig").remember(environ_map); // add/reconnect start servers too
-    if (args.len > 0 and std.mem.eql(u8, args[0], "install")) {
-        // The installer sets up a launchd/systemd service; spawning it on
-        // Windows failed with a bare FileNotFound.
-        if (@import("builtin").os.tag == .windows) {
-            var ebuf: [512]u8 = undefined;
-            var ew = Io.File.stderr().writer(io, &ebuf);
-            try ew.interface.writeAll("graff mcp install sets up a background service on macOS and Linux only.\nOn Windows, add graff to an MCP client with the command `graff mcp serve`.\n");
-            try ew.interface.flush();
-            std.process.exit(1);
-        }
-        const exe = try std.process.executablePathAlloc(io, arena);
-        var argv: std.ArrayList([]const u8) = .empty;
-        const installer = try @import("update_archive.zig").gunzip(arena, @embedFile("mcp_installer.gz"));
-        try argv.appendSlice(arena, &.{ "python3", "-c", installer, "--binary", exe });
-        try argv.appendSlice(arena, args[1..]);
-        const result = try @import("process_runner.zig").runCappedWithOptions(arena, io, argv.items, 16384, 4096, 30000, .{ .environ_map = environ_map });
-        var buffer: [4096]u8 = undefined;
-        var writer = Io.File.stderr().writer(io, &buffer);
-        try writer.interface.writeAll(result.stdout);
-        try writer.interface.writeAll(result.stderr);
-        try writer.interface.flush();
-        if (!@import("process_runner.zig").ranOk(result)) return error.McpInstallFailed;
-        return;
-    }
+    const service_cli = @import("mcp_service_cli.zig");
+    if (args.len > 0 and std.mem.eql(u8, args[0], "install")) return service_cli.install(io, arena, environ_map, args[1..]);
+    if (args.len > 0 and std.mem.eql(u8, args[0], "service")) return service_cli.service(io, arena, environ_map, args[1..]);
+    // `uninstall` mirrors `install`; it is `service uninstall`.
+    if (args.len > 0 and std.mem.eql(u8, args[0], "uninstall")) return service_cli.service(io, arena, environ_map, args);
     if (args.len > 0 and std.mem.eql(u8, args[0], "serve")) {
         try @import("mcp_server.zig").run(io, gpa, environ_map, args[1..]);
         return;
@@ -519,13 +502,6 @@ pub fn mcpCommand(io: Io, gpa: Allocator, arena: Allocator, home: []const u8, en
     if (verify_after) try checkSaved(io, gpa, arena, home, name, &out.interface);
     try out.interface.writeAll("  a running session connects it before its next request; otherwise `/mcp trust` if startup is waiting for consent.\n");
     try out.interface.flush();
-}
-test "graff mcp install: the bundled installer inflates to the whole script" {
-    const script = try @import("update_archive.zig").gunzip(std.testing.allocator, @embedFile("mcp_installer.gz"));
-    defer std.testing.allocator.free(script);
-    // No line ending in the needle: a Windows checkout may have CRLF.
-    try std.testing.expect(std.mem.startsWith(u8, script, "#!/usr/bin/env python3"));
-    try std.testing.expect(std.mem.indexOf(u8, script, "'--binary', required=True") != null);
 }
 test "trustedMcpEntry: only the exact companion shape skips the consent gate" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);

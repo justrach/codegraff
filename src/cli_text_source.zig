@@ -34,6 +34,7 @@ pub const usage_text =
     \\  graff mcp login <name>            OAuth login for a remote MCP server
     \\  graff mcp                         list configured MCP servers
     \\  graff mcp install                configure local HTTP service and MCP clients
+    \\  graff mcp service [status|stop|start|uninstall]  that service's state and lifecycle
     \\  graff mcp serve [--http] [--port N] expose run_task to MCP clients
     \\  graff plugins [list|load|enable|disable|register|remove|reload]  manage in-place plugin metadata
     \\  graff lsp diagnostics PATH          query a configured local language server
