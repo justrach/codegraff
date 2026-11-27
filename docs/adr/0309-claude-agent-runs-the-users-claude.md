@@ -65,7 +65,8 @@ approvals, sinks, ACP, usage and compaction run unchanged:
   has not asked for yet are kept until it does.
 - graff's history is the source of truth. Each request sends only messages
   the child has not seen; a fresh child (first use, a changed model, effort,
-  prompt or folder, a compaction or edit, five idle minutes) gets everything
+  prompt or folder, a compaction or edit, five idle minutes; a child waiting
+  on graff's tool call is not idle, ADR 0352) gets everything
   it missed as one `<conversation-checkpoint>` user message, without
   thinking text. A changed tool list refreshes the server in place.
 - Titles, recaps, judges and compaction summaries run on a throwaway child.

@@ -367,3 +367,88 @@ test "claude_agent_wire classifies rate_limit_event into .rate_limit" {
         else => return error.TestUnexpectedResult,
     }
 }
+
+// Held sessions (ADR 0352): idle means nothing in flight. These Sessions are
+// never started or stopped; the rule reads only `used_ms`, `awaiting` and
+// `pending`.
+const session = @import("claude_agent_session.zig");
+const min = std.time.ms_per_min;
+const at: i64 = 10 * std.time.ms_per_hour;
+
+fn heldSession(used_ms: i64, awaiting: bool, pending: []session.Pending) session.Session {
+    var s: session.Session = undefined;
+    s.used_ms = used_ms;
+    s.awaiting = awaiting;
+    s.pending = .empty;
+    s.pending.items = pending;
+    return s;
+}
+
+test "claude-agent session: a call open past five minutes is not stale at request time (ADR 0352)" {
+    var open = [_]session.Pending{.{ .request_id = @constCast("r1"), .rpc_id = @constCast("1"), .tool_use_id = @constCast("toolu_1") }};
+    // The step stopped for graff's tool, whose tools/call is not read yet.
+    const stopped = heldSession(at - 6 * min, true, &.{});
+    try std.testing.expectEqual(@as(?session.Reap, null), session.stale(&stopped, at));
+    // Claude Code's tools/call already held.
+    const asked = heldSession(at - 30 * min, false, &open);
+    try std.testing.expectEqual(@as(?session.Reap, null), session.stale(&asked, at));
+}
+
+test "claude-agent session: another session's sweep keeps busy sessions and stops idle ones (ADR 0352)" {
+    const gpa = std.testing.allocator;
+    var open = [_]session.Pending{.{ .request_id = @constCast("r1"), .rpc_id = @constCast("1"), .tool_use_id = @constCast("toolu_1") }};
+    var idle = heldSession(at - 6 * min, false, &.{});
+    var stopped = heldSession(at - 6 * min, true, &.{});
+    var asked = heldSession(at - 6 * min, false, &open);
+    var fresh = heldSession(at - 4 * min, false, &.{});
+    var held: session.Held = .empty;
+    defer held.deinit(gpa);
+    try held.put(gpa, 1, &idle);
+    try held.put(gpa, 2, &stopped);
+    try held.put(gpa, 3, &asked);
+    try held.put(gpa, 4, &fresh);
+    var out: std.ArrayList(*session.Session) = .empty;
+    defer out.deinit(gpa);
+    session.sweep(&held, gpa, at, &out);
+    try std.testing.expectEqual(@as(usize, 1), out.items.len);
+    try std.testing.expect(out.items[0] == &idle);
+    try std.testing.expectEqual(@as(u32, 3), held.count());
+    try std.testing.expect(held.get(1) == null and held.get(2).? == &stopped and held.get(3).? == &asked);
+}
+
+test "claude-agent session: nothing in flight still expires after five minutes" {
+    try std.testing.expectEqual(@as(?session.Reap, null), session.reapAt(at, at - 4 * min, false));
+    try std.testing.expectEqual(@as(?session.Reap, null), session.reapAt(at, at - session.idle_ms, false));
+    try std.testing.expectEqual(@as(?session.Reap, .idle), session.reapAt(at, at - session.idle_ms - 1, false));
+    try std.testing.expectEqual(@as(?session.Reap, null), session.reapAt(at, 0, false)); // never used
+    const idle = heldSession(at - 6 * min, false, &.{});
+    try std.testing.expectEqual(@as(?session.Reap, .idle), session.stale(&idle, at));
+    try std.testing.expectEqualStrings("restart: idle past 5 minutes", session.Reap.idle.note());
+}
+
+test "claude-agent session: a busy session whose owner is gone is reclaimed past busy_ms" {
+    const gpa = std.testing.allocator;
+    try std.testing.expect(session.busy_ms > session.idle_ms);
+    try std.testing.expectEqual(@as(?session.Reap, null), session.reapAt(at, at - session.busy_ms, true));
+    try std.testing.expectEqual(@as(?session.Reap, .busy), session.reapAt(at, at - session.busy_ms - 1, true));
+    try std.testing.expectEqualStrings("restart: tool call open past 60 minutes", session.Reap.busy.note());
+    // A cancelled subagent's child, its call never answered: the next sweep
+    // stops it once the bound passes.
+    var open = [_]session.Pending{.{ .request_id = @constCast("r1"), .rpc_id = @constCast("1"), .tool_use_id = @constCast("toolu_1") }};
+    var orphan = heldSession(at - session.busy_ms - min, true, &open);
+    var held: session.Held = .empty;
+    defer held.deinit(gpa);
+    try held.put(gpa, 7, &orphan);
+    var out: std.ArrayList(*session.Session) = .empty;
+    defer out.deinit(gpa);
+    session.sweep(&held, gpa, at, &out);
+    try std.testing.expectEqual(@as(usize, 1), out.items.len);
+    try std.testing.expect(out.items[0] == &orphan and held.count() == 0);
+}
+
+test "claude-agent session: a step that stops for graff's tool marks the session busy" {
+    // The flag the rule reads is set from the step's own outcome.
+    const src = @embedFile("claude_agent.zig");
+    try std.testing.expect(std.mem.indexOf(u8, src, "s.awaiting = out.held_call;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "session.stale(s, now)") != null);
+}

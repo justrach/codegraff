@@ -376,6 +376,7 @@ record only when you need the evidence or the edge cases.
 | [0349](0349-native-flint-runtime-is-external.md) | Native Flint is a built-in local OpenAI-compatible provider, while its runtime and model files remain separately installed; use only validated loopback endpoints and never cloud-fallback. |
 | [0350](0350-nonblocking-catalog-refresh-and-slash-refresh.md) | Dynamic provider catalogs (including Codex) stay 0 ms non-blocking at boot while stale-while-revalidating in the background past 5 minutes and activating landed caches in-session; `graff/models` adds bounded `{"force": true}`, and `/refresh` refreshes all signed-in catalogs across REPL and ACP. |
 | [0351](0351-prefer-rlm-for-supported-work.md) | The shared RLM catalog entry prefers RLM for independent reads, JSON row counts, and field projection. It does not force tool choice or remove direct tools or the shell fallback. |
+| [0352](0352-claude-agent-sessions-waiting-on-a-tool-are-not-idle.md) | A Claude Agent session whose child is waiting on graff's tool call is busy, not idle: the request-time check and other sessions' sweeps keep it past five minutes, up to `busy_ms` (one hour). A session with nothing in flight still stops at five. |
 
 ## When to write one
 
