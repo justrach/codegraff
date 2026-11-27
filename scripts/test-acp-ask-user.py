@@ -30,7 +30,7 @@ def run(binary, case):
     if case == 'questions':
         arguments = {'questions': [{'question': QUESTION, 'options': [{'label': 'npm'}, {'label': 'GitHub release'}]}]}
     replies = [{'tool': 'ask_user', 'arguments': arguments}]
-    if case == 'delayed':
+    if case in ('delayed', 'cancel'):
         replies.append({'tool': 'ask_user', 'arguments': arguments})
     replies.append({'text': 'Done.'})
     model = ScriptedModel(replies)
@@ -88,7 +88,7 @@ def run(binary, case):
                     answer = params['requestedSchema']['properties']['answer']
                     assert answer['enum'] == ['npm', 'GitHub release'], answer
                     elicitations.append(m['id'])
-                    if case == 'cancel':
+                    if case == 'cancel' and len(elicitations) == 1:
                         send({'method': 'session/cancel', 'params': {'sessionId': sid}})
                         continue
                     if case == 'delayed':
@@ -117,6 +117,14 @@ def run(binary, case):
                 assert meta.get('graff/cancelSource') == 'acp_cancel', done
                 assert 'interrupted by user' in meta.get('graff/cancelMessage', ''), done
                 assert len(model.requests) == 1, 'explicit cancellation continued the model'
+                # The cancelled question must not leave the mailbox or turn latched.
+                send({'id': 4, 'method': 'session/prompt', 'params': {'sessionId': sid,
+                    'prompt': [{'type': 'text', 'text': 'Ask me again.'}]}})
+                next_turn = wait(4, timeout=20)
+                assert next_turn.get('result', {}).get('stopReason') == 'end_turn', next_turn
+                assert len(elicitations) == 2 and len(model.requests) == 3
+                results = tool_results(model)
+                assert 'GitHub release' in results[-1] and not any('wrong' in result for result in results), results
                 print('PASS ACP ask_user', case, flush=True)
                 return
             assert done.get('result', {}).get('stopReason') == 'end_turn', done

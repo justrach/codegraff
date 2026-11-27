@@ -239,7 +239,7 @@ pub fn run(ctx: *Ctx) !void {
                     continue;
                 };
                 ctx.root.jev_effort_pending.pinUserEffort(ctx.root.io);
-                _ = repl_glue.saveThinkingSettings(ctx.root.io, ctx.root.gpa, ctx.root.reasoning, ctx.root.fast, ctx.root.ultracode_mode, ctx.root.show_thinking, ctx.root.ai_title);
+                _ = repl_glue.saveThinkingSettings(ctx.root.io, ctx.root.gpa, ctx.root.reasoning, null, ctx.root.ultracode_mode, ctx.root.show_thinking, ctx.root.ai_title);
                 ctx.root.emit(.{ .type = "effort", .ok = true, .level = @tagName(ctx.root.reasoning), .applies = ctx.root.effortApplies() });
                 continue;
             }
@@ -255,7 +255,7 @@ pub fn run(ctx: *Ctx) !void {
             if (std.mem.eql(u8, rtype, "set_ultracode")) {
                 const on = if (parsed.object.get("on")) |v| (if (v == .bool) v.bool else false) else false;
                 ctx.root.ultracode_mode = on;
-                _ = repl_glue.saveThinkingSettings(ctx.root.io, ctx.root.gpa, ctx.root.reasoning, ctx.root.fast, ctx.root.ultracode_mode, ctx.root.show_thinking, ctx.root.ai_title);
+                _ = repl_glue.saveThinkingSettings(ctx.root.io, ctx.root.gpa, ctx.root.reasoning, null, ctx.root.ultracode_mode, ctx.root.show_thinking, ctx.root.ai_title);
                 ctx.root.emit(.{ .type = "ultracode", .ok = true, .on = on });
                 continue;
             }

@@ -16,9 +16,15 @@ load = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(load)
 
 
+# A made-up provider rejection. The token stands in for a credential that a
+# raw error body could echo; it must never reach the terminal event.
+CHILD_ERROR = "Scripted child failure: invalid fixture request. token Ab3dEf9012345678ijklMNOP end"
+
+
 class Model(load.ScriptedModel):
-    def __init__(self):
+    def __init__(self, fail_child=False):
         super().__init__([], exhausted_text='unexpected model request')
+        self.fail_child = fail_child
         self.child_started = threading.Event()
         self.release_child = threading.Event()
         self.child_reply_ready = threading.Event()
@@ -44,6 +50,8 @@ class Model(load.ScriptedModel):
             self.child_started.set()
             assert self.release_child.wait(15), 'child release timed out'
             self.child_reply_ready.set()
+            if self.fail_child:
+                return {'http_status': 400, 'error': CHILD_ERROR}
             return {'text': 'The child finished after the parent prompt.'}
         if number == 1:
             return {'tool': 'subagent', 'arguments': {
@@ -74,7 +82,31 @@ def child_events(client):
     return [row['params'] for row in client.events if row.get('method') == 'graff/subagent_event']
 
 
-def run(binary, capability=True, cancel=False, disconnect=False, switch_session=False):
+def child_start_detail(client, model):
+    # Collect frames sent after the parent response without waiting on ACP.
+    chunks = [client.pending]
+    while True:
+        try:
+            chunk = client.chunks.get_nowait()
+        except queue.Empty:
+            break
+        if chunk is None:
+            break
+        chunks.append(chunk)
+    events = list(client.events)
+    for line in b''.join(chunks).split(b'\n')[:-1]:
+        events.append(json.loads(line))
+    updates = [row['params']['update'] for row in events if row.get('method') == 'session/update']
+    tool_statuses = [update.get('status') for update in updates
+                     if update.get('sessionUpdate') in ('tool_call', 'tool_call_update')]
+    child_types = [row['params']['event']['type'] for row in events
+                   if row.get('method') == 'graff/subagent_event']
+    return (f'ACP exit={client.proc.poll()}, model requests={len(model.requests)}, '
+            f'root requests={model.root_calls}, tool statuses={tool_statuses}, '
+            f'child events={child_types}')
+
+
+def run(binary, capability=True, cancel=False, disconnect=False, switch_session=False, fail=False):
     with tempfile.TemporaryDirectory(prefix='graff-acp-background-') as temporary:
         work = Path(temporary)
         home = work / 'home'
@@ -94,7 +126,7 @@ def run(binary, capability=True, cancel=False, disconnect=False, switch_session=
                 seed.close()
                 seed_model.stop()
             assert (work / '.graff' / 'sessions' / f'{other_sid}.session.json').exists()
-        model = Model()
+        model = Model(fail_child=fail)
         port = model.start(0)
         extra_env = {'GRAFF_NO_NATIVE_FOLD': '1'}
         if disconnect:
@@ -109,7 +141,7 @@ def run(binary, capability=True, cancel=False, disconnect=False, switch_session=
             first = client.request('session/prompt', {'sessionId': sid,
                 'prompt': [{'type': 'text', 'text': 'Delegate in the background.'}]}, timeout=15)
             assert first['result']['stopReason'] == 'end_turn', first
-            assert model.child_started.wait(8), 'child did not start'
+            assert model.child_started.wait(8), f'child did not start ({child_start_detail(client, model)})'
             assert not model.release_child.is_set()
             second = client.request('session/prompt', {'sessionId': sid,
                 'prompt': [{'type': 'text', 'text': 'Continue while the child runs.'}]}, timeout=15)
@@ -189,7 +221,21 @@ def run(binary, capability=True, cancel=False, disconnect=False, switch_session=
             model.release_child.set()
             terminal = drain_until(client, lambda row: row.get('method') == 'graff/subagent_event'
                 and row['params']['event']['type'] == 'terminal')
-            assert terminal['params']['event']['state'] == ('cancelled' if cancel else 'completed')
+            event = terminal['params']['event']
+            assert event['state'] == ('cancelled' if cancel else 'failed' if fail else 'completed'), event
+            if fail:
+                # The spawn call already succeeded, so this is the only place
+                # a detached child's failure cause reaches the client.
+                assert 'Scripted child failure' in event['reason'], event
+                assert event['failureKind'] == 'invalid', event
+                assert len(event['reason'].encode()) <= 280, event
+                assert 'Ab3dEf9012345678ijklMNOP' not in json.dumps(event), event
+                assert not any(ord(c) < 0x20 for c in event['reason']), event
+            elif cancel:
+                assert event['failureKind'] == 'cancelled' and event['reason'], event
+            else:
+                # A completed child's terminal event is unchanged.
+                assert set(event) == {'type', 'state'}, event
             rows = child_events(client)
             assert all(row['parentSessionId'] == sid for row in rows), rows
             assert [row['seq'] for row in rows] == list(range(len(rows))), rows
@@ -206,6 +252,7 @@ if __name__ == '__main__':
     run(binary, capability=False)
     run(binary)
     run(binary, cancel=True)
+    run(binary, fail=True)
     run(binary, disconnect=True)
     run(binary, switch_session=True)
-    print('ACP background subagents: opt-in, cross-turn stream, session switch, cancellation, ordered JSON frames, teardown')
+    print('ACP background subagents: opt-in, cross-turn stream, session switch, cancellation, failure reason, ordered JSON frames, teardown')

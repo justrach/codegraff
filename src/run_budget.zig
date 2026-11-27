@@ -21,7 +21,8 @@ pub var cli_max_tool_calls: ?u64 = null;
 pub const default_max_concurrency: u32 = 8;
 pub const default_max_depth: u8 = 1;
 /// 0 = unlimited (default). Set a positive --max-model-calls / GRAFF_MAX_MODEL_CALLS
-/// only when you deliberately want a hard ceiling on model calls for the whole run.
+/// only when you want a ceiling on logical calls for the whole run. Resends
+/// inside an admitted call share its permit.
 pub const default_max_model_calls: u64 = 0;
 
 pub const CallKind = enum {

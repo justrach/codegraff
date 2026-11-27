@@ -1,6 +1,7 @@
 # 0314. nanocua is graff's computer use on macOS
 
 Status: accepted 2026-11-04. Replaces the "no computer use" half of [0313](0313-graff-does-not-load-codex-computer-use.md).
+Amended by [0354](0354-nanocua-input-belongs-to-the-work-that-uses-it.md): input belongs to the first connection that acts, and ends with it.
 
 ## Context
 

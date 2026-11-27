@@ -12,6 +12,7 @@ const Value = std.json.Value;
 const proto = @import("acp_protocol.zig");
 const stream = @import("acp_stream.zig");
 const util = @import("util.zig");
+const Why = @import("subagent_reason.zig").Why;
 
 pub const max_lines = 12;
 pub const line_max = 160;
@@ -106,8 +107,32 @@ pub fn displayName(buf: []u8, name: []const u8, model: []const u8) []const u8 {
     return std.fmt.bufPrint(buf, "{s} · {s}", .{ util.utf8Prefix(name, 256), util.utf8Prefix(model, 256) }) catch name;
 }
 
+/// `_meta["graff/subagent"]`. `why` (ADR 0358) is set only on a failed or
+/// cancelled child's last row; without it the bytes are what they always were.
+const SubagentMeta = struct {
+    p: *const Progress,
+    state: []const u8,
+    why: ?Why,
+
+    pub fn jsonStringify(self: SubagentMeta, jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("sessionId");
+        try jw.write(self.p.child_id);
+        try jw.objectField("name");
+        try jw.write(self.p.name);
+        try jw.objectField("state");
+        try jw.write(self.state);
+        try jw.objectField("provider");
+        try jw.write(self.p.provider);
+        try jw.objectField("model");
+        try jw.write(self.p.model);
+        if (self.why) |why| try why.writeFields(jw);
+        try jw.endObject();
+    }
+};
+
 /// One progress update on the parent's tool call, in the parent's session.
-pub fn write(w: *Io.Writer, parent_session: []const u8, p: *const Progress, state: []const u8) !void {
+pub fn write(w: *Io.Writer, parent_session: []const u8, p: *const Progress, state: []const u8, why: ?Why) !void {
     var buf: [max_lines * (line_max + 1) + tail_max + 8]u8 = undefined;
     var title: [768]u8 = undefined;
     try proto.writeNotification(w, "session/update", .{
@@ -119,7 +144,7 @@ pub fn write(w: *Io.Writer, parent_session: []const u8, p: *const Progress, stat
             .content = .{
                 .{ .type = "content", .content = .{ .type = "text", .text = p.render(&buf) } },
             },
-            ._meta = .{ .@"graff/subagent" = .{ .sessionId = p.child_id, .name = p.name, .state = state, .provider = p.provider, .model = p.model } },
+            ._meta = .{ .@"graff/subagent" = SubagentMeta{ .p = p, .state = state, .why = why } },
         },
     });
 }

@@ -122,11 +122,27 @@ fn prepare(t: Target, x: f64, y: f64) Target {
 
 /// Clicks `count` times at x, y (a double click is two, the second with
 /// click state 2, as the system makes it).
-pub fn click(t: Target, x: f64, y: f64, button: Button, count: u32) void {
+pub const Gate = struct {
+    stopped: *const std.atomic.Value(bool),
+    live: ?*const std.atomic.Value(bool) = null,
+    actor: ?*const std.atomic.Value(u64) = null,
+    conn: u64 = 0,
+
+    pub fn allowed(g: Gate) bool {
+        if (g.stopped.load(.acquire)) return false;
+        if (g.live) |live| if (!live.load(.acquire)) return false;
+        if (g.actor) |actor| if (actor.load(.acquire) != g.conn) return false;
+        return true;
+    }
+};
+
+pub fn click(t: Target, x: f64, y: f64, button: Button, count: u32, gate: Gate) void {
+    if (!gate.allowed()) return;
     const k = press_kinds(button);
     const at: cf.CGPoint = .{ .x = x, .y = y };
     const ready = prepare(t, x, y);
     for (1..@min(count, 3) + 1) |n| {
+        if (!gate.allowed()) return;
         const state: i64 = @intCast(n);
         const down = CGEventCreateMouseEvent(null, k.down, at, k.number);
         if (ready == .hid) if (down) |d| CGEventSetIntegerValueField(d, field_click_state, state);
@@ -155,13 +171,13 @@ pub fn press(t: Target, combo: keys.Combo) bool {
 
 /// Types `s` as Unicode one character per event, whatever the layout, with no
 /// modifiers held: apps that read keys one by one (games, terminals) see each.
-/// Stops as soon as `stopped` is set; returns the characters typed.
-pub fn typeText(t: Target, s: []const u8, stopped: *const std.atomic.Value(bool)) usize {
+/// Checks the grant between characters and returns the number typed.
+pub fn typeText(t: Target, s: []const u8, gate: Gate) usize {
     var typed: usize = 0;
     var units: [2]u16 = undefined;
     var it = std.unicode.Utf8View.initUnchecked(if (std.unicode.utf8ValidateSlice(s)) s else "").iterator();
     while (it.nextCodepoint()) |cp| {
-        if (stopped.load(.acquire)) break;
+        if (!gate.allowed()) break;
         typed += 1;
         if (cp == '\n') {
             _ = press(t, .{ .key = "enter" });
@@ -200,7 +216,8 @@ pub fn wheelStep(left: i32) i32 {
 }
 
 /// Scrolls at x, y: `dy` lines down, `dx` lines right.
-pub fn scroll(t: Target, x: f64, y: f64, dx: f64, dy: f64) void {
+pub fn scroll(t: Target, x: f64, y: f64, dx: f64, dy: f64, gate: Gate) void {
+    if (!gate.allowed()) return;
     const ready = prepare(t, x, y);
     const whole = struct {
         fn f(v: f64) i32 {
@@ -210,6 +227,7 @@ pub fn scroll(t: Target, x: f64, y: f64, dx: f64, dy: f64) void {
     var down = whole(dy);
     var right = whole(dx);
     while (down != 0 or right != 0) {
+        if (!gate.allowed()) return;
         const sy = wheelStep(down);
         const sx = wheelStep(right);
         down -= sy;

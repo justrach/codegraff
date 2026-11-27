@@ -40,7 +40,7 @@ fn agent(msgs: std.json.Array) Agent {
 const Saved = struct { context: u64, local: u64, obj: std.json.ObjectMap };
 
 fn countAndSave(a: std.mem.Allocator, root: *Agent) !Saved {
-    context_tokens.learnState(state_len, 80_000, root.fullRequestEstimateTokens());
+    context_tokens.learnState(context_tokens.compactionStateIdentity(.{ .array = root.messages }), 80_000, root.fullRequestEstimateTokens());
     const local = root.fullRequestEstimateTokens();
     var aw: std.Io.Writer.Allocating = .init(a);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
@@ -95,17 +95,17 @@ test "a saved state count applies only to the same state, provider, and model (#
     // Same length, different blob: the digest refuses it.
     var other = agent(try history(a, 'B'));
     reload(&other, saved);
-    try std.testing.expect(context_tokens.calibratedState(state_len) == null);
+    try std.testing.expect(context_tokens.calibratedState(context_tokens.compactionStateIdentity(.{ .array = other.messages })) == null);
     try std.testing.expect(other.inputOverCompactThreshold());
 
     var moved = agent(counted.messages);
     moved.provider.model = "gpt-6";
     reload(&moved, saved);
-    try std.testing.expect(context_tokens.calibratedState(state_len) == null);
+    try std.testing.expect(context_tokens.calibratedState(context_tokens.compactionStateIdentity(.{ .array = moved.messages })) == null);
     moved.provider.model = "gpt-5";
     moved.provider.id = "openai";
     reload(&moved, saved);
-    try std.testing.expect(context_tokens.calibratedState(state_len) == null);
+    try std.testing.expect(context_tokens.calibratedState(context_tokens.compactionStateIdentity(.{ .array = moved.messages })) == null);
 
     const malformed = [_][]const u8{
         "{\"opaque_state_count\":{\"provider\":\"codex\",\"model\":\"gpt-5\",\"state_bytes\":8000000,\"state_digest\":\"zz\",\"tokens\":72000}}",
@@ -116,7 +116,7 @@ test "a saved state count applies only to the same state, provider, and model (#
     for (malformed) |text| {
         const parsed = try std.json.parseFromSliceLeaky(Value, a, text, .{});
         reload(&counted, .{ .context = saved.context, .local = saved.local, .obj = parsed.object });
-        try std.testing.expect(context_tokens.calibratedState(state_len) == null);
+        try std.testing.expect(context_tokens.calibratedState(context_tokens.compactionStateIdentity(.{ .array = counted.messages })) == null);
     }
 }
 
@@ -127,7 +127,12 @@ test "an uncounted compaction state writes no record (#1686)" {
     context_tokens.resetStateCountsForTest();
     defer context_tokens.resetStateCountsForTest();
 
-    const root = agent(try history(a, 'A'));
+    var counted = agent(try history(a, 'A'));
+    _ = try countAndSave(a, &counted);
+    // A different blob of the same size must not be persisted with the warm
+    // session's count, even while the original calibration is still cached.
+    var root = agent(try history(a, 'B'));
+    try std.testing.expect(root.inputOverCompactThreshold());
     var aw: std.Io.Writer.Allocating = .init(a);
     var s: std.json.Stringify = .{ .writer = &aw.writer };
     try s.beginObject();
@@ -146,7 +151,7 @@ test "session save and load both carry the compaction-state count (#1686)" {
     try std.testing.expect(restore_at < rebase_at);
 }
 
-test "a session saved after a counted request loads without a forced compaction (#1686)" {
+fn savedAndLoadedCountedHistory(comptime reasoning_only: bool) !void {
     const writer = @import("session_writer.zig");
     const transcript = @import("session_transcript.zig");
     const gpa = std.testing.allocator;
@@ -181,10 +186,18 @@ test "a session saved after a counted request loads without a forced compaction 
     };
     try root.ensureRootTools(root.provider.kind);
 
-    // Warm process: the provider counted a full request carrying the state at 80k.
-    context_tokens.learnState(state_len, 80_000, root.fullRequestEstimateTokens());
-    root.last_context_tokens = 80_001;
-    root.context_local_tokens = root.fullRequestEstimateTokens();
+    if (reasoning_only) {
+        try root.messages.items[0].object.put(a, "type", .{ .string = "reasoning" });
+        try std.testing.expectEqual(@as(usize, 0), context_tokens.compactionStateIdentity(.{ .array = root.messages }).bytes);
+    } else {
+        const id = context_tokens.compactionStateIdentity(.{ .array = root.messages });
+        context_tokens.learnState(id, 80_000, root.fullRequestEstimateTokens());
+    }
+    // Warm process: a full Responses request counts this history below the
+    // local byte estimate. The encrypted-reasoning case has no blob count.
+    @import("agent_context.zig").replaceContextTokens(&root, 80_001);
+    const warm = root.effectiveContextTokens();
+    if (reasoning_only) try std.testing.expect(root.context_local_tokens > window);
     try std.testing.expect(!root.inputOverCompactThreshold());
     try session.saveSessionTo(&root, a, tmp.dir, "reload-1686");
     session.flushSaves();
@@ -195,8 +208,171 @@ test "a session saved after a counted request loads without a forced compaction 
     root.context_local_tokens = 0;
     try session.loadSession(&root, &keys, a, "reload-1686");
     root.provider.context = window;
-    try std.testing.expect(root.effectiveContextTokens() < 100_000);
+    // Loading rebuilds the catalog and normalizes history. Allow their small
+    // local delta while rejecting any return to the ciphertext byte estimate.
+    try std.testing.expectApproxEqAbs(@as(f64, @floatFromInt(warm)), @as(f64, @floatFromInt(root.effectiveContextTokens())), 1_000);
     try std.testing.expect(!root.inputOverCompactThreshold());
+    if (reasoning_only) {
+        const new_text = try a.alloc(u8, 1_000_000);
+        @memset(new_text, 'z');
+        try root.messages.append(try @import("messages.zig").textMessage(a, "user", new_text));
+        try std.testing.expect(root.inputOverCompactThreshold());
+    }
+}
+
+test "a session saved after a counted request loads without a forced compaction (#1686)" {
+    try savedAndLoadedCountedHistory(false);
+}
+
+test "reasoning-only reload preserves a below-estimate provider count and still detects growth (#1686)" {
+    try savedAndLoadedCountedHistory(true);
+}
+
+/// An opaque reasoning item (not a compaction item, so no state record is
+/// saved) whose bytes the local estimate over-counts relative to the
+/// provider's own usage: 331k counted, about 608k estimated, 500k window.
+const reasoning_window: u64 = 500_000;
+const reasoning_count: u64 = 331_000;
+
+fn reasoningHistory(a: std.mem.Allocator) !std.json.Array {
+    const head = "{\"type\":\"reasoning\",\"encrypted_content\":\"";
+    const reasoning_len: usize = 2_400_000;
+    const json = try a.alloc(u8, head.len + reasoning_len + 2);
+    @memcpy(json[0..head.len], head);
+    @memset(json[head.len .. head.len + reasoning_len], 'R');
+    @memcpy(json[head.len + reasoning_len ..], "\"}");
+    var msgs = std.json.Array.init(a);
+    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, "{\"role\":\"user\",\"content\":\"start\"}", .{}));
+    try msgs.append(try std.json.parseFromSliceLeaky(Value, a, json, .{}));
+    return msgs;
+}
+
+/// The pair session_serialize writes: the live meter and its local estimate.
+fn savedPair(root: *Agent, obj: std.json.ObjectMap) Saved {
+    const estimate = root.contextEstimate();
+    return .{ .context = estimate.effective, .local = estimate.local, .obj = obj };
+}
+
+test "a reload keeps a provider count below the local estimate (#1686)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    context_tokens.resetStateCountsForTest();
+    defer context_tokens.resetStateCountsForTest();
+
+    var root = agent(try reasoningHistory(a));
+    root.provider.context = reasoning_window;
+    const local = root.fullRequestEstimateTokens();
+    try std.testing.expect(local > root.provider.compactAt()); // the local estimate alone crosses the gate
+
+    // Warm process: the live meter trusts the lower provider count.
+    root.last_context_tokens = reasoning_count;
+    root.context_local_tokens = local;
+    try std.testing.expectEqual(reasoning_count, root.effectiveContextTokens());
+    try std.testing.expect(!root.inputOverCompactThreshold());
+
+    // New process: loadSession's restore with the saved pair, unchanged history.
+    reload(&root, .{ .context = reasoning_count, .local = local, .obj = (try std.json.parseFromSliceLeaky(Value, a, "{}", .{})).object });
+    try std.testing.expectEqual(reasoning_count, root.effectiveContextTokens());
+    try std.testing.expect(!root.inputOverCompactThreshold());
+}
+
+test "a reload restores the live meter above, at, or below the local estimate (#1686)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    context_tokens.resetStateCountsForTest();
+    defer context_tokens.resetStateCountsForTest();
+    const empty = (try std.json.parseFromSliceLeaky(Value, a, "{}", .{})).object;
+
+    var root = agent(try reasoningHistory(a));
+    root.provider.context = reasoning_window;
+    const local = root.fullRequestEstimateTokens();
+    for ([_]u64{ local + 5_000, local, reasoning_count }) |count| {
+        root.last_context_tokens = count;
+        root.context_local_tokens = local;
+        const live = root.effectiveContextTokens();
+        const live_over = root.inputOverCompactThreshold();
+        reload(&root, savedPair(&root, empty));
+        try std.testing.expectEqual(live, root.effectiveContextTokens());
+        try std.testing.expectEqual(live_over, root.inputOverCompactThreshold());
+        // History added after the reload still counts on top of the restored meter.
+        try root.messages.append(try std.json.parseFromSliceLeaky(Value, a, "{\"role\":\"user\",\"content\":\"next\"}", .{}));
+        const grown = root.fullRequestEstimateTokens() - local;
+        try std.testing.expect(grown > 0);
+        try std.testing.expectEqual(live + grown, root.effectiveContextTokens());
+        _ = root.messages.pop();
+    }
+    // A file from before the paired field re-estimates, as it always did.
+    session.restoreContextMeter(&root, reasoning_count, null);
+    try std.testing.expectEqual(local, root.effectiveContextTokens());
+}
+
+test "a saved provider count below the estimate survives save, load, and a second save (#1686)" {
+    const writer = @import("session_writer.zig");
+    const transcript = @import("session_transcript.zig");
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    writer.resetForTest();
+    defer writer.resetForTest();
+    transcript.resetForTest();
+    defer transcript.resetForTest();
+    context_tokens.resetStateCountsForTest();
+    defer context_tokens.resetStateCountsForTest();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var client: std.http.Client = .{ .allocator = gpa, .io = io };
+    defer client.deinit();
+    var keys: @import("provider.zig").Keys = .{ .values = @splat("test-key") };
+    var provider = try keys.providerById("openai", "gpt-6-sol");
+    provider.context = reasoning_window;
+    var root: Agent = .{
+        .gpa = gpa,
+        .arena = a,
+        .io = io,
+        .client = &client,
+        .provider = provider,
+        .messages = try reasoningHistory(a),
+        .sub = false,
+        .label = "root",
+        .out = null,
+        .home = try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}),
+    };
+    try root.ensureRootTools(root.provider.kind);
+
+    // Warm process: the provider counted the full request below the estimate.
+    root.last_context_tokens = reasoning_count;
+    const warm_local = root.fullRequestEstimateTokens();
+    root.context_local_tokens = warm_local;
+    try std.testing.expect(warm_local > root.provider.compactAt());
+    try std.testing.expect(!root.inputOverCompactThreshold());
+    try session.saveSessionTo(&root, a, tmp.dir, "reload-below-1686");
+    session.flushSaves();
+
+    // New process, real load path (ACP session/load, --resume and /fork all
+    // run loadSession); then save the restored session again, as a fork does,
+    // and load that copy too.
+    for ([_][]const u8{ "reload-below-1686", "reload-below-1686-fork" }, 0..) |name, hop| {
+        root.last_context_tokens = 0;
+        root.context_local_tokens = 0;
+        try session.loadSession(&root, &keys, a, name);
+        root.provider.context = reasoning_window;
+        // The count, plus whatever the reloaded request estimate grew by (the
+        // rebuilt prompt and tools), as the live meter would add it; never the
+        // re-estimated history.
+        const growth = root.fullRequestEstimateTokens() -| warm_local;
+        try std.testing.expect(growth < 1_000);
+        try std.testing.expectEqual(reasoning_count + growth, root.effectiveContextTokens());
+        // REPL resume and the pre-send gate both decide on this check.
+        try std.testing.expect(!root.inputOverCompactThreshold());
+        if (hop == 0) {
+            try session.saveSessionTo(&root, a, tmp.dir, "reload-below-1686-fork");
+            session.flushSaves();
+        }
+    }
 }
 
 test "a chained response teaches the compaction-state count (#1686)" {
@@ -212,6 +388,6 @@ test "a chained response teaches the compaction-state count (#1686)" {
     root.codex_prev_id = "resp_1";
     const response = try std.json.parseFromSliceLeaky(Value, a, "{\"usage\":{\"input_tokens\":80000}}", .{});
     @import("opaque_state_usage.zig").learn(&root, response.object);
-    try std.testing.expect(context_tokens.calibratedState(state_len) != null);
+    try std.testing.expect(context_tokens.calibratedState(context_tokens.compactionStateIdentity(.{ .array = root.messages })) != null);
     try std.testing.expect(!root.inputOverCompactThreshold());
 }

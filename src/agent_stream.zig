@@ -402,6 +402,8 @@ pub fn printDelta(self: *Agent, raw_line: []const u8) void {
     if (parsed.value != .object) return;
     const obj = parsed.value.object;
     if (modelOutputStarted(self.provider.kind, obj)) self.traceFirstToken();
+    // Maintenance replies must not paint or enter the partial-answer buffer.
+    if (self.compaction_request) return;
     self.argLiveDelta(obj);
     const text: []const u8 = switch (self.provider.kind) {
         // step.delta with a "text" delta is the only prose on this wire; a
@@ -454,8 +456,6 @@ pub fn printDelta(self: *Agent, raw_line: []const u8) void {
     // Reasoning/thinking deltas: deepseek streams reasoning_content, anthropic
     // a thinking_delta, codex a summary delta. Presentation is the sink's call:
     // the wire's `reasoning` event, or the live "Thinking" block / spinner.
-    // A compaction request's reply is bookkeeping on every frontend (#1582).
-    if (self.compaction_request) return;
     const sink = engine_sink.forAgent(self);
     const reasoning = reasoningDelta(self.provider.kind, obj);
     if (reasoning.len != 0 or text.len != 0) self.traceFirstToken();

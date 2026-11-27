@@ -201,6 +201,12 @@ pub fn build(b: *std.Build) void {
     const encrypted_recovery_test = b.addSystemCommand(&.{ "python3", "scripts/test-encrypted-recovery.py" });
     encrypted_recovery_test.addArtifactArg(exe);
     test_step.dependOn(&encrypted_recovery_test.step);
+    const startup_service_tier_test = b.addSystemCommand(&.{ "python3", "scripts/test-startup-service-tier.py" });
+    startup_service_tier_test.addArtifactArg(exe);
+    test_step.dependOn(&startup_service_tier_test.step);
+    const worker_service_tier_test = b.addSystemCommand(&.{ "python3", "scripts/test-worker-service-tier.py" });
+    worker_service_tier_test.addArtifactArg(exe);
+    test_step.dependOn(&worker_service_tier_test.step);
     const compaction_meter_loop_test = b.addSystemCommand(&.{ "python3", "scripts/test-compaction-meter-loop.py" });
     compaction_meter_loop_test.addArtifactArg(exe);
     test_step.dependOn(&compaction_meter_loop_test.step);

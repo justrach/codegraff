@@ -19,108 +19,96 @@ pub const image_tokens: u64 = 4_096;
 /// until the provider has counted that state itself (calibrateState).
 pub const compaction_state_bytes_per_token: usize = 16;
 
-/// #1686: the bytes-per-token of compaction state is not fixed. A 1.4 MB blob
-/// counted ~70k tokens, a 9.8 MB one ~80k, so /16 read the second as ~612k and
-/// held an almost empty history over the compaction line. After the provider
-/// counts a request carrying state, the state's share of its input is kept by
-/// size and replaces /16 for that state. Packed (bytes << 24 | tokens) so a
-/// subagent's thread never reads a torn pair; a few slots cover root and
-/// subagent histories.
-var g_state_counts: [4]std.atomic.Value(u64) = .{ .init(0), .init(0), .init(0), .init(0) };
-var g_state_next: std.atomic.Value(usize) = .init(0);
-const token_bits = 24;
-const token_mask: u64 = (1 << token_bits) - 1;
+/// The size and order-independent digest jointly identify the ciphertext.
+pub const StateIdentity = struct {
+    bytes: usize = 0,
+    digest: u64 = 0,
 
-pub fn calibrateState(bytes: usize, tokens: u64) void {
-    if (bytes == 0 or bytes >= (1 << 40)) return;
-    const packed_count = (@as(u64, bytes) << token_bits) | @min(@max(tokens, 1), token_mask);
-    for (&g_state_counts) |*slot| {
-        if (slot.load(.monotonic) >> token_bits == bytes) return slot.store(packed_count, .monotonic);
+    fn add(self: *StateIdentity, other: StateIdentity) void {
+        self.bytes +|= other.bytes;
+        self.digest +%= other.digest;
     }
-    const i = g_state_next.fetchAdd(1, .monotonic) % g_state_counts.len;
-    g_state_counts[i].store(packed_count, .monotonic);
+};
+
+const StateCount = struct { id: StateIdentity = .{}, tokens: u64 = 0 };
+// Root and worker threads can learn independently. Keep each identity and its
+// count together under a short lock with no allocation or ciphertext hashing.
+var g_state_lock: std.atomic.Value(bool) = .init(false);
+var g_state_counts: [4]StateCount = @splat(.{});
+var g_state_next: usize = 0;
+
+fn lockStateCounts() void {
+    while (g_state_lock.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
 }
 
-/// Estimated tokens for `bytes` of compaction state: the provider's own count
-/// once calibrated, else bytes / compaction_state_bytes_per_token.
-pub fn stateTokens(bytes: usize) u64 {
-    if (bytes == 0) return 0;
+pub fn calibrateState(id: StateIdentity, tokens: u64) void {
+    if (id.bytes == 0) return;
+    lockStateCounts();
+    defer g_state_lock.store(false, .release);
     for (&g_state_counts) |*slot| {
-        const v = slot.load(.monotonic);
-        if (v >> token_bits == bytes) return v & token_mask;
+        if (std.meta.eql(slot.id, id)) {
+            slot.tokens = @max(tokens, 1);
+            return;
+        }
     }
-    return bytes / compaction_state_bytes_per_token;
+    g_state_counts[g_state_next] = .{ .id = id, .tokens = @max(tokens, 1) };
+    g_state_next = (g_state_next + 1) % g_state_counts.len;
 }
 
-/// The provider's count for `bytes` of compaction state, or null while this
-/// process has only the bytes/16 estimate.
-pub fn calibratedState(bytes: usize) ?u64 {
-    if (bytes == 0) return null;
-    for (&g_state_counts) |*slot| {
-        const v = slot.load(.monotonic);
-        if (v >> token_bits == bytes) return v & token_mask;
+fn stateTokens(id: StateIdentity) u64 {
+    return calibratedState(id) orelse id.bytes / compaction_state_bytes_per_token;
+}
+
+pub fn calibratedState(id: StateIdentity) ?u64 {
+    if (id.bytes == 0) return null;
+    lockStateCounts();
+    defer g_state_lock.store(false, .release);
+    for (g_state_counts) |slot| {
+        if (std.meta.eql(slot.id, id)) return slot.tokens;
     }
     return null;
 }
 
-pub fn compactionStateBytes(value: Value) usize {
-    return mediaStats(value).compaction_state_bytes;
-}
-
-/// Which compaction state a history carries: its total size (the calibration
-/// key) and an order-independent digest of every state blob, so a persisted
-/// count is reapplied only to the same state, never to a different blob that
-/// happens to have the same length.
-pub const StateIdentity = struct { bytes: usize = 0, digest: u64 = 0 };
-
 pub fn compactionStateIdentity(value: Value) StateIdentity {
-    var id: StateIdentity = .{};
-    switch (value) {
-        .array => |items| for (items.items) |item| {
-            const child = compactionStateIdentity(item);
-            id.bytes +|= child.bytes;
-            id.digest +%= child.digest;
-        },
-        .object => |obj| {
-            if (compactionStateLen(obj)) |len| {
-                id.bytes +|= len;
-                id.digest +%= std.hash.Wyhash.hash(0, stringValue(obj.get("encrypted_content")).?);
-            }
-            var it = obj.iterator();
-            while (it.next()) |entry| {
-                const child = compactionStateIdentity(entry.value_ptr.*);
-                id.bytes +|= child.bytes;
-                id.digest +%= child.digest;
-            }
-        },
-        else => {},
-    }
-    return id;
+    return mediaStats(value).compaction_state;
 }
 
 /// Learn the state's share from a counted request: the reported input less
-/// the estimate for everything else in it (`request_estimate` includes the
-/// state at its current estimate). Never below one token per KiB of state.
-pub fn learnState(bytes: usize, reported_input: u64, request_estimate: u64) void {
-    if (bytes == 0 or reported_input == 0) return;
-    const rest = request_estimate -| stateTokens(bytes);
-    calibrateState(bytes, @max(reported_input -| rest, bytes / 1024));
+/// the estimate for everything else in it (which includes the current state
+/// estimate). Never below one token per KiB of state.
+pub fn learnState(id: StateIdentity, reported_input: u64, request_estimate: u64) void {
+    if (id.bytes == 0 or reported_input == 0) return;
+    const rest = request_estimate -| stateTokens(id);
+    calibrateState(id, @max(reported_input -| rest, id.bytes / 1024));
+}
+
+/// The context meter: a provider count `last` taken when the local estimate
+/// was `anchor`, carried to today's local estimate `local`. A count at or
+/// above its anchor keeps its surplus on top of `local`; one below it (the
+/// estimate over-counts, #1686) stays the meter, plus any growth since. No
+/// count (0) is the local estimate. Live meter and session restore share it.
+pub fn pairedMeter(last: u64, anchor: u64, local: u64) u64 {
+    if (last == 0 or last >= anchor) return local +| (last - @min(last, anchor));
+    return last +| (local -| anchor);
 }
 
 pub fn resetStateCountsForTest() void {
-    for (&g_state_counts) |*slot| slot.store(0, .monotonic);
+    lockStateCounts();
+    defer g_state_lock.store(false, .release);
+    g_state_counts = @splat(.{});
+    g_state_next = 0;
 }
 
 const MediaStats = struct {
     payload_bytes: usize = 0,
     images: u64 = 0,
-    compaction_state_bytes: usize = 0,
+    compaction_state: StateIdentity = .{},
     reasoning_state_bytes: usize = 0,
 
     fn add(self: *MediaStats, other: MediaStats) void {
         self.payload_bytes +|= other.payload_bytes;
         self.images +|= other.images;
-        self.compaction_state_bytes +|= other.compaction_state_bytes;
+        self.compaction_state.add(other.compaction_state);
         self.reasoning_state_bytes +|= other.reasoning_state_bytes;
     }
 };
@@ -160,10 +148,10 @@ fn imageBlockPayloadLen(obj: std.json.ObjectMap) ?usize {
     return null;
 }
 
-fn compactionStateLen(obj: std.json.ObjectMap) ?usize {
+fn compactionStateBlob(obj: std.json.ObjectMap) ?[]const u8 {
     const kind = stringValue(obj.get("type")) orelse return null;
     if (!std.mem.eql(u8, kind, "compaction") and !std.mem.eql(u8, kind, "compaction_summary")) return null;
-    return (stringValue(obj.get("encrypted_content")) orelse return null).len;
+    return stringValue(obj.get("encrypted_content"));
 }
 
 fn mediaStats(value: Value) MediaStats {
@@ -175,7 +163,9 @@ fn mediaStats(value: Value) MediaStats {
                 stats.payload_bytes +|= payload_bytes;
                 stats.images +|= 1;
             }
-            if (compactionStateLen(obj)) |state_bytes| stats.compaction_state_bytes +|= state_bytes;
+            if (compactionStateBlob(obj)) |blob| {
+                stats.compaction_state.add(.{ .bytes = blob.len, .digest = std.hash.Wyhash.hash(0, blob) });
+            }
             if (std.mem.eql(u8, stringValue(obj.get("type")) orelse "", "reasoning")) {
                 if (stringValue(obj.get("encrypted_content"))) |state| stats.reasoning_state_bytes +|= state.len;
             }
@@ -303,10 +293,10 @@ fn escapeExtra(byte: u8) usize {
 /// policy so tool output and reasoning overflow protection stays conservative.
 pub fn estimatedTokensFromLen(value: Value, total_bytes: usize) u64 {
     const media = mediaStats(value);
-    const text_bytes = total_bytes -| media.payload_bytes -| media.compaction_state_bytes;
+    const text_bytes = total_bytes -| media.payload_bytes -| media.compaction_state.bytes;
     return @as(u64, @intCast(text_bytes / 4)) +|
         media.images *| image_tokens +|
-        stateTokens(media.compaction_state_bytes);
+        stateTokens(media.compaction_state);
 }
 
 pub fn estimatedTokens(value: Value) u64 {
@@ -318,7 +308,7 @@ pub fn estimatedTokens(value: Value) u64 {
 /// Keep the ordinary text, schemas, and vision floor when excluding it.
 pub fn opaqueEstimatedTokens(value: Value) u64 {
     const media = mediaStats(value);
-    return stateTokens(media.compaction_state_bytes) +| @as(u64, @intCast(media.reasoning_state_bytes / 4));
+    return stateTokens(media.compaction_state) +| @as(u64, @intCast(media.reasoning_state_bytes / 4));
 }
 
 test "inline image payload size does not masquerade as text context" {
@@ -451,18 +441,6 @@ test "#1686 a counted request recalibrates compaction state, and other sizes kee
     resetStateCountsForTest();
     defer resetStateCountsForTest();
     const bytes: usize = 9_791_416;
-    const rest: u64 = 8_000; // instructions, tools and the short visible history
-    try std.testing.expectEqual(@as(u64, bytes / compaction_state_bytes_per_token), stateTokens(bytes));
-    learnState(bytes, 82_202, rest + stateTokens(bytes));
-    try std.testing.expectEqual(@as(u64, 74_202), stateTokens(bytes));
-    // A second sample for the same state replaces the first.
-    learnState(bytes, 84_414, rest + stateTokens(bytes));
-    try std.testing.expectEqual(@as(u64, 76_414), stateTokens(bytes));
-    // Another size is untouched, and a count below the floor is clamped.
-    try std.testing.expectEqual(@as(u64, 1_400_000 / compaction_state_bytes_per_token), stateTokens(1_400_000));
-    learnState(1_400_000, 100, 200_000);
-    try std.testing.expectEqual(@as(u64, 1_400_000 / 1024), stateTokens(1_400_000));
-    // Estimates of a value carrying that state follow the calibration.
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -471,7 +449,37 @@ test "#1686 a counted request recalibrates compaction state, and other sizes kee
     var blob: std.json.ObjectMap = .empty;
     try blob.put(arena, "type", .{ .string = "compaction" });
     try blob.put(arena, "encrypted_content", .{ .string = state });
+    const value: Value = .{ .object = blob };
+    const id = compactionStateIdentity(value);
+    const rest: u64 = 8_000; // instructions, tools and the short visible history
+    try std.testing.expectEqual(@as(u64, bytes / compaction_state_bytes_per_token), stateTokens(id));
+    learnState(id, 82_202, rest + stateTokens(id));
+    try std.testing.expectEqual(@as(u64, 74_202), stateTokens(id));
+    // A second sample for the same state replaces the first.
+    learnState(id, 84_414, rest + stateTokens(id));
+    try std.testing.expectEqual(@as(u64, 76_414), stateTokens(id));
+    // An unrelated state keeps its own estimate, even at the same byte size.
+    const other: StateIdentity = .{ .bytes = bytes, .digest = id.digest +% 1 };
+    try std.testing.expectEqual(@as(u64, bytes / compaction_state_bytes_per_token), stateTokens(other));
+    learnState(other, 100, 1_000_000);
+    try std.testing.expectEqual(@as(u64, bytes / 1024), stateTokens(other));
+    try std.testing.expectEqual(@as(u64, 76_414), stateTokens(id));
     try std.testing.expect(estimatedTokens(.{ .object = blob }) < 80_000);
+}
+
+test "#1686 pairedMeter keeps a provider count on either side of its estimate" {
+    // Above: the surplus rides on today's estimate, which may have moved.
+    try std.testing.expectEqual(@as(u64, 105_000), pairedMeter(105_000, 100_000, 100_000));
+    try std.testing.expectEqual(@as(u64, 125_000), pairedMeter(105_000, 100_000, 120_000));
+    // Equal: the count, then plain local growth.
+    try std.testing.expectEqual(@as(u64, 100_000), pairedMeter(100_000, 100_000, 100_000));
+    try std.testing.expectEqual(@as(u64, 110_000), pairedMeter(100_000, 100_000, 110_000));
+    // Below: the count stays the meter; growth adds, a smaller estimate does not lower it.
+    try std.testing.expectEqual(@as(u64, 331_000), pairedMeter(331_000, 608_000, 608_000));
+    try std.testing.expectEqual(@as(u64, 341_000), pairedMeter(331_000, 608_000, 618_000));
+    try std.testing.expectEqual(@as(u64, 331_000), pairedMeter(331_000, 608_000, 500_000));
+    // No count: the local estimate, whatever the stale anchor.
+    try std.testing.expectEqual(@as(u64, 90_000), pairedMeter(0, 608_000, 90_000));
 }
 
 test "single-pass SIMD stringLen matches std.json.Stringify for ASCII, multi-byte UTF-8, and invalid UTF-8" {

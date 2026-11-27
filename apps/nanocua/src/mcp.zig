@@ -6,6 +6,7 @@
 const std = @import("std");
 const tools = @import("tools.zig");
 const policy = @import("policy.zig");
+const turn_input = @import("turn_input.zig");
 
 pub const protocol_version = "2025-06-18";
 pub const version = "0.1.0";
@@ -47,6 +48,7 @@ pub const Hub = struct {
     sink: Sink,
     backend: Backend,
     policy: policy.Policy = .{},
+    turn_input_grants: turn_input.Grants = .{},
     log: policy.Log = .{},
     /// Seconds, for the log.
     clock: *const fn () f64,
@@ -57,13 +59,37 @@ pub const Hub = struct {
     /// Null where nothing can answer them (`nanocua mcp`'s own hub): agents
     /// reach the switches only by opening the socket themselves.
     control: ?Control = null,
+    /// Who may act (Policy.actor) where the backend's queue reads it, so a
+    /// call already waiting there can't act once input has ended.
+    actor_flag: ?*std.atomic.Value(u64) = null,
 
+    /// A connection went away: input its work held ends with it (#1931), and
+    /// the backend drops what it kept for it.
     pub fn closed(h: *Hub, conn: u64) void {
+        h.turn_input_grants.close(h.gpa, conn);
+        if (h.policy.closed(conn)) {
+            h.syncActor();
+            h.notify();
+        }
         if (h.backend.closed) |f| f(h.backend.ptr, conn);
+    }
+
+    /// The input switch, from the panel or `nanocua/off`.
+    pub fn setInput(h: *Hub, on: bool) void {
+        h.policy.setInput(on);
+        h.syncActor();
+    }
+
+    fn syncActor(h: *Hub) void {
+        if (h.actor_flag) |f| f.store(h.policy.actor(), .release);
     }
 
     /// Handles one line from connection `conn`.
     pub fn handle(h: *Hub, conn: u64, line: []const u8) void {
+        h.handleScoped(conn, line, false);
+    }
+
+    pub fn handleScoped(h: *Hub, conn: u64, line: []const u8, scoped: bool) void {
         if (std.mem.trim(u8, line, " \t\r\n").len == 0) return;
         var arena: std.heap.ArenaAllocator = .init(h.gpa);
         defer arena.deinit();
@@ -88,13 +114,13 @@ pub const Hub = struct {
             tools.writeList(&aw.writer) catch return;
             h.sendResult(conn, id, aw.written());
         } else if (std.mem.eql(u8, method, "tools/call")) {
-            h.call(conn, id, params);
+            h.call(conn, id, params, scoped);
         } else if (std.mem.startsWith(u8, method, "nanocua/") and h.control != null) {
             h.control.?.func(h.control.?.ptr, conn, id, method, params);
         } else h.sendError(conn, id, -32601, "Method not found");
     }
 
-    fn call(h: *Hub, conn: u64, id: []const u8, params: ?std.json.Value) void {
+    fn call(h: *Hub, conn: u64, id: []const u8, params: ?std.json.Value, scoped: bool) void {
         const p = tools.Args.of(params);
         const name = p.string("name") orelse return h.sendError(conn, id, -32602, "tools/call needs a name");
         const tool = tools.Tool.parse(name) orelse return h.sendError(conn, id, -32602, "Unknown tool");
@@ -110,8 +136,26 @@ pub const Hub = struct {
         h.pending += 1;
         h.notify();
         const whole_screen = tools.Args.of(args_v).boolean("whole_screen") orelse false;
-        if (h.policy.denial(tool, whole_screen)) |why| return reply.finish(&.{.{ .text = why }}, true, .denied);
+        if (h.inputDenial(reply, tool, whole_screen, scoped)) |why| return reply.finish(&.{.{ .text = why }}, true, .denied);
         h.backend.call(h.backend.ptr, tool, tools.Args.of(args_v), reply);
+    }
+
+    fn inputDenial(h: *Hub, reply: *Reply, tool: tools.Tool, whole_screen: bool, scoped: bool) ?[]const u8 {
+        var effective = h.policy;
+        if (scoped) {
+            effective.allow_input = true;
+            effective.input_holder = null;
+        }
+        if (effective.denial(tool, whole_screen, reply.conn)) |why| return why;
+        if (!scoped) {
+            h.policy.admit(tool, reply.conn);
+            h.syncActor();
+        } else if (tool.kind() == .act) {
+            reply.turn_input_token = h.turn_input_grants.claim(h.gpa, reply.conn) orelse
+                return "Input for this turn is off. Ask the user to allow input for the next Graff turn in NanoCUA.";
+            h.notify();
+        }
+        return null;
     }
 
     fn notify(h: *Hub) void {
@@ -138,6 +182,12 @@ pub const Reply = struct {
     conn: u64,
     id: []u8,
     seq: u64,
+    turn_input_token: ?*turn_input.Token = null,
+
+    pub fn inputExpired(r: *const Reply) bool {
+        const token = r.turn_input_token orelse return false;
+        return !token.live.load(.acquire);
+    }
 
     pub fn text(r: *Reply, s: []const u8) void {
         r.finish(&.{.{ .text = s }}, false, .ok);
@@ -161,6 +211,7 @@ pub const Reply = struct {
     pub fn finish(r: *Reply, content: []const Content, is_error: bool, status: policy.Status) void {
         const h = r.hub;
         defer {
+            if (r.turn_input_token) |token| token.release(h.gpa);
             h.pending -= 1;
             h.gpa.free(r.id);
             h.gpa.destroy(r);
@@ -261,6 +312,99 @@ fn zero() f64 {
     return 0;
 }
 
+const click_line = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"click\",\"arguments\":{\"x\":5,\"y\":6}}}";
+const look_line = "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_ui_tree\"}}";
+
+fn testHub(lines: *Lines, fake: *Fake) Hub {
+    return .{ .gpa = testing.allocator, .clock = zero, .sink = .{ .ptr = lines, .send = Lines.send }, .backend = .{ .ptr = fake, .call = Fake.call } };
+}
+
+/// The newest call's status and whether its reply said `text`.
+fn expectLast(h: *Hub, lines: *Lines, status: policy.Status, text: []const u8) !void {
+    try testing.expectEqual(status, h.log.newest(0).?.status);
+    try testing.expect(std.mem.indexOf(u8, lines.list.items, text) != null);
+    lines.list.clearRetainingCapacity();
+}
+
+test "input access ends with the agent work that used it (#1931)" {
+    var lines: Lines = .{ .gpa = testing.allocator };
+    defer lines.list.deinit(testing.allocator);
+    var fake: Fake = .{};
+    var h = testHub(&lines, &fake);
+
+    // The user allows input; one agent's turn performs one action.
+    h.policy.allow_input = true;
+    h.handle(2, click_line);
+    try testing.expectEqual(policy.Status.ok, h.log.newest(0).?.status);
+
+    // That work ends. The only end-of-work signal nanocua receives today is
+    // the connection closing; the protocol carries no turn boundary.
+    h.closed(2);
+    // Later work that was never granted input must not inherit the grant.
+    h.handle(3, click_line);
+    try testing.expectEqual(policy.Status.denied, h.log.newest(0).?.status);
+}
+
+test "one connection's work holds input: another may look, not act, and its closing changes nothing (#1931)" {
+    var lines: Lines = .{ .gpa = testing.allocator };
+    defer lines.list.deinit(testing.allocator);
+    var fake: Fake = .{};
+    var h = testHub(&lines, &fake);
+    h.setInput(true);
+    h.handle(2, click_line);
+    try expectLast(&h, &lines, .ok, "2:{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"clicked 5,6\"}]");
+
+    // A concurrent connection is refused, and told why and what to do.
+    h.handle(3, click_line);
+    try expectLast(&h, &lines, .denied, "another agent's work");
+    h.handle(3, click_line);
+    try expectLast(&h, &lines, .denied, "turn \\\"Allow input\\\" off and on again");
+    // Looking is unchanged for it.
+    h.handle(3, look_line);
+    try expectLast(&h, &lines, .ok, "3:{\"jsonrpc\":\"2.0\",\"id\":2,\"result\"");
+
+    // It going away leaves the holder's input as it was.
+    h.closed(3);
+    try testing.expect(h.policy.allow_input);
+    h.handle(2, click_line);
+    try expectLast(&h, &lines, .ok, "clicked 5,6");
+}
+
+test "after the work that held input ends, a new connection needs a new grant (#1931)" {
+    var lines: Lines = .{ .gpa = testing.allocator };
+    defer lines.list.deinit(testing.allocator);
+    var fake: Fake = .{};
+    var h = testHub(&lines, &fake);
+    var actor: std.atomic.Value(u64) = .init(7);
+    h.actor_flag = &actor;
+    h.setInput(true);
+    // On but unused: nobody may act on the backend's queue yet.
+    try testing.expectEqual(@as(u64, 0), actor.load(.acquire));
+    h.handle(2, click_line);
+    try testing.expectEqual(@as(u64, 2), actor.load(.acquire));
+
+    // The holder closes: input is off, for the panel and for the queue.
+    h.closed(2);
+    try testing.expect(!h.policy.allow_input);
+    try testing.expectEqual(@as(u64, 0), actor.load(.acquire));
+    // A reconnect (a new connection number) or the old number: refused, and
+    // told to ask the user; looking still works.
+    h.handle(4, click_line);
+    try expectLast(&h, &lines, .denied, "Ask the user to turn on \\\"Allow input\\\"");
+    h.handle(2, click_line);
+    try expectLast(&h, &lines, .denied, "Input is off in nanocua");
+    h.handle(4, look_line);
+    try expectLast(&h, &lines, .ok, "4:{\"jsonrpc\":\"2.0\",\"id\":2,\"result\"");
+
+    // Only a new grant lets it act, and it's that work's alone.
+    h.setInput(true);
+    h.handle(4, click_line);
+    try expectLast(&h, &lines, .ok, "clicked 5,6");
+    try testing.expectEqual(@as(u64, 4), actor.load(.acquire));
+    h.setInput(false);
+    try testing.expectEqual(@as(u64, 0), actor.load(.acquire));
+}
+
 test "a session: initialize, list, calls answered now and later, the policy" {
     var lines: Lines = .{ .gpa = testing.allocator };
     defer lines.list.deinit(testing.allocator);
@@ -306,4 +450,54 @@ test "a session: initialize, list, calls answered now and later, the policy" {
     lines.list.clearRetainingCapacity();
     h.handle(3, "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"list_apps\"}}");
     try testing.expect(std.mem.indexOf(u8, lines.list.items, "stopped") != null);
+}
+
+test "turn-scoped MCP input expires only the closed connection and rejects queued input" {
+    const gpa = std.testing.allocator;
+    const Fixture = struct {
+        delayed: ?*Reply = null,
+        fn send(_: *anyopaque, _: u64, _: []const u8) void {}
+        fn call(ctx: *anyopaque, _: tools.Tool, _: tools.Args, reply: *Reply) void {
+            const f: *@This() = @ptrCast(@alignCast(ctx));
+            if (f.delayed != null) reply.text("done") else {
+                f.delayed = reply;
+            }
+        }
+        fn clock() f64 {
+            return 0;
+        }
+    };
+    var fixture: Fixture = .{};
+    var h: Hub = .{
+        .gpa = gpa,
+        .sink = .{ .ptr = &fixture, .send = Fixture.send },
+        .backend = .{ .ptr = &fixture, .call = Fixture.call },
+        .clock = Fixture.clock,
+        .policy = .{ .allow_input = true },
+    };
+    defer h.turn_input_grants.connections.deinit(gpa);
+    defer h.turn_input_grants.revoke(gpa);
+    defer if (fixture.delayed) |reply| reply.text("done");
+    const click = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"click\"}}";
+    h.handleScoped(1, click, true);
+    try std.testing.expectEqual(policy.Status.denied, h.log.newest(0).?.status);
+    h.turn_input_grants.armed = true;
+    h.handleScoped(1, click, true);
+    const queued = fixture.delayed.?;
+    try std.testing.expect(!queued.inputExpired());
+    try std.testing.expect(!h.turn_input_grants.armed);
+    h.handleScoped(2, click, true);
+    try std.testing.expectEqual(policy.Status.denied, h.log.newest(0).?.status);
+    h.turn_input_grants.armed = true;
+    h.handleScoped(2, click, true);
+    try std.testing.expectEqual(policy.Status.ok, h.log.newest(0).?.status);
+    h.closed(1);
+    try std.testing.expect(queued.inputExpired());
+    try std.testing.expectEqual(@as(usize, 1), h.turn_input_grants.connections.count());
+    h.handleScoped(2, click, true);
+    try std.testing.expectEqual(policy.Status.ok, h.log.newest(0).?.status);
+    h.handleScoped(1, click, true);
+    try std.testing.expectEqual(policy.Status.denied, h.log.newest(0).?.status);
+    h.closed(2);
+    try std.testing.expectEqual(@as(usize, 0), h.turn_input_grants.connections.count());
 }

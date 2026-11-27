@@ -225,6 +225,17 @@ pub fn installInStreamCompaction(self: *Agent, response: std.json.ObjectMap) !us
     return payload_len;
 }
 
+/// Standalone compaction bypasses Agent.request(), so it must own a permit
+/// before its POST. Callers run route and input eligibility checks first.
+fn postCompaction(self: *Agent, provider: Provider, body: []const u8, conv: ?[]const u8) ![]u8 {
+    var permit: ?@import("run_budget.zig").Permit = if (self.run_budget) |budget|
+        try budget.acquire(self.io, self.depth, .compaction)
+    else
+        null;
+    defer if (permit) |*p| p.release();
+    return http.postWatched(self.gpa, self.io, self.client, provider, body, conv);
+}
+
 fn compactStandalone(self: *Agent) !usize {
     const body = try compactBody(self);
     defer self.gpa.free(body);
@@ -232,7 +243,10 @@ fn compactStandalone(self: *Agent) !usize {
     compact_provider.url = try compactEndpoint(self.historyAlloc(), self.provider.url);
     var conv_buf: [96]u8 = undefined;
     const conv = @import("http_headers.zig").requestCacheKey(self.io, self.label, self, self.provider, &conv_buf);
-    const response_body = try http.postWatched(self.gpa, self.io, self.client, compact_provider, body, conv);
+    const response_body = postCompaction(self, compact_provider, body, conv) catch |err| {
+        if (http.dnsFailure(err)) try @import("provider_error_copy.zig").reportTransportGiveUp(self, err, 1, "", "");
+        return err;
+    };
     defer self.gpa.free(response_body);
     const response = std.json.parseFromSliceLeaky(std.json.Value, self.historyAlloc(), response_body, .{ .allocate = .alloc_always }) catch {
         if (self.tracer) |tr| tr.note("server_compact_error", response_body[0..@min(response_body.len, 400)]);
@@ -439,18 +453,21 @@ pub fn autocompactResumed(self: *Agent) void {
 }
 
 pub fn autocompactIf(self: *Agent, recovery_meter: u64, server_arm: bool) void {
+    autocompactForRequest(self, recovery_meter, server_arm) catch {};
+}
+
+pub fn autocompactForRequest(self: *Agent, recovery_meter: u64, server_arm: bool) error{ApiError}!void {
+    const compactBeforeRequest = @import("agent_compact_recover.zig").compactBeforeRequest;
     // An explicit-compact provider (not xAI — client summary won) gets
     // first-party compaction: one POST folds history into an opaque blob.
     // Any failure falls through to the client policy so a broken endpoint
     // can never wedge the session.
     if (self.provider.serverCompactUrl() != null) {
         if (explicitCompact(self)) return;
-        self.compactOrRecover(self.provider.nearContextLimit(recovery_meter));
-        return;
+        return compactBeforeRequest(self, self.provider.nearContextLimit(recovery_meter));
     }
     if (!server_arm or self.provider.kind != .responses) {
-        self.compactOrRecover(self.provider.nearContextLimit(recovery_meter));
-        return;
+        return compactBeforeRequest(self, self.provider.nearContextLimit(recovery_meter));
     }
     if (pruneIf(self, true)) return;
     // No blob yet: the server compacts in-stream at the same threshold, so
@@ -459,7 +476,7 @@ pub fn autocompactIf(self: *Agent, recovery_meter: u64, server_arm: bool) void {
     // wall, where shipping the request itself would risk an over-cap hard
     // failure (#163).
     if (self.provider.nearContextLimit(recovery_meter))
-        self.compactOrRecover(true);
+        try compactBeforeRequest(self, true);
 }
 
 fn buildCompactBody(self: *Agent) ![]u8 {
@@ -504,7 +521,7 @@ pub fn explicitCompact(self: *Agent) bool {
     if (!main_mod.json_mode and @import("repl.zig").g_debug) self.say("[compacting server-side: {d} item(s)…]\n", .{self.messages.items.len}) catch {};
     var conv_buf: [96]u8 = undefined;
     const conv = @import("http_headers.zig").requestCacheKey(self.io, self.label, self, self.provider, &conv_buf);
-    const resp = http.postWatched(self.gpa, self.io, self.client, cp, body, conv) catch |err| {
+    const resp = postCompaction(self, cp, body, conv) catch |err| {
         if (self.tracer) |tr| tr.note("compact", @errorName(err));
         return false;
     };

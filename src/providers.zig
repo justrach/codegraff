@@ -89,7 +89,7 @@ pub fn applyProviderInner(root: *Agent, arena: Allocator, p: Provider, persist: 
     if (same_format and p.kind == .responses) _ = @import("codex_tool_search.zig").sanitizeForProvider(root);
     if (root.reasoning == .none and !@import("effort_route.zig").mimoRoute(p.id, p.model)) {
         root.reasoning = .medium;
-        if (persist) _ = @import("repl_glue.zig").saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+        if (persist) _ = @import("repl_glue.zig").saveThinkingSettings(root.io, root.gpa, root.reasoning, null, root.ultracode_mode, root.show_thinking, root.ai_title);
         note = try std.fmt.allocPrint(arena, "{s}; reasoning reset to Medium (Off unsupported by this model)", .{note});
     }
     // #371: only a derived worker default follows a model switch; explicit pins remain.

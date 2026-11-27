@@ -41,6 +41,8 @@ Older activity records omit these fields and read as empty strings; clients
 should show unknown rather than infer the parent model. Live ACP progress also
 includes the resolved model in the tool title and `_meta["graff/subagent"]`;
 draft and background child spawn labels carry it before any child text arrives.
+A child that ends failed or cancelled says why on its terminal frame, in
+`reason` and `failureKind` (ADR 0358; shapes in `docs/acp-compatibility.md`).
 
 The desktop's short-lived observer runs the same vendor extension before model,
 credential, MCP and session startup. It remains available during another Graff's

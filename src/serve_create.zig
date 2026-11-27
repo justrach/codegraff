@@ -120,12 +120,14 @@ pub fn createFromBody(st: *ServeState, arena: Allocator, body: []const u8) !Crea
     try argv.appendSlice(arena, &.{ st.exe, "--json", "--resume", name });
     if (yolo) try argv.append(arena, "--yolo");
     if (model) |m| try argv.appendSlice(arena, &.{ "--model", m });
+    if (st.cfg.service_tier) |tier| try argv.appendSlice(arena, &.{ "--service-tier", tier.label() });
     if (subagent_provider) |p| try argv.appendSlice(arena, &.{ "--subagent-provider", p });
     if (subagent_model) |m| try argv.appendSlice(arena, &.{ "--subagent-model", m });
     if (allow_cross_provider_subagents) try argv.append(arena, "--allow-cross-provider-subagents");
     if (no_subagent_tier) try argv.append(arena, "--no-subagent-tier");
     if (max_tools) |n| try argv.appendSlice(arena, &.{ "--max-tool-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
     if (max_models) |n| try argv.appendSlice(arena, &.{ "--max-model-calls", try std.fmt.allocPrint(arena, "{d}", .{n}) });
+    if (@import("http.zig").RetryPlan.no_model_resends) try argv.append(arena, "--no-model-resends");
     if (dedupe_tools) try argv.append(arena, "--dedupe-tool-calls");
     if (sys) |s| try argv.appendSlice(arena, &.{ "--system-prompt", s });
     if (append_sys) |s| try argv.appendSlice(arena, &.{ "--append-system-prompt", s });

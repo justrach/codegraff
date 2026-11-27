@@ -24,6 +24,7 @@ const Allocator = std.mem.Allocator;
 const root = @import("main.zig");
 const schema = @import("schema.zig");
 const events = @import("serve_events.zig");
+const serve_answer = @import("serve_answer.zig");
 const serve_create = @import("serve_create.zig"); // POST /v1/sessions (durable naming + spawn)
 const emitSchema = schema.emitSchema;
 const harness_version = root.harness_version;
@@ -35,6 +36,7 @@ pub const ServeConfig = struct {
     token: ?[]const u8,
     yolo: bool,
     model: ?[]const u8,
+    service_tier: ?@import("service_tier.zig").Tier = null,
     subagent_provider: ?[]const u8,
     subagent_model: ?[]const u8,
     allow_cross_provider_subagents: bool,
@@ -480,23 +482,8 @@ fn inFlight(st: *ServeState, id: []const u8) bool {
 }
 
 fn serveAnswer(st: *ServeState, req: *std.http.Server.Request, s: *ServeSession, line: []const u8, obj: std.json.ObjectMap) !void {
-    const io = st.io;
-    s.answer_mu.lockUncancelable(io);
-    defer s.answer_mu.unlock(io);
-
-    if (!s.awaiting_answer) {
-        return respondJson(st, req, .conflict, "{\"error\":\"no active ask_user prompt\"}");
-    }
-    const req_call_id = if (obj.get("call_id")) |v| (if (v == .string) v.string else "") else "";
-    const active_call_id = s.answer_call_id[0..s.answer_call_id_len];
-    if (req_call_id.len > 0 and active_call_id.len > 0 and !std.mem.eql(u8, req_call_id, active_call_id)) {
-        return respondJson(st, req, .conflict, "{\"error\":\"answer call_id does not match active ask_user prompt\"}");
-    }
-
-    writeChildLine(io, s, line) catch return respondJson(st, req, .bad_gateway, "{\"error\":\"session process is gone\"}");
-    s.awaiting_answer = false;
-    s.answer_call_id_len = 0;
-    return respondJson(st, req, .ok, "{\"ok\":true,\"type\":\"answer\"}");
+    const result = serve_answer.submit(st.io, s, line, obj);
+    return respondJson(st, req, result.status, result.body);
 }
 
 fn serveCancel(st: *ServeState, req: *std.http.Server.Request, s: *ServeSession, line: []const u8) !void {

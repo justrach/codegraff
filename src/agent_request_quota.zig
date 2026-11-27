@@ -135,15 +135,16 @@ pub fn handle(self: *@import("agent.zig").Agent, etype: []const u8, code: ?[]con
     self.last_api_error_detail = null;
     const fault = classify(etype, code, msg) orelse return false;
     const policy = @import("agent_request_policy.zig");
-    if (fault == .quota and stepDownSeparateQuotaPool(self)) {
+    const allow_resend = !@import("http.zig").RetryPlan.no_model_resends;
+    if (allow_resend and fault == .quota and stepDownSeparateQuotaPool(self)) {
         self.closeCodexWs();
         return true;
     }
-    if (fault == .quota and policy.handOffExhaustedPlan(self)) {
+    if (allow_resend and fault == .quota and policy.handOffExhaustedPlan(self)) {
         self.closeCodexWs(); // an existing socket still carries the spent credential
         return true;
     }
-    if (fault == .authentication and policy.retryAfterAuthRefresh(self, if (policy.isAuthError(msg)) msg else "authentication_error", refreshed)) {
+    if (allow_resend and fault == .authentication and policy.retryAfterAuthRefresh(self, if (policy.isAuthError(msg)) msg else "authentication_error", refreshed)) {
         self.closeCodexWs();
         return true;
     }

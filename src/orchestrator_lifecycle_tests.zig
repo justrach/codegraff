@@ -245,6 +245,27 @@ test "orchestrator retires phase directives on interrupt, direct exit, replan ca
     try std.testing.expect(std.mem.indexOf(u8, after_err, "[orchestrator history") != null);
 }
 
+test "orchestrator retires a restored Phase 1 directive before a single-phase turn (#1908)" {
+    const saved = SavedState.save();
+    defer saved.restore();
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var keys: Keys = .{ .values = @splat(null) };
+    var root = try testAgentFor(arena, "codex", .responses, "gpt-6-astra");
+    orchestrator.handoff_active = false;
+    main_mod.plan_mode = false;
+    orchestrator.g_mode = .off;
+
+    var directive = try named_work.userNudge(arena, root.provider.kind, "[orchestrator mode — phase 1: plan]\nCall exit_plan_mode before editing.");
+    try directive.object.put(arena, @import("session_wake.zig").origin_key, .{ .string = "notification" });
+    try root.messages.append(directive);
+    Script.reset(.direct);
+    _ = try orchestrator_turn.run(&root, &keys, arena, null, &Script.runPhase);
+    try std.testing.expectEqual(@as(usize, 1), Script.calls);
+    try expectNoActiveDirectives(&root);
+}
+
 test "orchestrator auto routing skips informational questions and substring traps (#1906)" {
     const saved = SavedState.save();
     defer saved.restore();
@@ -257,8 +278,9 @@ test "orchestrator auto routing skips informational questions and substring trap
     var root = try testAgentFor(arena, "codex", .responses, "gpt-6-astra");
 
     const stats_q = "I tried the calculator shortcut for this statistics question but my answer is different. Why?";
-    const stats_attached = stats_q ++ "\n\nAttached files:\n- /tmp/stats.pdf";
+    const stats_attached = stats_q ++ "\n\nAttached files:\n- fix-stats.pdf";
     try std.testing.expectEqual(task_intent.Intent.informational, task_intent.classify(stats_q));
+    try std.testing.expectEqualStrings(stats_q, orchestrator.stripHarnessNotes(stats_attached));
     try std.testing.expect(!orchestrator.shouldPlanAuto(&root, stats_attached));
 
     try std.testing.expectEqual(task_intent.Intent.informational, task_intent.classify("Explain how address padding works in wireless packets."));

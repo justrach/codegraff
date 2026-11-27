@@ -113,6 +113,22 @@ test "MCP task argv appends context as text and keeps server-owned policy" {
     try std.testing.expect(std.mem.indexOf(u8, try std.mem.join(a, "\u{1}", bare), "--append-system-prompt") == null);
 }
 
+test "#1932: spawned MCP model workers inherit the server resend policy" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var ctx: mcp.Context = .{ .io = std.testing.io, .exe = "/fake/graff", .env = undefined };
+    const plan = @import("http.zig").RetryPlan;
+    const prior = plan.no_model_resends;
+    defer plan.no_model_resends = prior;
+    for ([_]bool{ false, true }) |strict| {
+        plan.no_model_resends = strict;
+        const argv = try mcp.taskArgv(a, &ctx, .{ .prompt = "reply" }, null);
+        const joined = try std.mem.join(a, "\x1f", argv);
+        try std.testing.expectEqual(strict, std.mem.indexOf(u8, joined, "--no-model-resends") != null);
+    }
+}
+
 test "MCP reports the context it carried" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

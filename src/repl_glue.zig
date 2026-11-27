@@ -456,9 +456,9 @@ pub fn steerEchoUnlocked(bytes: []const u8) void {
 }
 
 /// Persist the thinking controls (/effort, /fast) to .harness/settings.json,
-/// preserving every other key. Default values (medium effort, fast off) are
-/// removed rather than written so the file stays clean. Best-effort.
-pub fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: bool, ultracode: bool, show_thinking: bool, ai_title: bool) bool {
+/// preserving every other key. Pass null for fast when the tier is unchanged.
+/// Defaults (medium effort, fast off) are omitted. Best-effort.
+pub fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fast: ?bool, ultracode: bool, show_thinking: bool, ai_title: bool) bool {
     Io.Dir.cwd().createDir(io, Approvals.settings_dir, .default_dir) catch {}; // already-exists is fine
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -474,11 +474,13 @@ pub fn saveThinkingSettings(io: Io, gpa: Allocator, effort: ReasoningEffort, fas
     } else {
         root_obj.put(a, "effort", .{ .string = @tagName(effort) }) catch return false;
     }
-    if (!fast) {
-        _ = root_obj.orderedRemove("fast");
-        _ = root_obj.orderedRemove("service_tier");
-    } else {
-        root_obj.put(a, "fast", .{ .bool = true }) catch return false;
+    if (fast) |on| {
+        if (on) {
+            root_obj.put(a, "fast", .{ .bool = true }) catch return false;
+        } else {
+            _ = root_obj.orderedRemove("fast");
+            _ = root_obj.orderedRemove("service_tier");
+        }
     }
     if (!ultracode) {
         _ = root_obj.orderedRemove("ultracode");
@@ -537,7 +539,7 @@ pub fn loadThinkingSettings(io: Io, arena: Allocator, root: *Agent) void {
         root.reasoning = .medium;
         root.startup_effort_notice = "Saved reasoning Off is unsupported by this model; reset to Medium.";
         std.log.warn("{s}", .{root.startup_effort_notice.?});
-        _ = saveThinkingSettings(io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+        _ = saveThinkingSettings(io, root.gpa, root.reasoning, null, root.ultracode_mode, root.show_thinking, root.ai_title);
     }
 }
 

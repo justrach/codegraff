@@ -243,7 +243,7 @@ pub const Inbox = struct {
                 if (self.session_id) |current| {
                     if (sid == null or std.mem.eql(u8, sid.?, current)) {
                         self.cancelled = true;
-                        self.cancel_kind = cancel_source.fromAcp(r.params);
+                        self.cancel_kind = if (closing) .acp_client else cancel_source.fromAcp(r.params);
                         if (self.active) cancel_source.cancel(self.cancel_kind);
                         acp_ask.cancelIfWaiting();
                         if (self.permission) |bridge| bridge.cancel();
@@ -333,6 +333,26 @@ test "ACP cancel interrupts active turn and does not cancel its successor" {
     try inbox.accept("{\"method\":\"session/cancel\"}");
     inbox.begin();
     try std.testing.expect(!Agent.esc_cancel.load(.acquire));
+}
+
+test "#1611 ACP lifecycle close and explicit Stop retain different cancellation sources" {
+    var reader: Io.Reader = .fixed("");
+    var inbox: Inbox = .{ .gpa = std.testing.allocator, .io = std.testing.io, .reader = &reader };
+    defer inbox.deinit();
+    defer cancel_source.clear();
+    try inbox.accept("{\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"s\"}}");
+    inbox.begin();
+    try inbox.accept("{\"id\":9,\"method\":\"session/close\",\"params\":{\"sessionId\":\"s\"}}");
+    try std.testing.expect(Agent.esc_cancel.load(.acquire));
+    try std.testing.expectEqual(cancel_source.Source.acp_client, cancel_source.take(null));
+    inbox.end();
+
+    cancel_source.clear();
+    try inbox.accept("{\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"s\"}}");
+    inbox.begin();
+    try inbox.accept("{\"method\":\"session/cancel\",\"params\":{\"sessionId\":\"s\",\"_meta\":{\"graff/cancelSource\":\"user\"}}}");
+    try std.testing.expect(Agent.esc_cancel.load(.acquire));
+    try std.testing.expectEqual(cancel_source.Source.acp_cancel, cancel_source.take(null));
 }
 
 test "session/answer fills the ask mailbox without queueing a line" {

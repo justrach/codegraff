@@ -97,6 +97,12 @@ pub fn repeatedEmptySummaryFailure(self: *Agent, err: anyerror) bool {
 }
 
 pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
+    compactBeforeRequest(self, trim_on_fail) catch {}; // between-turn and explicit callers have no pending send
+}
+
+/// Propagate terminal resolver failures from server compaction to the pending
+/// provider request. DNS failure is independent of history size.
+pub fn compactBeforeRequest(self: *Agent, trim_on_fail: bool) error{ApiError}!void {
     if (compact_cut.lastIsResolved(self.messages.items)) {
         self.compact_pin_degraded = false;
         compact_cut.resetStall(&self.compact_stall);
@@ -120,6 +126,7 @@ pub fn compactOrRecover(self: *Agent, trim_on_fail: bool) void {
         self.compact_transport_failures = 0;
         return;
     } else |err| {
+        if (@import("http.zig").dnsFailure(err)) return error.ApiError;
         switch (err) {
             error.Interrupted => {
                 self.compact_transport_failures = 0;

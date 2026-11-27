@@ -261,8 +261,9 @@ fn raceHead(io: Io, head: *Head, poll_stdin: bool, budget: http_send.Budget) !He
 /// the complete POST reached the peer.
 pub fn mayResendOnH1(phase: Phase, err: anyerror) bool {
     if (err == error.Canceled) return false;
-    if (phase == .dial) return true;
-    if (err == error.H1NoStream or err == error.Http11Required) return true;
+    if (phase == .dial or err == error.H1NoStream) return true;
+    if (http.RetryPlan.no_model_resends) return false;
+    if (err == error.Http11Required) return true;
     return err == error.GoAway or err == error.StreamRefused;
 }
 
@@ -270,7 +271,7 @@ pub fn mayResendOnH1(phase: Phase, err: anyerror) bool {
 /// response headers is evicted and redialed once on a fresh H2 connection so
 /// stale keepalives do not burn user-visible retry attempts or force H1.
 pub fn mayRedialFreshH2(reused: bool, err: anyerror) bool {
-    if (!reused) return false;
+    if (!reused or http.RetryPlan.no_model_resends) return false;
     return err == error.StreamRefused or err == error.GoAway or err == error.RstStream;
 }
 
@@ -301,6 +302,20 @@ test "HTTP/1.1 fallback only when the request provably never reached the server"
     // A cancel is never turned into a replacement request.
     try std.testing.expect(!mayResendOnH1(.dial, error.Canceled));
     try std.testing.expect(!mayResendOnH1(.send, error.Canceled));
+}
+
+test "#1932: strict HTTP/2 mode permits negotiation but stops all post-send fallback" {
+    const prior = http.RetryPlan.no_model_resends;
+    defer http.RetryPlan.no_model_resends = prior;
+    for ([_]bool{ false, true }) |strict| {
+        http.RetryPlan.no_model_resends = strict;
+        try std.testing.expect(mayResendOnH1(.dial, error.H1NoStream));
+        try std.testing.expect(mayResendOnH1(.send, error.H1NoStream));
+        try std.testing.expectEqual(!strict, mayResendOnH1(.send, error.StreamRefused));
+        try std.testing.expectEqual(!strict, mayResendOnH1(.wait, error.Http11Required));
+        try std.testing.expectEqual(!strict, mayRedialFreshH2(true, error.RstStream));
+        try std.testing.expect(!mayResendOnH1(.wait, error.EndOfStream));
+    }
 }
 
 fn headTask(head: *Head, watch: *http_send.Watch) anyerror!void {

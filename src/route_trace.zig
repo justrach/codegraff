@@ -85,11 +85,60 @@ fn tierName(t: ?policy.Tier) []const u8 {
     return if (t) |x| x.label() else "";
 }
 
+/// What a spawn's `model`/`tier` pin (or its persona's) ASKED for, beside the
+/// `resolved_model` it got, so a recorded run shows requested against actual.
+/// Callers bound the strings; empty fields are left off the record. The
+/// --json `agent_route` event is unchanged.
+pub const Requested = struct {
+    model: []const u8 = "",
+    tier: []const u8 = "",
+    /// subagent_pin.Outcome's tag ("unknown_model", "pinned", ...).
+    outcome: []const u8 = "",
+
+    pub fn isEmpty(self: Requested) bool {
+        return self.model.len == 0 and self.tier.len == 0 and self.outcome.len == 0;
+    }
+};
+
 /// Emit one worker's routing decision on all three paths at once.
 pub fn emit(io: Io, tracer: ?*trace.Tracer, label: []const u8, provider_id: []const u8, d: Decision) void {
-    var buf: [line_cap]u8 = undefined;
-    if (tracer) |tr| tr.note("route", policy.formatDecision(&buf, d));
-    if (trace.g_traj) |tj| tj.node(.{
+    emitWith(io, tracer, label, provider_id, d, .{});
+}
+
+/// `formatDecision`'s line plus the request, JSON-quoted so a spaced name
+/// stays one `key=value` field.
+pub fn formatRequested(buf: []u8, d: Decision, req: Requested) []const u8 {
+    var line: [line_cap]u8 = undefined;
+    const base = policy.formatDecision(&line, d);
+    if (req.isEmpty()) return std.fmt.bufPrint(buf, "{s}", .{base}) catch buf[0..0];
+    return std.fmt.bufPrint(buf, "{s} requested_model={f} requested_tier={f} pin={s}", .{
+        base,
+        std.json.fmt(util.utf8Prefix(req.model, field_cap), .{}),
+        std.json.fmt(util.utf8Prefix(req.tier, field_cap), .{}),
+        if (req.outcome.len > 0) req.outcome else "-",
+    }) catch std.fmt.bufPrint(buf, "{s}", .{base}) catch buf[0..0];
+}
+
+fn emitWith(io: Io, tracer: ?*trace.Tracer, label: []const u8, provider_id: []const u8, d: Decision, req: Requested) void {
+    // Worst case: every requested byte JSON-escaped as a six-byte \u escape.
+    var buf: [line_cap + 2 * (6 * field_cap + 2) + 64]u8 = undefined;
+    if (tracer) |tr| tr.note("route", formatRequested(&buf, d, req));
+    if (!req.isEmpty()) if (trace.g_traj) |tj| tj.node(.{
+        .kind = "route",
+        .label = util.utf8Prefix(label, field_cap),
+        .shape = d.shape.label(),
+        .role = d.role,
+        .tier = tierName(d.tier),
+        .model = d.resolved_model,
+        .provider = provider_id,
+        .source = d.source.label(),
+        .policy_or_genome_id = d.policy_id,
+        .requested_model = util.utf8Prefix(req.model, field_cap),
+        .requested_tier = util.utf8Prefix(req.tier, field_cap),
+        .pin_outcome = req.outcome,
+        .t = tj.elapsedMs(),
+    });
+    if (req.isEmpty()) if (trace.g_traj) |tj| tj.node(.{
         .kind = "route",
         .label = util.utf8Prefix(label, field_cap),
         .shape = d.shape.label(),
@@ -129,6 +178,20 @@ pub fn emitSpawn(
     source: Source,
     genome: []const u8,
 ) void {
+    emitSpawnWith(io, tracer, label, provider_id, model, cell, source, genome, .{});
+}
+
+fn emitSpawnWith(
+    io: Io,
+    tracer: ?*trace.Tracer,
+    label: []const u8,
+    provider_id: []const u8,
+    model: []const u8,
+    cell: Cell,
+    source: Source,
+    genome: []const u8,
+    req: Requested,
+) void {
     var pbuf: [128]u8 = undefined;
     const tier = policy.tierOf(provider_id, model);
     const policy_id = switch (source) {
@@ -136,14 +199,14 @@ pub fn emitSpawn(
         .ladder => std.fmt.bufPrint(&pbuf, "ladder:{s}", .{provider_id}) catch "",
         else => util.utf8Prefix(genome, field_cap),
     };
-    emit(io, tracer, label, provider_id, .{
+    emitWith(io, tracer, label, provider_id, .{
         .shape = cell.shape,
         .role = cell.role,
         .tier = tier,
         .resolved_model = model,
         .source = source,
         .policy_id = policy_id,
-    });
+    }, req);
 }
 
 /// What an UNPINNED worker inherited. A session whose worker route came from
@@ -167,9 +230,24 @@ pub fn emitSpawnProvider(
     sys_override: ?[]const u8,
     niche: []const u8,
 ) void {
+    emitSpawnRequested(io, tracer, label, child, cell, source, sys_override, niche, .{});
+}
+
+/// emitSpawnProvider for a `subagent` spawn, carrying what its pin asked for.
+pub fn emitSpawnRequested(
+    io: Io,
+    tracer: ?*trace.Tracer,
+    label: []const u8,
+    child: Provider,
+    cell: Cell,
+    source: Source,
+    sys_override: ?[]const u8,
+    niche: []const u8,
+    req: Requested,
+) void {
     var fp: [16]u8 = undefined;
     if (sys_override) |so| fp = scoring.promptFingerprint(so);
-    emitSpawn(io, tracer, label, child.id, child.model, cell, source, if (sys_override != null) &fp else niche);
+    emitSpawnWith(io, tracer, label, child.id, child.model, cell, source, if (sys_override != null) &fp else niche, req);
 }
 
 /// Local DGM capture of one SCORED worker configuration (#372 part 2): the

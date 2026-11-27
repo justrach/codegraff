@@ -105,7 +105,10 @@ pub const Pin = struct {
 
 /// Why a pin did or did not change the child's model. Carried to the trace so
 /// an ignored pin is visible rather than silent — the failure a hard error
-/// would have made obvious is instead made observable.
+/// would have made obvious is instead made observable. An ignored pin is also
+/// named, with the model that actually ran, at the top of the tool result the
+/// parent reads (subagent_pin_note.zig): the trace alone reaches neither the
+/// parent model nor the user.
 pub const Outcome = enum {
     none, // no pin was requested
     pinned, // honored
@@ -125,15 +128,15 @@ pub const Outcome = enum {
             .none => "",
             .pinned => "model pin applied",
             .same => "model pin is already the active model",
-            .unknown_model => "model pin ignored: not an available model on this provider — kept the session default",
-            .unknown_tier => "tier pin ignored: expected frontier, mid or small — kept the session default",
-            .no_ladder => "tier pin ignored: this provider has no tier ladder — kept the session default",
-            .no_rung => "tier pin ignored: this provider's ladder has no model at that rung — kept the session default",
+            .unknown_model => "model pin ignored: not an available model on this provider",
+            .unknown_tier => "tier pin ignored: expected frontier, mid or small",
+            .no_ladder => "tier pin ignored: this provider has no tier ladder",
+            .no_rung => "tier pin ignored: this provider's ladder has no model at that rung",
             .rung_pricier => "tier pin ignored: that rung is pricier than this agent's model — cost never escalates implicitly; pin the model by name to escalate",
             .sub_routed => "tier routed to a logged-in flat-rate subscription — marginal cost zero outranks metered spend; the login is the user's standing consent for that vendor",
             .model_sub_routed => "model pin routed to a logged-in flat-rate subscription that serves it — the child's provider does not; the login is the user's standing consent for that vendor",
             .cross_provider_unconsented => "model pin ignored: it names another provider — start with --allow-cross-provider-subagents to let workers send prompts and code there",
-            .no_login => "model pin ignored: no key or login for the provider it names — kept the session default",
+            .no_login => "model pin ignored: no key or login for the provider it names",
         };
     }
 };

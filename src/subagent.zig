@@ -78,6 +78,11 @@ pub fn execSubagent(ctx: ToolCtx, input: Value) !ToolOutput {
     var source_arena = std.heap.ArenaAllocator.init(ctx.gpa);
     defer source_arena.deinit();
     var forked = ctx;
+    const service_tier = @import("service_tier.zig");
+    forked.worker_service_tier = service_tier.parseWorker(obj.get("service_tier")) catch
+        return .{ .text = try ctx.gpa.dupe(u8, "subagent: service_tier must be default, fast, or ultrafast"), .is_error = true };
+    if (!service_tier.supportsRoute(ask.pin.provider orelse base, forked.worker_service_tier))
+        return .{ .text = try ctx.gpa.dupe(u8, "subagent: the resolved model and provider do not offer the requested service tier"), .is_error = true };
     forked.fork_source = @import("subagent_history.zig").fromInput(ctx, input, source_arena.allocator()) catch |err| return failure(ctx.gpa, err);
     forked.parent_task = try @import("subagent_fork.zig").task(ctx.gpa, ctx.parent_messages);
     defer ctx.gpa.free(forked.parent_task);

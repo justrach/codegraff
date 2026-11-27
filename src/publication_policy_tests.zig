@@ -111,3 +111,16 @@ test "#738 failed prompt allocation never installs only some variants" {
     try std.testing.expectEqualStrings("old-ultra", agent.sys_ultra);
     try std.testing.expectEqualStrings("old-ultra-strict", agent.sys_ultra_strict);
 }
+
+test "#1549 automatic and explicit issue reporting search and recheck before creation" {
+    const shared = @import("issue_reporting.zig").guidance;
+    const brief = @import("issue_cmd.zig").brief;
+    for ([_][]const u8{ shared, brief }) |policy| {
+        try std.testing.expect(std.mem.indexOf(u8, policy, "error signature and affected operation") != null);
+        try std.testing.expect(std.mem.indexOf(u8, policy, "search fails or is incomplete") != null);
+        try std.testing.expect(std.mem.indexOf(u8, policy, "reconcile any uncertain create") != null);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, text.harness_issue_note, "--state all") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text.harness_issue_note, "An unchanged recurrence needs no public write.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text.harness_issue_note, "Never retry an unconfirmed create.") != null);
+}

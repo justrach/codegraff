@@ -20,7 +20,7 @@ pub fn learn(self: *Agent, response: std.json.ObjectMap) void {
     const input = usage.object.get("input_tokens") orelse return;
     if (input != .integer or input.integer <= 0) return;
     const history: std.json.Value = .{ .array = self.messages };
-    const bytes = context_tokens.compactionStateBytes(history);
-    if (bytes == 0) return;
-    context_tokens.learnState(bytes, @intCast(input.integer), self.fullRequestEstimateTokens());
+    const id = context_tokens.compactionStateIdentity(history);
+    if (id.bytes == 0) return;
+    context_tokens.learnState(id, @intCast(input.integer), self.fullRequestEstimateTokens());
 }

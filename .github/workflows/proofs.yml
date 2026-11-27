@@ -1,0 +1,43 @@
+name: Lean proofs
+
+on:
+  pull_request:
+    paths:
+      - 'lean-proofs/**'
+      - 'spec/**'
+      - 'src/test_fixtures/**'
+      - 'src/remote_answer_lean.txt'
+      - 'scripts/eval-spec.sh'
+      - 'evals/first_completion/**'
+      - '.github/workflows/proofs.yml'
+      - '.gitattributes'
+  push:
+    branches: [main, 'release/**']
+    paths:
+      - 'lean-proofs/**'
+      - 'spec/**'
+      - 'src/test_fixtures/**'
+      - 'src/remote_answer_lean.txt'
+      - 'scripts/eval-spec.sh'
+      - 'evals/first_completion/**'
+      - '.github/workflows/proofs.yml'
+      - '.gitattributes'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: leanprover/lean-action@ba3fdfe5c4476c925da13bf11a005ddb47e47aee # v1
+        with:
+          lake-package-directory: lean-proofs
+          build: false
+          test: false
+          lint: false
+          use-mathlib-cache: false
+      - run: scripts/eval-spec.sh --lean
+      - run: python3 evals/first_completion/run.py --self-test

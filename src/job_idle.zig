@@ -40,6 +40,11 @@ pub fn verdictUnder(p: Policy, idle_ms: u64, warned: bool, pinned: bool) Verdict
 
 /// Minutes; unparseable values are ignored, 0 disables, a week is the cap.
 pub fn applyEnv(environ_map: anytype) void {
+    if (environ_map.get("GRAFF_PREVIEW_GRACE_SECS")) |value| {
+        if (std.fmt.parseInt(u64, value, 10)) |seconds| {
+            @import("preview_consumers.zig").grace = @min(seconds, 3600) * std.time.ms_per_s;
+        } else |_| {}
+    }
     if (environ_map.get("GRAFF_JOB_IDLE_WARN_MINS")) |v| {
         if (parseMins(v)) |ms| policy.warn_ms = ms;
     }

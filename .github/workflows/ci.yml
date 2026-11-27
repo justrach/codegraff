@@ -162,6 +162,12 @@ jobs:
       - name: Embedder mode resumable serve streams (#330)
         run: python3 scripts/test-serve-resume.py zig-out/bin/graff
 
+      - name: Remote control clarification routing (#722)
+        run: python3 scripts/test-remote-answer.py zig-out/bin/graff
+
+      - name: Managed preview consumer expiry (#941)
+        run: python3 scripts/test-preview-expiry.py zig-out/bin/graff
+
       - name: A reloaded session keeps its compaction-state count (#1686)
         run: python3 scripts/test-acp-reload-compaction-count.py zig-out/bin/graff
 

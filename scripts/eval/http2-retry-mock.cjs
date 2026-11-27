@@ -13,7 +13,7 @@ const reply = 'data: {"choices":[{"index":0,"delta":{"content":"OK"},"finish_rea
   'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}\n\n' +
   'data: [DONE]\n\n';
 function post(protocol, body, extra) {
-  record({event:'post', protocol, bytes:Buffer.byteLength(body),
+  record({event:extra.method === 'POST' ? 'post' : 'probe', protocol, bytes:Buffer.byteLength(body),
     sha256:crypto.createHash('sha256').update(body).digest('hex'),
     atMs:Number(process.hrtime.bigint() / 1000000n), ...extra});
 }

@@ -57,6 +57,7 @@ const bench_priors = @import("bench_priors.zig");
 const selection = @import("subagent_selection.zig");
 const tier_ladder = @import("subagent_tier_ladder.zig");
 const subagent_pin = @import("subagent_pin.zig");
+const pin_note = @import("subagent_pin_note.zig");
 const route_policy = @import("route_policy.zig");
 const route_phase = @import("route_phase.zig");
 const route_trace = @import("route_trace.zig");
@@ -167,6 +168,10 @@ pub const Ask = struct {
     /// Kept apart so a blocked spawn says which of the two happened instead of
     /// claiming "none exists" when one does and merely costs more.
     pricier: []const u8 = "",
+    /// The line an ignored model/tier pin owes the parent (empty when the pin
+    /// was honoured or none was asked for), rendered by value so a background
+    /// job's receipt and report carry it without a lifetime of their own.
+    pin_note: pin_note.Note = .{},
 
     pub fn isAsk(self: Ask) bool {
         return self.path.len > 0;
@@ -270,8 +275,15 @@ pub fn blockedByCost(base: Provider) []const u8 {
 }
 
 /// The whole spawn-time decision: run the #292/#372 chain unchanged, then ask
-/// the vision question of its answer.
+/// the vision question of its answer, then render what an ignored pin owes
+/// the parent against the seat that will actually run.
 pub fn forSpawn(base: Provider, obj: std.json.ObjectMap, session_pinned: bool, cell: route_policy.Cell, prompt: []const u8) Ask {
+    var ask = decide(base, obj, session_pinned, cell, prompt);
+    ask.pin_note = pin_note.build(obj, ask.pin.outcome, base, ask.pin.provider orelse base);
+    return ask;
+}
+
+fn decide(base: Provider, obj: std.json.ObjectMap, session_pinned: bool, cell: route_policy.Cell, prompt: []const u8) Ask {
     // #471: `session_pinned` is true for the automatic #291 ladder descent as
     // well as for a real --subagent-model, and sub-first tier routing was
     // reading it as "the human chose these workers, do not override". On any
@@ -308,11 +320,13 @@ pub fn forSpawn(base: Provider, obj: std.json.ObjectMap, session_pinned: bool, c
 pub fn seat(ctx: tools.ToolCtx, base: Provider, obj: std.json.ObjectMap, cell: route_policy.Cell, label: []const u8, prompt: []const u8, sys_override: ?[]const u8, niche: []const u8) Ask {
     const ask = forSpawn(base, obj, ctx.subagent_provider != null, cell, prompt);
     if (ctx.tracer) |tr| {
-        if (ask.pin.outcome != .none) tr.note("subagent", ask.pin.outcome.describe());
+        // An ignored pin's trace note is the parent's line: it names the model
+        // that actually ran rather than claiming the session default did.
+        if (ask.pin.outcome != .none) tr.note("subagent", if (ask.pin_note.len > 0) ask.pin_note.text() else ask.pin.outcome.describe());
         if (ask.pin.effort_outcome != .none) tr.note("subagent", ask.pin.effort_outcome.describe());
         if (ask.note()) |n| tr.note("vision", n);
     }
-    route_trace.emitSpawnProvider(ctx.io, ctx.tracer, label, ask.pin.provider orelse base, cell, ask.source, sys_override, niche);
+    route_trace.emitSpawnRequested(ctx.io, ctx.tracer, label, ask.pin.provider orelse base, cell, ask.source, sys_override, niche, pin_note.traced(obj, ask.pin.outcome));
     return ask;
 }
 
@@ -368,24 +382,33 @@ pub const pinned_warning = "[vision warning] this task names an image and the wo
 /// have BEEN a vision ask: a disclaimer in a report about anything else is
 /// prose, not a capability admission.
 pub fn warningFor(ask: Ask, report: []const u8) ?[]const u8 {
-    // A role persona that names another provider and could not be seated
-    // there ran on the session default instead: say why, where the user and
-    // the parent model both see it, not only in the trace.
-    switch (ask.pin.outcome) {
-        .cross_provider_unconsented, .no_login => return ask.pin.outcome.describe(),
-        else => {},
-    }
     if (!ask.isAsk()) return null;
     if (disclaimed(report)) return disclaimer_warning;
     return if (ask.pinned_blind) pinned_warning else null;
 }
 
-/// Prepend the warning to a gpa-owned report, transferring ownership. Never
-/// fails: on OOM the report is returned unflagged rather than lost, because a
-/// missing warning is a smaller harm than a missing report.
+/// The line an ignored pin owes the parent: why, the model that ran instead,
+/// and how to get what was asked — where the user and the parent model both
+/// see it, not only in the trace. An Ask built without forSpawn (no rendered
+/// note) still names the two cross-provider refusals by their reason.
+pub fn pinLine(ask: *const Ask) []const u8 {
+    if (ask.pin_note.len > 0) return ask.pin_note.text();
+    return switch (ask.pin.outcome) {
+        .cross_provider_unconsented, .no_login => ask.pin.outcome.describe(),
+        else => "",
+    };
+}
+
+/// Prepend the pin line and the vision warning (each when owed, in that
+/// order) to a gpa-owned report, transferring ownership. Never fails: on OOM
+/// the report is returned unflagged rather than lost, because a missing
+/// warning is a smaller harm than a missing report.
 pub fn flagText(gpa: Allocator, text: []u8, ask: Ask) []u8 {
-    const line = warningFor(ask, text) orelse return text;
-    const out = std.fmt.allocPrint(gpa, "{s}\n\n{s}", .{ line, text }) catch return text;
+    const pin = pinLine(&ask);
+    const vision_line = warningFor(ask, text) orelse "";
+    if (pin.len == 0 and vision_line.len == 0) return text;
+    const sep = if (pin.len > 0 and vision_line.len > 0) "\n" else "";
+    const out = std.fmt.allocPrint(gpa, "{s}{s}{s}\n\n{s}", .{ pin, sep, vision_line, text }) catch return text;
     gpa.free(text);
     return out;
 }

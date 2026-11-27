@@ -9,8 +9,9 @@
 //!
 //! So a shell command that runs simulator tests or writes a simulator's
 //! pasteboard is refused while the app is open with sync on, or when that
-//! cannot be checked. graff never changes the setting and never reads or
-//! restores the clipboard itself: a save/restore would roll back something
+//! cannot be checked. A command that also opens Simulator cannot treat its
+//! currently closed state as isolation. graff leaves the setting and the
+//! clipboard alone: saving and restoring the clipboard would roll back something
 //! the person copied during the run. `GRAFF_ALLOW_SIM_PASTEBOARD=1` turns the
 //! check off.
 
@@ -50,12 +51,40 @@ pub fn writesPasteboard(cmd: []const u8) bool {
 
 pub const Host = enum { isolated, shared, unknown };
 
+/// Recognize the ordinary Launch Services spellings in compound commands.
+/// A script or binary that opens Simulator internally is outside this check.
+fn opensSimulator(cmd: []const u8) bool {
+    var segments = std.mem.tokenizeAny(u8, cmd, "\n;&|()");
+    while (segments.next()) |segment| {
+        var opening = false;
+        var words = std.mem.tokenizeAny(u8, segment, " \t\r'\"");
+        while (words.next()) |word| {
+            const base = std.fs.path.basename(word);
+            if (std.mem.eql(u8, base, "open")) opening = true;
+            if (opening and (std.ascii.eqlIgnoreCase(base, "Simulator") or
+                std.ascii.eqlIgnoreCase(base, "Simulator.app") or
+                std.ascii.eqlIgnoreCase(word, "com.apple.iphonesimulator"))) return true;
+        }
+    }
+    return false;
+}
+
+const Preflight = enum { read_pref, isolated, unknown };
+
+fn preflight(status: ?u8, opens_gui: bool) Preflight {
+    if (status == 0 or (status == 1 and opens_gui)) return .read_pref;
+    return if (status == 1) .isolated else .unknown;
+}
+
 /// Whether the Simulator app would copy a device's pasteboard to the Mac's.
-pub fn host(gpa: Allocator, io: Io, run: sim_ledger.Runner) Host {
+fn host(gpa: Allocator, io: Io, run: sim_ledger.Runner, opens_gui: bool) Host {
     const app = run(gpa, io, &.{ "pgrep", "-x", "Simulator" });
     gpa.free(app.stdout);
-    if (app.code == 1) return .isolated;
-    if (app.code != 0) return .unknown;
+    switch (preflight(app.code, opens_gui)) {
+        .isolated => return .isolated,
+        .unknown => return .unknown,
+        .read_pref => {},
+    }
     const pref = run(gpa, io, &.{ "defaults", "read", "com.apple.iphonesimulator", "PasteboardAutomaticSync" });
     defer gpa.free(pref.stdout);
     // An unset key is the default: on.
@@ -65,19 +94,89 @@ pub fn host(gpa: Allocator, io: Io, run: sim_ledger.Runner) Host {
 
 pub const shared_text = "simulator command not run: the Simulator app is open with Edit > Automatically Sync Pasteboard on, so a test that copies text would replace the clipboard on this Mac, and nothing restores it. Nothing was run. Ask the user to quit the Simulator app (xcodebuild runs simulator tests without it) or turn that menu item off, then run it again. Do not change the setting or the clipboard yourself.";
 pub const unknown_text = "simulator command not run: graff could not check whether the Simulator app would copy the test's pasteboard to this Mac's clipboard. Nothing was run. Ask the user to quit the Simulator app, then run it again.";
+pub const launch_text = "simulator command not run: it opens the Simulator app and runs tests or writes the simulator pasteboard with automatic sync enabled or unset. Run the test headlessly without opening Simulator, or have the user confirm automatic sync is off. Do not change the setting or the clipboard yourself.";
 
 /// The refusal for `cmd`, or null when it may run.
 pub fn refusal(gpa: Allocator, io: Io, cmd: []const u8) ?[]const u8 {
     return refusalWith(gpa, io, cmd, enabled, hostRun);
 }
 
+test "#1801: Simulator preflight matches the shared Lean decision table" {
+    const table = @embedFile("test_fixtures/simulator_pasteboard.tsv");
+    var rows = std.mem.tokenizeScalar(u8, table, '\n');
+    for ([_]?u8{ 0, 1, null }, [_][]const u8{ "running", "stopped", "unknown" }) |status, label| {
+        for ([_]bool{ false, true }, [_][]const u8{ "closed-command", "opens-gui" }) |opens_gui, command| {
+            const decision = switch (preflight(status, opens_gui)) {
+                .read_pref => "read-pref",
+                .isolated => "isolated",
+                .unknown => "unknown",
+            };
+            var buf: [64]u8 = undefined;
+            try std.testing.expectEqualStrings(
+                rows.next() orelse return error.MissingFixtureRow,
+                try std.fmt.bufPrint(&buf, "{s}\t{s}\t{s}", .{ label, command, decision }),
+            );
+        }
+    }
+    try std.testing.expectEqual(null, rows.next());
+}
+
 pub fn refusalWith(gpa: Allocator, io: Io, cmd: []const u8, on: bool, run: sim_ledger.Runner) ?[]const u8 {
     if (!on or !writesPasteboard(cmd)) return null;
-    return switch (host(gpa, io, run)) {
+    const opens_gui = opensSimulator(cmd);
+    return switch (host(gpa, io, run, opens_gui)) {
         .isolated => null,
-        .shared => shared_text,
+        .shared => if (opens_gui) launch_text else shared_text,
         .unknown => unknown_text,
     };
+}
+
+test "#1801: a compound test command cannot open Simulator after checking that it is closed" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    Fake.app = 1;
+    Fake.pref = 1;
+    for ([_][]const u8{
+        "open -a Simulator && xcodebuild test",
+        "/usr/bin/open -b com.apple.iphonesimulator; xcrun simctl pbcopy booted",
+        "open -a '/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app' && xcodebuild test",
+    }) |cmd| try std.testing.expectEqualStrings(launch_text, refusalWith(gpa, io, cmd, true, Fake.run).?);
+    try std.testing.expect(refusalWith(gpa, io, "xcodebuild test", true, Fake.run) == null);
+    Fake.pref = 0;
+    Fake.pref_out = "0\n";
+    try std.testing.expect(refusalWith(gpa, io, "open -a Simulator && xcodebuild test", true, Fake.run) == null);
+}
+
+test "#1801: Bash refuses a compound GUI launch before it starts either command" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const saved_enabled = enabled;
+    const saved_ledger = sim_ledger.g;
+    defer enabled = saved_enabled;
+    defer sim_ledger.g = saved_ledger;
+    enabled = true;
+    sim_ledger.g = .{ .run = Fake.run };
+    Fake.app = 1;
+    Fake.pref = 1;
+    const input = try std.json.parseFromSlice(std.json.Value, gpa,
+        \\{"command":"open() { printf 'unexpected open'; }; xcodebuild() { printf 'unexpected test'; }; open -a Simulator && xcodebuild test"}
+    , .{});
+    defer input.deinit();
+    const ctx: @import("tools.zig").ToolCtx = .{
+        .gpa = gpa,
+        .io = io,
+        .client = undefined,
+        .provider = undefined,
+        .registry = null,
+        .from_sub = true,
+        .approvals = null,
+        .tracer = null,
+    };
+    const out = try @import("exec_bash.zig").exec(ctx, .{ .id = "c", .name = "bash", .input = input.value });
+    defer gpa.free(out.text);
+    try std.testing.expect(out.is_error);
+    try std.testing.expectEqualStrings(launch_text, out.text);
 }
 
 fn hostRun(gpa: Allocator, io: Io, argv: []const []const u8) sim_ledger.Run {

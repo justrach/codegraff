@@ -310,10 +310,12 @@ pub const Registry = struct {
         const url_v = cfg.get("url");
         if ((command_v == null) == (url_v == null)) return error.BadMcpConfig;
         const mcp_lazy = @import("mcp_lazy.zig");
+        const nanocua_command = @import("nanocua_turn.zig").bundledCommand(reg, a, name, cfg);
         if (reg.lazy_stdio) if (try mcp_lazy.dormantFromCache(reg.io, a, reg.home, name, cfg)) |d| {
             const tools_before = tools.items.len;
             errdefer tools.shrinkRetainingCapacity(tools_before);
             try @import("mcp_pages.zig").appendTools(a, tools, servers.items.len, d.server, d.tools);
+            d.server.nanocua_command = nanocua_command;
             try servers.append(a, d.server);
             if (reg.show_diagnostics) std.debug.print("  [mcp:{s}] ready — {d} tool(s), starts on first use\n", .{ name, d.tools.array.items.len });
             return;
@@ -366,6 +368,7 @@ pub const Registry = struct {
             server.* = .{ .name = name, .transport = try spawnStdio(reg, a, stdio_argv.items, stdio_env_map, stdio_cwd) };
         }
 
+        server.nanocua_command = nanocua_command;
         var registry_owns_server = false;
         errdefer if (!registry_owns_server) {
             if (reg.spawn_watch) |w| w.forget(); // before the child is reaped
@@ -466,17 +469,17 @@ pub const Registry = struct {
 
     /// Calls and runtime registration share one lock, including tool lookup.
     pub fn call(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value) !@import("mcp_call.zig").CallResult {
-        return reg.callAt(out_alloc, qualified, input, @import("image_inbox.zig").unsequenced);
+        return reg.callAt(out_alloc, qualified, input, @import("image_inbox.zig").unsequenced, null);
     }
 
     /// `call` from position `seq` of a tool batch: an image the result
     /// carries is delivered in that call's place (#1866).
-    pub fn callAt(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value, seq: u32) !@import("mcp_call.zig").CallResult {
+    pub fn callAt(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value, seq: u32, turn: ?*@import("nanocua_turn.zig").Turn) !@import("mcp_call.zig").CallResult {
         reg.mutex.lockUncancelable(reg.io);
         defer reg.mutex.unlock(reg.io);
         reg.staging_seq = seq;
         defer reg.staging_seq = @import("image_inbox.zig").unsequenced;
-        return @import("mcp_call.zig").call(reg, out_alloc, qualified, input);
+        return @import("mcp_call.zig").call(reg, out_alloc, qualified, input, turn);
     }
 };
 

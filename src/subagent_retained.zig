@@ -17,6 +17,7 @@ pub const Record = struct {
     text_only: bool = false,
     read_only: bool = false,
     reasoning: @import("main.zig").ReasoningEffort = .medium,
+    service_tier: @import("service_tier.zig").Tier = .standard,
     protocol: ?@import("provider.zig").Provider.Kind = null,
     deadline_ms: ?i64 = null,
     system_prompt: ?[]const u8 = null,
@@ -205,6 +206,9 @@ pub fn restore(agent: *Agent, ctx: tools.ToolCtx) !void {
     agent.read_only = record.read_only;
     agent.reasoning = record.reasoning;
     if (record.protocol) |kind| if (kind != agent.provider.kind) return error.RetainedWorkerProtocolChanged;
+    const service_tier = @import("service_tier.zig");
+    if (!service_tier.supportsRoute(agent.provider, record.service_tier)) return error.WorkerServiceTierUnavailable;
+    service_tier.apply(agent, record.service_tier);
     if (record.deadline_ms) |deadline| agent.loop_deadline_ms = if (agent.loop_deadline_ms) |current| @min(current, deadline) else deadline;
     try agent.messages.appendSlice(record.messages);
     for (record.pending) |message| try agent.messages.append(try @import("messages.zig").textMessage(agent.arena, "user", message));
@@ -219,6 +223,7 @@ pub fn checkpoint(agent: *Agent, ctx: tools.ToolCtx) !void {
     state.record.text_only = agent.text_only;
     state.record.read_only = agent.read_only;
     state.record.reasoning = agent.reasoning;
+    state.record.service_tier = @import("service_tier.zig").effective(agent);
     state.record.protocol = agent.provider.kind;
     state.record.deadline_ms = agent.loop_deadline_ms;
     state.record.system_prompt = agent.sys_override;
@@ -258,6 +263,9 @@ test "retained worker history round trips without credentials and rejects parall
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var ctx = testContext();
+    ctx.provider.id = "codex";
+    ctx.provider.model = "gpt-6.2-sol";
+    ctx.provider.kind = .responses;
     const root = try tmp.dir.realPathFileAlloc(ctx.io, ".", ctx.gpa);
     defer ctx.gpa.free(root);
     const state = try fixture(ctx, root);
@@ -268,6 +276,8 @@ test "retained worker history round trips without credentials and rejects parall
     var agent: Agent = .{ .sub = true, .label = "worker", .out = null, .gpa = ctx.gpa, .arena = arena.allocator(), .io = ctx.io, .client = undefined, .provider = ctx.provider, .messages = .init(arena.allocator()), .agent_cwd = root };
     try agent.messages.append(try @import("messages.zig").textMessage(agent.arena, "user", "original task"));
     try agent.messages.append(try @import("messages.zig").textMessage(agent.arena, "assistant", "retained evidence"));
+    const service_tier = @import("service_tier.zig");
+    service_tier.apply(&agent, .ultrafast);
     try checkpoint(&agent, ctx);
     const raw = try Io.Dir.cwd().readFileAlloc(ctx.io, state.path, ctx.gpa, .limited(100000));
     defer ctx.gpa.free(raw);
@@ -279,7 +289,9 @@ test "retained worker history round trips without credentials and rejects parall
     try std.testing.expectEqual(@as(usize, 2), loaded.record.messages.len);
     ctx.retained_worker = loaded;
     agent.messages = .init(arena.allocator());
+    service_tier.apply(&agent, .standard);
     try restore(&agent, ctx);
+    try std.testing.expectEqual(service_tier.Tier.ultrafast, service_tier.effective(&agent));
     try std.testing.expectEqual(@as(usize, 2), agent.messages.items.len);
     try std.testing.expectEqualStrings(root, agent.agent_cwd.?);
 }

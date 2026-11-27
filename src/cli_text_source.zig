@@ -34,6 +34,7 @@ pub const usage_text =
     \\  graff mcp login <name>            OAuth login for a remote MCP server
     \\  graff mcp                         list configured MCP servers
     \\  graff mcp install                configure local HTTP service and MCP clients
+    \\  graff mcp service [status|stop|start|uninstall]  that service's state and lifecycle
     \\  graff mcp serve [--http] [--port N] expose run_task to MCP clients
     \\  graff plugins [list|load|enable|disable|register|remove|reload]  manage in-place plugin metadata
     \\  graff lsp diagnostics PATH          query a configured local language server
@@ -75,6 +76,8 @@ pub const usage_text =
     \\
     \\flags:
     \\  --model <name>   start on this model (same fuzzy resolution as /model)
+    \\  --service-tier <default|fast|ultrafast>
+    \\                   start with this service tier for the current session
     \\  --subagent-model <name>         pin children/workflows/judges on the root provider
     \\  --subagent-provider <id>        route pinned workers through this provider
     \\  --allow-cross-provider-subagents confirm prompts/code may go to the worker provider
@@ -114,7 +117,8 @@ pub const usage_text =
     \\  --max-run-tool-calls N  aggregate root/descendant tool ceiling for this invocation
     \\  --max-tool-calls N  reject root tool calls after N per turn (JSON-safe budget)
     \\  --compact-at PCT    start automatic compaction at PCT% of the context window (10-95, default 80)
-    \\  --max-model-calls N total provider calls allowed across this run (default 0 = unlimited; includes children/title/judges)
+    \\  --max-model-calls N logical model calls across this run (0 = unlimited; transport retries share a call)
+    \\  --no-model-resends   disable automatic resends within each model request
     \\  --dedupe-tool-calls reject duplicate root tool name+input calls per turn
     \\  --no-telemetry   disable anonymous usage telemetry for this run
     \\  --learning-privacy <mode>       learning egress ceiling: local|aggregate|templates|examples (default aggregate)

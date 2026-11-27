@@ -89,7 +89,7 @@ pub const commands = [_]Item{
     .{ .name = "/reasoning", .desc = "alias for /effort" },
     .{ .name = "/compact-at", .usage = "/compact-at [10-95|default]", .desc = "where automatic compaction starts, as % of the context window (default 80; persists)" },
     .{ .name = "/fast", .usage = "/fast [on|off|ultrafast]", .desc = "codex/chatgpt-new: fast (priority) or ultrafast service tier (persists)" },
-    .{ .name = "/ultrafast", .usage = "/ultrafast [on|off]", .desc = "codex/chatgpt-new: ultrafast service tier on gpt-6.2-sol / gpt-6.2-astra (toggle, persists)" },
+    .{ .name = "/ultrafast", .usage = "/ultrafast [on|off]", .desc = "codex/chatgpt-new: ultrafast service tier on supported models (toggle, persists)" },
     .{ .name = "/thinking", .desc = "stream reasoning live vs spinner only (toggle, persists)" },
     .{ .name = "/followups", .usage = "/followups [queue|immediate]", .desc = "send OpenAI-model follow-ups into the live turn now (default) or queue them for the next turn; persists" },
     .{ .name = "/title", .desc = "name the tab from your first prompt (AI session title; toggle, persists)" },

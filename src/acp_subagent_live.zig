@@ -12,6 +12,7 @@ const stream = @import("acp_stream.zig");
 const proto = @import("acp_protocol.zig");
 const util = @import("util.zig");
 const progress = @import("acp_subagent_progress.zig");
+const Why = @import("subagent_reason.zig").Why;
 
 pub const Mode = enum { draft, progress };
 
@@ -111,8 +112,25 @@ pub fn announceBackground(a: std.mem.Allocator, io: Io, id: []const u8, name: []
     return handle;
 }
 
-pub fn finishBackground(io: Io, handle: BackgroundHandle, id: []const u8, seq: u64, outcome: []const u8) void {
-    _ = backgroundSend(io, handle, id, seq, .{ .type = "terminal", .state = outcome });
+/// The background `terminal` event. A failed or cancelled child adds
+/// `reason`/`failureKind` beside `state` (ADR 0358); a completed one does not.
+const Terminal = struct {
+    state: []const u8,
+    why: ?Why,
+
+    pub fn jsonStringify(self: Terminal, jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("type");
+        try jw.write("terminal");
+        try jw.objectField("state");
+        try jw.write(self.state);
+        if (self.why) |why| try why.writeFields(jw);
+        try jw.endObject();
+    }
+};
+
+pub fn finishBackground(io: Io, handle: BackgroundHandle, id: []const u8, seq: u64, outcome: []const u8, why: ?Why) void {
+    _ = backgroundSend(io, handle, id, seq, Terminal{ .state = outcome, .why = why });
 }
 
 pub fn eligible(kind: []const u8, depth: u8, detached: bool) bool {
@@ -166,7 +184,27 @@ pub fn progressFor(io: Io, kind: []const u8, depth: u8, parent_call_id: []const 
     return false;
 }
 
-pub fn finish(io: Io, id: []const u8, outcome: []const u8, parent_call_id: []const u8) void {
+/// The draft terminal frame's `_meta`. A failed or cancelled child adds
+/// `graff/subagent` = `{reason, failureKind}` (ADR 0358).
+const FinishMeta = struct {
+    parent_call_id: []const u8,
+    why: ?Why,
+
+    pub fn jsonStringify(self: FinishMeta, jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("graff/parentToolCallId");
+        try jw.write(self.parent_call_id);
+        if (self.why) |why| {
+            try jw.objectField("graff/subagent");
+            try jw.beginObject();
+            try why.writeFields(jw);
+            try jw.endObject();
+        }
+        try jw.endObject();
+    }
+};
+
+pub fn finish(io: Io, id: []const u8, outcome: []const u8, why: ?Why, parent_call_id: []const u8) void {
     main.g_gui_mu.lockUncancelable(io);
     defer main.g_gui_mu.unlock(io);
     const state = active orelse return;
@@ -176,7 +214,7 @@ pub fn finish(io: Io, id: []const u8, outcome: []const u8, parent_call_id: []con
         .sessionUpdate = "subagent_update",
         .subagentSessionId = id,
         .state = outcome,
-        ._meta = .{ .@"graff/parentToolCallId" = parent_call_id },
+        ._meta = FinishMeta{ .parent_call_id = parent_call_id, .why = why },
     } }) catch return;
     state.out.flush() catch {};
 }
@@ -256,17 +294,17 @@ pub const ChildSink = struct {
             else => return,
         };
         if (!p.due(util.unixMs(self.io), tool_event)) return;
-        self.publishProgress("running");
+        self.publishProgress("running", null);
     }
 
-    fn publishProgress(self: *ChildSink, state_label: []const u8) void {
+    fn publishProgress(self: *ChildSink, state_label: []const u8, why: ?Why) void {
         const p = &(self.progress orelse return);
         main.g_gui_mu.lockUncancelable(self.io);
         defer main.g_gui_mu.unlock(self.io);
         if (active) |state| {
             state.output_lock.lockUncancelable(self.io);
             defer state.output_lock.unlock(self.io);
-            progress.write(state.out, state.parent, p, state_label) catch return;
+            progress.write(state.out, state.parent, p, state_label, why) catch return;
             state.out.flush() catch {};
             return;
         }
@@ -274,22 +312,24 @@ pub const ChildSink = struct {
             if (bg.parent.len == 0) return;
             bg.output_lock.lockUncancelable(self.io);
             defer bg.output_lock.unlock(self.io);
-            progress.write(bg.out, bg.parent, p, state_label) catch return;
+            progress.write(bg.out, bg.parent, p, state_label, why) catch return;
             bg.out.flush() catch {};
         }
     }
 
     /// Publish identity before the first text/tool event (reasoning can take time).
     pub fn startProgress(self: *ChildSink) void {
-        self.publishProgress("running");
+        self.publishProgress("running", null);
     }
 
     /// The child's last word on its parent's tool call. The parent's own tool
-    /// result, when it has one, follows and replaces this.
-    pub fn finishProgress(self: *ChildSink, outcome: []const u8) void {
+    /// result, when it has one, follows and replaces this. `why` says why a
+    /// failed or cancelled child ended (ADR 0358); a detached child has no
+    /// parent result, so for it this is the only cause the client gets.
+    pub fn finishProgress(self: *ChildSink, outcome: []const u8, why: ?Why) void {
         const p = &(self.progress orelse return);
         p.addLine(if (std.mem.eql(u8, outcome, "completed")) "✓ finished" else if (std.mem.eql(u8, outcome, "cancelled")) "■ cancelled" else "✗ failed");
-        self.publishProgress(outcome);
+        self.publishProgress(outcome, why);
     }
 
     fn emitBackground(self: *ChildSink, stamped: sink.Stamped, handle: BackgroundHandle) void {
@@ -337,7 +377,7 @@ test "negotiated child stream announces before activity and terminates on parent
     emit_sink.emit(io, .{ .tool_call_announced = .{ .id = "read-1", .name = "read_file", .input = .null } });
     emit_sink.emit(io, .{ .tool_result = .{ .id = "read-1", .name = "read_file", .text = "contents", .is_error = false } });
     emit_sink.emit(io, .{ .text_delta = .{ .text = "Found the cause" } });
-    finish(io, "child", "completed", "spawn-1");
+    finish(io, "child", "completed", null, "spawn-1");
     const wire = out.buffered();
     const announced = std.mem.indexOf(u8, wire, "\"subagentSessionId\":\"child\"") orelse return error.MissingAnnouncement;
     const thought = std.mem.indexOf(u8, wire, "agent_thought_chunk") orelse return error.MissingThought;
@@ -380,7 +420,7 @@ test "default progress mode streams the child's work onto the parent tool call" 
     try input.put(std.testing.allocator, "path", .{ .string = "src/main.zig" });
     emit_sink.emit(io, .{ .tool_call_announced = .{ .id = "read-1", .name = "read_file", .input = .{ .object = input } } });
     emit_sink.emit(io, .{ .tool_result = .{ .id = "read-1", .name = "bash", .text = "boom", .is_error = true } });
-    child.finishProgress("completed");
+    child.finishProgress("completed", null);
     const wire = out.buffered();
     try std.testing.expect(std.mem.indexOf(u8, wire, "\"sessionUpdate\":\"tool_call_update\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, wire, "\"toolCallId\":\"spawn-1\"") != null);
@@ -408,7 +448,7 @@ test "detached child continues streaming progress across turn boundaries via Bac
     try std.testing.expect(progressFor(io, "subagent", 0, "bg-call-1"));
     var child: ChildSink = .{ .id = "sa-001-bg", .io = io, .progress = .{ .parent_call_id = "bg-call-1", .child_id = "sa-001-bg", .name = "Worker", .provider = "fixture", .model = "reader-model" } };
     child.startProgress();
-    child.finishProgress("completed");
+    child.finishProgress("completed", null);
     const wire = out.buffered();
     try std.testing.expect(std.mem.indexOf(u8, wire, "\"sessionId\":\"parent-sess\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, wire, "\"toolCallId\":\"bg-call-1\"") != null);

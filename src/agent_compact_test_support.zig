@@ -14,43 +14,26 @@ const Agent = @import("agent.zig").Agent;
 const textMessage = @import("messages.zig").textMessage;
 const compact = @import("agent_compact.zig");
 
-/// A subagent-or-root Agent with just enough fields set for handoffMessage /
-/// pinChildTask to run without touching uninitialized memory.
+/// A compact test agent with ordinary defaults and an empty prompt and catalog.
+/// Networked fixtures supply their own HTTP client.
 pub fn subAgent(a: std.mem.Allocator, sub: bool) Agent {
-    var agent: Agent = undefined;
-    agent.arena = a;
-    agent.sub = sub;
-    agent.review_mode = false;
-    agent.todos = .empty;
-    agent.goal = null;
-    agent.task_prompt = null;
-    // #411: the durable-state note reads the /rewind ledger and the session
-    // name on every handoff, including the null paths, so both have to be real
-    // here or an `undefined` pointer gets dereferenced instead of skipped.
-    agent.snapshots = null;
-    agent.session_name = "";
-    // compactPrelude reports the token figure compact() prints, so the estimate
-    // path has to be reachable: system prompt, tool json, provider context and
-    // the two meter anchors it reads.
-    // compactPrelude now drops the codex chain before compaction's own request,
-    // so the fields closeCodexWs reads have to be real even off the codex path.
-    agent.codex_ws = null;
-    agent.codex_prev_id = null;
-    agent.codex_sent_upto = 0;
-    agent.sys_override = null;
-    // #1333: hot_context.afterCompact skips agents that never went through
-    // the prompt funnel; an undefined base would read as a real one.
-    agent.sys_base = "";
-    agent.sys_normal = "";
-    agent.sys_strict = "";
-    agent.strict = false;
-    agent.tools_anthropic = "";
-    agent.tools_openai = "";
-    agent.tools_responses = "";
-    agent.last_context_tokens = 0;
-    agent.context_local_tokens = 0;
-    agent.provider = .{ .id = "test", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "m", .context = 100_000 };
-    return agent;
+    return .{
+        .gpa = a,
+        .arena = a,
+        .io = std.testing.io,
+        .client = undefined,
+        .provider = .{ .id = "test", .kind = .anthropic, .auth = .x_api_key, .url = "", .api_key = "k", .model = "m", .context = 100_000 },
+        .messages = std.json.Array.init(a),
+        .sub = sub,
+        .label = "",
+        .out = null,
+        .session_name = "",
+        .sys_normal = "",
+        .sys_strict = "",
+        .tools_anthropic = "",
+        .tools_openai = "",
+        .tools_responses = "",
+    };
 }
 
 /// A one-message std.json.Array, the shape a fresh subagent history starts as.

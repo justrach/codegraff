@@ -77,7 +77,8 @@ pub fn redact(gpa: Allocator, raw: []const u8) ![]u8 {
     var it = std.mem.tokenizeAny(u8, capped, " \t\r\n");
     while (it.next()) |tok| {
         const replacement: ?[]const u8 = blk: {
-            if (tok.len >= 2 and tok[0] == '/' or std.mem.startsWith(u8, tok, "~/")) break :blk "<path>";
+            // A bare `/word` is a slash command (`/model`), not a path.
+            if (tok.len >= 2 and tok[0] == '/' and std.mem.indexOfScalarPos(u8, tok, 1, '/') != null or std.mem.startsWith(u8, tok, "~/")) break :blk "<path>";
             if (std.mem.indexOf(u8, tok, "/Users/") != null or std.mem.indexOf(u8, tok, "/home/") != null) break :blk "<path>";
             if (tok.len >= 24 and std.mem.indexOfAny(u8, tok, "0123456789") != null) {
                 var all = true;
@@ -124,12 +125,12 @@ fn buildPrompt(gpa: Allocator, tool: []const u8, redacted_err: []const u8) ![]u8
         \\- redacted error excerpt: {s}
         \\
         \\Steps:
-        \\1. Dedupe first: `gh issue list --repo {s} --label {s} --state all --search "{s}" --limit 20`. If an issue already covers this tool + error, stop and report "duplicate: <url>".
-        \\2. Otherwise file it: `gh issue create --repo {s} --label {s} --title "codedb-pro: {s} failed" --body <body>` — the body is ONLY the two facts above, one sentence of context ("automated report from a graff session on a licensed codedb-pro tool failure"), and a note that details were redacted at the source. If gh rejects the label as unknown, run `gh label create {s} --repo {s}` once and retry; if that fails too, file without --label and put "label: {s}" in the body.
+        \\1. Dedupe first: `gh issue list --repo {s} --label {s} --state all --search "{s}" --limit 20`. If an open or closed issue already covers this tool + error, stop and report "duplicate: <url>". If search fails or is incomplete, go straight to drafting.
+        \\2. Only after rechecking the search immediately before writing, file it: `gh issue create --repo {s} --label {s} --title "codedb-pro: {s} failed" --body <body>` — the body is ONLY the two facts above, one sentence of context ("automated report from a graff session on a licensed codedb-pro tool failure"), and a note that details were redacted at the source. If create returns an uncertain result, search and verify any match; do not retry blindly. If the label is rejected or creation cannot be confirmed, draft locally.
         \\3. If `gh` is unavailable or the call is denied, write the would-be title and body to `.graff/issue-drafts/{s}.md` with write_file and report the draft path.
         \\
         \\Keep the issue minimal on purpose — the user wants no detail beyond what is strictly necessary. Report back: the issue URL, "duplicate: <url>", or the draft path.
-    , .{ tool, redacted_err, issue_repo, issue_label, tool, issue_repo, issue_label, tool, issue_label, issue_repo, issue_label, safe_tool.items });
+    , .{ tool, redacted_err, issue_repo, issue_label, tool, issue_repo, issue_label, tool, safe_tool.items });
 }
 
 /// The fallback hatch the enforcement half answers to: once ANY codedb-pro
@@ -336,6 +337,9 @@ test "redact scrubs absolute paths, home paths and tokens, keeps relative refs" 
     try std.testing.expect(std.mem.indexOf(u8, out, "<path>") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "src/exec.zig:399") != null); // relative ref is the necessary detail
     try std.testing.expect(std.mem.indexOf(u8, out, "?key=") == null); // URL query strings are not
+    const command = try redact(a, "switch models with /model, or read /tmp/x/log");
+    defer a.free(command);
+    try std.testing.expectEqualStrings("switch models with /model, or read <path>", command);
 }
 
 test "redact caps its output" {
@@ -367,6 +371,9 @@ test "buildPrompt carries repo, label and redacted facts only" {
     try std.testing.expect(std.mem.indexOf(u8, p, "mcp__codedbpro__read") != null);
     try std.testing.expect(std.mem.indexOf(u8, p, "connection refused") != null);
     try std.testing.expect(std.mem.indexOf(u8, p, "gh issue list") != null); // dedupe-before-file
+    try std.testing.expect(std.mem.indexOf(u8, p, "--state all") != null);
+    try std.testing.expect(std.mem.indexOf(u8, p, "If search fails or is incomplete, go straight to drafting.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, p, "search and verify any match") != null);
 }
 
 // ── the enforcement gate ────────────────────────────────────────────────────

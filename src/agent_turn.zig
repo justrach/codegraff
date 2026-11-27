@@ -7,6 +7,12 @@ const empty_completion = @import("agent_empty_completion.zig");
 const turn_inbox = @import("turn_inbox.zig");
 
 pub fn run(self: *Agent, root_turn_prepared: *std.atomic.Value(bool)) anyerror![]const u8 {
+    var nanocua_turn: @import("nanocua_turn.zig").Turn = .{};
+    self.nanocua_turn = &nanocua_turn;
+    defer {
+        self.nanocua_turn = null;
+        nanocua_turn.close(self.io);
+    }
     defer @import("jev_effort_state.zig").finishTurn(self);
     errdefer self.jev_effort_pending.invalidate(self.io);
     @import("jev_auto.zig").beginTurn(self); // ADR 0246: Jev picks this turn's effort; finishTurn puts it back
@@ -68,8 +74,12 @@ pub fn run(self: *Agent, root_turn_prepared: *std.atomic.Value(bool)) anyerror![
             // threshold, a transient/empty summary must not immediately drop
             // real history. Destructive recovery is reserved for >=95%.
             const recovery_meter = self.effectiveContextTokens();
-            self.autocompact(recovery_meter);
-            self.closeCodexWs();
+            const server = @import("agent_server_compact.zig");
+            defer self.closeCodexWs();
+            server.autocompactForRequest(self, recovery_meter, server.enabled(self.provider)) catch |err| {
+                try @import("agent_request_scratch.zig").preserveFailedRequest(self);
+                return err;
+            };
         }
         // ADR 0030: showcase rlm once the existing compact meter is
         // actually large. Schema rides the tail; head bytes stay put.

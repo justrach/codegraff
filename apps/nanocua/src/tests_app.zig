@@ -71,15 +71,21 @@ test "the panel: stop and resume, input, the log, copying the command" {
     try std.testing.expect(t.hasText("2 calls, 1 refused"));
     try t.screenshot("/tmp/nanocua-panel.png");
 
-    try t.clickText("Allow input: clicks, typing, keys, opening apps");
+    try t.clickText("Allow input for other MCP clients");
     t.settle(0.5);
     try std.testing.expect(a.hub.policy.allow_input);
-    try std.testing.expect(t.hasText("Acting"));
+    // On but unused is not the same as an agent acting (#1931).
+    try std.testing.expect(t.hasText("Input on"));
+    try std.testing.expect(t.hasText(view.input_open));
+    try std.testing.expect(!t.hasText("Acting"));
     call(&a, 3, "click", "{\"ref\":9}");
     t.settle(0.5);
     try std.testing.expectEqual(@as(usize, 2), rec.calls);
     try std.testing.expect(t.hasText("failed"));
     try std.testing.expect(t.hasText("No element [9]"));
+    try std.testing.expect(t.hasText("Acting"));
+    try std.testing.expect(t.hasText(view.input_held));
+    try std.testing.expect(a.status(null).inputHeld);
 
     // The whole screen has its own switch, off until the user turns it on.
     call(&a, 30, "screenshot", "{\"whole_screen\":true}");
@@ -132,7 +138,7 @@ test "the switches stay as the user left them: calls and redraws don't flip them
     const whole = "Allow whole screen: your pointer and keyboard, pictures of everything";
 
     // Turning input on leaves the whole screen off, whatever comes after.
-    try t.clickText("Allow input: clicks, typing, keys, opening apps");
+    try t.clickText("Allow input for other MCP clients");
     t.settle(0.5);
     try std.testing.expect(a.hub.policy.allow_input);
     try std.testing.expect(!a.hub.policy.allow_whole_screen);
@@ -241,7 +247,7 @@ test "from outside: off at once, on only by a click in the window" {
     try std.testing.expect(t.hasText(view.ignored_click));
 
     // So are the panel's own switches, on the way on...
-    try t.clickText("Allow input: clicks, typing, keys, opening apps");
+    try t.clickText("Allow input for other MCP clients");
     t.settle(0.2);
     try std.testing.expect(!a.hub.policy.allow_input);
 
@@ -250,7 +256,8 @@ test "from outside: off at once, on only by a click in the window" {
     wire.sent.clearRetainingCapacity();
     try t.clickText("Allow");
     t.settle(0.2);
-    try std.testing.expect(a.hub.policy.allow_input);
+    try std.testing.expect(a.hub.turn_input_grants.armed);
+    try std.testing.expect(!a.hub.policy.allow_input);
     try std.testing.expect(a.gate.request == null);
     try std.testing.expect(wire.saw("9:{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{"));
     try std.testing.expect(wire.saw("\"outcome\":\"allowed\""));
@@ -258,9 +265,10 @@ test "from outside: off at once, on only by a click in the window" {
 
     // ...but a program can turn things off, here and from outside.
     a.real_pointer = notReal;
-    try t.clickText("Allow input: clicks, typing, keys, opening apps");
+    try t.clickText("Allow input for the next Graff turn that needs it");
     t.settle(0.2);
     try std.testing.expect(!a.hub.policy.allow_input);
+    try std.testing.expect(!a.hub.turn_input_grants.armed);
     a.real_pointer = null;
     a.setInput(true);
     a.setWholeScreen(true);
@@ -321,7 +329,7 @@ test "an agent's own connection can't reach the switches through MCP" {
 extern "c" fn socketpair(domain: c_int, kind: c_int, protocol: c_int, fds: *[2]c_int) c_int;
 extern "c" fn close(fd: c_int) c_int;
 
-test "the socket: a request in, its answer out, a closed agent dropped" {
+test "the socket: a request in, its answer out, a closed agent dropped with the input it held" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     var rec: Recorder = .{};
@@ -332,12 +340,14 @@ test "the socket: a request in, its answer out, a closed agent dropped" {
     try std.testing.expectEqual(@as(c_int, 0), socketpair(1, 1, 0, &fds));
     _ = try a.server.adopt(fds[0]);
     try std.testing.expectEqual(@as(usize, 1), a.server.clients());
-    const req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_ui_tree\"}}\n";
+    a.setInput(true);
+    const req = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_ui_tree\"}}\n" ++
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"click\",\"arguments\":{\"ref\":9}}}\n";
     try std.testing.expect(server.writeAll(fds[1], req));
     var got: std.ArrayList(u8) = .empty;
     defer got.deinit(gpa);
     var tries: usize = 0;
-    while (std.mem.count(u8, got.items, "\n") < 2 and tries < 50) : (tries += 1) {
+    while (std.mem.count(u8, got.items, "\n") < 3 and tries < 50) : (tries += 1) {
         nanoui.runFor(0.02);
         var buf: [4096]u8 = undefined;
         var fds_poll = [_]std.posix.pollfd{.{ .fd = fds[1], .events = std.posix.POLL.IN, .revents = 0 }};
@@ -347,8 +357,57 @@ test "the socket: a request in, its answer out, a closed agent dropped" {
     }
     try std.testing.expect(std.mem.startsWith(u8, got.items, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n"));
     try std.testing.expect(std.mem.indexOf(u8, got.items, "[1] Window \\\"Notes\\\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got.items, "No element [9]") != null);
+    try std.testing.expect(a.status(null).inputHeld);
     _ = close(fds[1]);
     tries = 0;
     while (a.server.clients() > 0 and tries < 50) : (tries += 1) nanoui.runFor(0.02);
     try std.testing.expectEqual(@as(usize, 0), a.server.clients());
+    // The connection that acted is gone, and input with it (#1931).
+    try std.testing.expect(!a.hub.policy.allow_input and !a.status(null).inputHeld);
+}
+
+test "turn-scoped socket EOF revokes input without interfering with another turn or Stop" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const gpa = std.testing.allocator;
+    const scope = @import("turn_input.zig");
+    var rec: Recorder = .{};
+    var a: App = undefined;
+    a.init(gpa, .{ .ptr = &rec, .call = Recorder.call });
+    defer a.deinit();
+    var first: [2]c_int = undefined;
+    var second: [2]c_int = undefined;
+    try std.testing.expectEqual(@as(c_int, 0), socketpair(1, 1, 0, &first));
+    try std.testing.expectEqual(@as(c_int, 0), socketpair(1, 1, 0, &second));
+    defer _ = close(second[1]);
+    const first_conn = try a.server.adopt(first[0]);
+    const second_conn = try a.server.adopt(second[0]);
+    const click = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"click\"}}\n";
+    a.setTurnInput(true);
+    try std.testing.expect(server.writeAll(first[1], scope.hello ++ "\n" ++ click));
+    for (0..50) |_| {
+        if (a.hub.turn_input_grants.connections.contains(first_conn)) break;
+        nanoui.runFor(0.02);
+    }
+    try std.testing.expect(a.hub.turn_input_grants.connections.contains(first_conn));
+    a.setTurnInput(true);
+    try std.testing.expect(server.writeAll(second[1], scope.hello ++ "\n" ++ click));
+    for (0..50) |_| {
+        if (a.hub.turn_input_grants.connections.contains(second_conn)) break;
+        nanoui.runFor(0.02);
+    }
+    try std.testing.expectEqual(@as(usize, 2), a.hub.turn_input_grants.connections.count());
+
+    _ = close(first[1]);
+    for (0..50) |_| {
+        if (!a.hub.turn_input_grants.connections.contains(first_conn)) break;
+        nanoui.runFor(0.02);
+    }
+    try std.testing.expect(!a.hub.turn_input_grants.connections.contains(first_conn));
+    try std.testing.expect(a.hub.turn_input_grants.connections.contains(second_conn));
+    a.setTurnInput(true);
+    a.setStopped(true);
+    try std.testing.expectEqual(@as(usize, 0), a.hub.turn_input_grants.connections.count());
+    try std.testing.expect(!a.hub.turn_input_grants.armed);
+    try std.testing.expect(a.hub.policy.stopped);
 }

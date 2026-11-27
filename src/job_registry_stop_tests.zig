@@ -98,3 +98,13 @@ test "stop requires confirmed group exit and honors probe and sleep errors" {
     try std.testing.expectEqual(stop.Result.unverifiable, stop.stop(42, 77, &survives));
     try std.testing.expectEqual(@as(usize, 2), survives.signals);
 }
+
+test "#941 preview termination validates ownership and sends only TERM" {
+    var owns_group: Fake = .{ .fail_signal = .kill };
+    try std.testing.expect(stop.terminatePreview(42, 77, &owns_group));
+    try std.testing.expectEqual(@as(usize, 1), owns_group.signals);
+    try std.testing.expectEqual(@as(usize, 0), owns_group.sleeps);
+    var reused: Fake = .{ .live = .{ .id = 78 } };
+    try std.testing.expect(!stop.terminatePreview(42, 77, &reused));
+    try std.testing.expectEqual(@as(usize, 0), reused.signals);
+}

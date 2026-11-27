@@ -15,6 +15,28 @@ pub const refusal_text =
     "Inspect available transcripts, traces, and tool results locally in this session, or ask " ++
     "the user before expanding scope to message that chat.";
 
+fn explicitlyReadOnly(ask: []const u8) bool {
+    const limits = [_][]const u8{
+        "read-only",               "read only",
+        "read‐only",
+        "read‑only",
+        "no wake",                 "no reassignment",
+        "no messaging",            "no delegation",
+        "do not message",          "don't message",
+        "do not wake",             "don't wake",
+        "do not steer",            "don't steer",
+        "do not recruit",          "don't recruit",
+        "without messaging",       "without waking",
+        "without steering",        "without recruiting",
+        "do not contact",          "don't contact",
+        "do not send_message",     "don't send_message",
+        "do not use send_message", "don't use send_message",
+        "do not use peer_message", "don't use peer_message",
+    };
+    for (limits) |limit| if (util.indexOfIgnoreCase(ask, limit) != null) return true;
+    return false;
+}
+
 /// True when `ask` is an inspection/analysis/review/lookup request targeting a
 /// recorded chat, session, trajectory, or transcript without explicit permission
 /// to message, wake, steer, or delegate work to that chat (#1807).
@@ -48,24 +70,48 @@ pub fn isReadOnlySessionInspection(ask: []const u8) bool {
         }
     }
     if (!has_inspect) return false;
+    if (explicitlyReadOnly(ask)) return true;
 
     const auth_terms = [_][]const u8{
-        "send_message", "peer_message", "/tell",     "/daddy",
-        "message ",     "ping ",        "wake ",     "steer ",
-        "direct ",      "delegate to",  "delegate ", "coordinate with",
-        "hand off",     "handoff",      "ask chat",  "ask session",
-        "tell chat",    "tell session", "recruit ",  "collaborate with",
+        "use send_message", "use peer_message", "use /tell", "use /daddy",
+        "message ",         "ping ",            "wake ",     "steer ",
+        "direct ",          "delegate to",      "delegate ", "coordinate with",
+        "hand off",         "handoff",          "ask chat",  "ask session",
+        "tell chat",        "tell session",     "recruit ",  "collaborate with",
     };
-    for (auth_terms) |auth| {
-        if (util.indexOfIgnoreCase(ask, auth) != null) return false;
-    }
+    for (auth_terms) |auth| if (hasActionPhrase(ask, auth)) return false;
     return true;
 }
 
+fn hasActionPhrase(ask: []const u8, phrase: []const u8) bool {
+    var remaining = ask;
+    while (util.indexOfIgnoreCase(remaining, phrase)) |index| {
+        const start = ask.len - remaining.len + index;
+        if (start == 0) return true;
+        const preceding = ask[start - 1];
+        if (preceding != '_' and !std.ascii.isAlphanumeric(preceding)) return true;
+        remaining = remaining[index + phrase.len ..];
+    }
+    return false;
+}
+
 pub fn checkPeerSend(ask: []const u8, fyi: bool) ?[]const u8 {
-    if (fyi) return null;
-    if (isReadOnlySessionInspection(ask)) return refusal_text;
+    if (isReadOnlySessionInspection(ask) and (!fyi or explicitlyReadOnly(ask))) return refusal_text;
     return null;
+}
+
+test "#1807 an explicit read-only inspection blocks peer writes even when communication is mentioned" {
+    const requests = [_][]const u8{
+        "Review the chat transcript read-only and explain its send_message calls.",
+        "Investigate the session transcript and do not message chat B.",
+        "Inspect the trajectory of chat B without waking or steering it.",
+    };
+    for (requests) |request| {
+        try std.testing.expect(isReadOnlySessionInspection(request));
+        try std.testing.expect(checkPeerSend(request, false) != null);
+        try std.testing.expect(checkPeerSend(request, true) != null);
+    }
+    try std.testing.expect(checkPeerSend("Review the chat transcript and explain its send_message calls.", false) != null);
 }
 
 pub fn isMcpPeerWriteTool(name: []const u8) bool {
@@ -78,10 +124,29 @@ pub fn isMcpPeerWriteTool(name: []const u8) bool {
 
 pub fn gateExec(ctx: ToolCtx, call: ToolCall) ?ToolOutput {
     if (!isMcpPeerWriteTool(call.name)) return null;
-    const raw = @import("shapes.zig").rawAsk();
-    if (!isReadOnlySessionInspection(raw)) return null;
+    const ask = @import("messages.zig").latestUserText(ctx.parent_messages);
+    if (!isReadOnlySessionInspection(ask)) return null;
     const text = ctx.gpa.dupe(u8, refusal_text) catch return .{ .text = &.{}, .is_error = true };
     return .{ .text = text, .is_error = true };
+}
+
+test "#1807 MCP peer-write gate uses caller history and permits read tools" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const ask = try @import("messages.zig").textMessage(arena.allocator(), "user", "Read-only review of chat B's transcript.");
+    var ctx: ToolCtx = undefined;
+    ctx.gpa = allocator;
+    ctx.parent_messages = &.{ask};
+    const send: ToolCall = .{ .id = "send", .name = "mcp__harness__send_message", .input = .null };
+    const denied = gateExec(ctx, send) orelse return error.TestExpectedError;
+    defer allocator.free(denied.text);
+    try std.testing.expect(denied.is_error);
+    try std.testing.expect(gateExec(ctx, .{ .id = "read", .name = "mcp__harness__read_chat", .input = .null }) == null);
+
+    const collaboration = try @import("messages.zig").textMessage(arena.allocator(), "user", "Review chat B's transcript, then message chat B to ask for more details.");
+    ctx.parent_messages = &.{ ask, collaboration };
+    try std.testing.expect(gateExec(ctx, send) == null);
 }
 
 // ── #1755: Verified user-facing chat/session locator resolution ────────────

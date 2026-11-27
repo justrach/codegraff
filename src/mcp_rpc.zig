@@ -44,6 +44,7 @@ pub const Server = struct {
     name: []const u8,
     transport: Transport,
     next_id: i64 = 1,
+    nanocua_command: ?[]const u8 = null,
     initialized: bool = true,
     era: Era = .unknown,
     /// Revision the server negotiated (legacy) or `modern_protocol` (modern),

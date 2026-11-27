@@ -47,10 +47,10 @@ pub const Withdrawn = struct { qualified_name: []const u8, server: []const u8, r
 const restart_hint = "Inspect /mcp; `/mcp reconnect <server>` starts it again without a new session, then reload its tool schemas.";
 
 /// The registry lock is held throughout. Never replay a possibly executed call.
-pub fn call(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value) !CallResult {
+pub fn call(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value, turn: ?*@import("nanocua_turn.zig").Turn) !CallResult {
     if (@import("hard_policy_gate.zig").exec(.{ .gpa = out_alloc, .io = reg.io, .client = undefined, .provider = undefined, .registry = reg, .from_sub = false, .approvals = null, .tracer = null }, .{ .id = "policy", .name = qualified, .input = input })) |blocked|
         return .{ .text = blocked.text, .is_error = true };
-    return invoke(reg, out_alloc, qualified, input) catch |err| switch (err) {
+    return invoke(reg, out_alloc, qualified, input, turn) catch |err| switch (err) {
         error.McpClosed, error.ReadFailed, error.WriteFailed, error.BrokenPipe, error.ConnectionResetByPeer => blk: {
             if (try @import("mcp_restart.zig").closeForRestart(reg, out_alloc, qualified, @errorName(err))) |text| break :blk .{ .text = text, .is_error = true };
             try withdrawServer(reg, qualified, @errorName(err));
@@ -159,7 +159,7 @@ pub fn unavailableLoad(reg: *Registry, a: Allocator, input: Value) ?[]const u8 {
     return unavailableLoadForPlatform(reg, a, input, @import("builtin").os.tag == .macos);
 }
 
-fn invoke(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value) !CallResult {
+fn invoke(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Value, turn: ?*@import("nanocua_turn.zig").Turn) !CallResult {
     const tool = for (reg.tools) |t| {
         if (std.mem.eql(u8, t.qualified_name, qualified)) break t;
     } else {
@@ -175,7 +175,17 @@ fn invoke(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Va
         return .{ .text = try out_alloc.dupe(u8, "MCP tool is not registered in the current connection. Its loaded schema may be stale. The next catalog will reflect the current registration. Inspect /mcp; `/mcp reconnect <server>` starts the configured service again, then reload its schema before retrying."), .is_error = true };
     };
 
-    const server = reg.servers[tool.server_index];
+    const registered = reg.servers[tool.server_index];
+    const server = if (registered.nanocua_command) |command| scoped: {
+        const scope = turn orelse return .{
+            .text = try out_alloc.dupe(u8, "Bundled NanoCUA tools require an active Graff turn."),
+            .is_error = true,
+        };
+        break :scoped scope.connect(reg, command) catch |err| return .{
+            .text = try std.fmt.allocPrint(out_alloc, "Can't open the turn-scoped NanoCUA connection ({t}). Update NanoCUA if it predates turn-scoped input.", .{err}),
+            .is_error = true,
+        };
+    } else registered;
     const params = try std.json.Stringify.valueAlloc(reg.gpa, .{ .name = tool.original_name, .arguments = input }, .{});
     defer reg.gpa.free(params);
 
@@ -200,7 +210,16 @@ fn invoke(reg: *Registry, out_alloc: Allocator, qualified: []const u8, input: Va
             try initializeServer(server, response_alloc, reg.arena(), null);
             break :retry try request(server, response_alloc, params, "tools/call", tool.original_name);
         },
-        else => return err,
+        else => {
+            if (server != registered) {
+                turn.?.close(reg.io);
+                return .{
+                    .text = try std.fmt.allocPrint(out_alloc, "The turn-scoped NanoCUA connection ended ({t}).", .{err}),
+                    .is_error = true,
+                };
+            }
+            return err;
+        },
     };
 
     // Resolve bounded MRTR input requests before interpreting the tool result.

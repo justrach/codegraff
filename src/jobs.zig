@@ -64,6 +64,9 @@ pub const Job = struct { // session-global; pump drains pipes or capture files; 
     started_ms: i64 = 0, // unix ms, for age columns and the record
     last_active_ms: i64 = 0, // awake ms: last output byte, read, wait tick, or pin
     browser_probe_after_ms: i64 = 0,
+    preview_probe_after_ms: i64 = 0,
+    preview_grace: @import("preview_consumers.zig").Grace = .{},
+    start_id: u64 = 0,
     activity_revision: i64 = 0,
     group_pid: i32 = 0,
     exit_cleanup: bool = false,
@@ -166,6 +169,8 @@ fn jobDrain(job: *Job, gpa: Allocator, readers: []const *Io.Reader, now_ms: i64)
 /// unlocking.
 pub fn idleTick(job: *Job, gpa: Allocator, io: Io, pid: i32, now: i64) ?u64 {
     if (job.kill_requested or job.detach or job.exit_cleanup) return null;
+    browser_guard.checkPreview(&g_jobs, job, gpa, io, pid, now);
+    if (job.kill_requested or job.detach or job.exit_cleanup or job.stopped_idle) return null;
     const idle_ms: u64 = @intCast(@max(now - job.last_active_ms, 0));
     switch (job_idle.verdict(idle_ms, job.idle_warned, job.pinned)) {
         .none => {},
@@ -347,6 +352,10 @@ pub fn spawnJobOpts(gpa: Allocator, io: Io, cmd: []const u8, opts: SpawnOpts) !*
         .persistent = opts.persistent,
         .cwd = cwd_copy,
         .started_ms = util.unixMs(io),
+        .start_id = if (comptime posix_groups) switch (proc_identity.probe(io, child.id orelse 0)) {
+            .id => |v| v,
+            else => 0,
+        } else 0,
         .last_active_ms = nowMs(io),
         .capture = capture,
         .temp_script = prep.takeTempScript(),
@@ -429,7 +438,11 @@ pub fn jobOutput(gpa: Allocator, io: Io, id: u64, wait_ms: u64) !ToolOutput {
             if (!job.done) {
                 try job_notify.printRunning(w, id, waited, interrupted, job.persistent);
             } else if (job.stopped_idle) {
-                try job_idle.printStopped(w, id, job_idle.policy.stop_ms);
+                if (job.kill_requested) {
+                    try job_idle.printStopped(w, id, job_idle.policy.stop_ms);
+                } else {
+                    try w.print("[job {d}: preview stopped after no consumers were reported; rerun it if still needed]", .{id});
+                }
             } else if (job.killed) {
                 try w.print("[job {d}: killed]", .{id});
             } else if (job.exit_code) |c| {

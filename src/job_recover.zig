@@ -125,6 +125,7 @@ fn adopt(gpa: Allocator, io: Io, path: []const u8, meta: Meta) !void {
         .child = .{ .id = null, .thread_handle = {}, .stdin = null, .stdout = null, .stderr = null, .request_resource_usage_statistics = false },
         .cwd = cwd,
         .started_ms = meta.started_ms,
+        .start_id = meta.start_id,
         .last_active_ms = jobs.nowMs(io),
         .group_pid = meta.pid,
         .capture = capture,
