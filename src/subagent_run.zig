@@ -151,7 +151,7 @@ pub const retry_unsafe_note = "retry is NOT safe as-is — fix the cause first (
 /// them; this ordering keeps the count and the prefix.
 pub fn subagentFailure(gpa: Allocator, sub_id: []const u8, err: anyerror, detail: ?[]const u8, attempts: u8) ToolOutput {
     const kind = classifyFailure(err, detail);
-    const cause = if (kind == .cancelled or kind == .synthesis_limit) @errorName(err) else detail orelse @errorName(err);
+    const cause = @import("subagent_reason.zig").cause(kind, err, detail); // the same cause a terminal ACP frame names (ADR 0358)
     const retry = switch (kind) {
         .cancelled, .synthesis_limit => "retry is NOT safe as-is — the worker stopped; use the completed evidence without restarting it",
         else => if (kind.retrySafe()) retry_ok_note else retry_unsafe_note,
@@ -418,9 +418,11 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     if (announced or background_announced or progress_on) agent.sink = child_stream.engineSink();
     if (progress_on) child_stream.startProgress();
     var child_state: []const u8 = "failed";
-    defer if (announced) acp_children.finish(ctx.io, sub_id, child_state, ctx.parent_tool_call_id);
-    defer if (background_handle) |handle| acp_children.finishBackground(ctx.io, handle, sub_id, child_stream.seq, child_state);
-    defer if (progress_on) child_stream.finishProgress(child_state);
+    var child_why = @import("subagent_reason.zig").Reason.unfinished(); // ADR 0358: why a failed/cancelled child ended
+    var attempts: u8 = 0;
+    defer if (announced) acp_children.finish(ctx.io, sub_id, child_state, child_why.why(), ctx.parent_tool_call_id);
+    defer if (background_handle) |handle| acp_children.finishBackground(ctx.io, handle, sub_id, child_stream.seq, child_state, child_why.why());
+    defer if (progress_on) child_stream.finishProgress(child_state, child_why.why());
 
     const wf_task = std.mem.eql(u8, kind, "workflow_task");
     if (wf_task) guiEmit(ctx.io, .{ .type = "tool_call", .name = "subagent", .input = .{ .description = label }, .id = sub_id });
@@ -443,7 +445,6 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     try agent.messages.append(try textMessage(arena, "user", first));
     defer agent.tools_used.deinit(gpa);
     // Retry transient failures against the same child history.
-    var attempts: u8 = 0;
     const report: anyerror![]const u8 = ask: {
         while (true) {
             attempts += 1;
@@ -473,6 +474,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     const run_ok = if (report) |r| r.len > 0 else |_| false;
     const interrupted = if (activity) |*recorder| @import("subagent_activity.zig").interruptRequested(ctx.io, recorder.dir, sub_id) else false;
     child_state = if (interrupted) "cancelled" else if (report) |_| (if (run_ok) "completed" else "failed") else |err| (if (err == error.Interrupted or err == error.Canceled) "cancelled" else "failed");
+    child_why.record(child_state, report, agent.last_api_error, attempts);
     if (activity) |*recorder| recorder.finish(run_ok, if (report) |r| r else |_| (agent.last_api_error orelse "Sub-agent failed"));
     if (wf_task) {
         // The sa- id (shared with agent_usage) pairs parallel workflow rows;

@@ -17,21 +17,48 @@ def updates(client):
             if event.get('method') == 'session/update']
 
 
-def run(binary, preview, capability, json_mode=False, progress_on=True):
+class FailingChildModel(load.ScriptedModel):
+    """The parent spawns once; every child request is rejected, retries too."""
+
+    def __init__(self, spawn):
+        super().__init__([])
+        self.spawn = spawn
+        self.spawned = False
+
+    def next_reply(self, body):
+        names = [item.get('function', item).get('name') for item in body.get('tools', [])]
+        with self._lock:
+            self.requests.append(body)
+            if not names:
+                return {'text': 'Short title'}
+            if 'subagent' not in names:
+                return {'http_status': 400, 'error': 'Scripted child failure: invalid fixture request.'}
+            if self.spawned:
+                return {'text': 'Parent read the failure.'}
+            self.spawned = True
+            return {'tool': 'subagent', 'arguments': self.spawn}
+
+
+def run(binary, preview, capability, json_mode=False, progress_on=True, fail=False):
     with tempfile.TemporaryDirectory(prefix='graff-acp-child-') as temporary:
         work = Path(temporary)
         home = work / 'home'
         home.mkdir()
         (work / 'example.txt').write_text('SUBAGENT-FIXTURE-CONTENT\n')
-        model = load.ScriptedModel([
-            {'tool': 'subagent', 'arguments': {'description': 'Inspect example',
-                'prompt': 'Read example.txt and report its content.', 'isolation': 'shared_cwd',
-                'run_in_background': False, 'model': 'unavailable-fixture-model'}},
-            {'text': 'Child is inspecting.', 'tool': 'read_file',
-                'arguments': {'path': 'example.txt'}},
-            {'text': 'Child found SUBAGENT-FIXTURE-CONTENT.'},
-            {'text': 'Parent received the child report.'},
-        ], exhausted_text='unexpected extra model call')
+        spawn = {'description': 'Inspect example',
+                 'prompt': 'Read example.txt and report its content.', 'isolation': 'shared_cwd',
+                 'run_in_background': False, 'model': 'unavailable-fixture-model'}
+        if fail:
+            # No pin: a rejected pinned seat would fall back instead of failing.
+            del spawn['model']
+            model = FailingChildModel(spawn)
+        else:
+            script = [{'tool': 'subagent', 'arguments': spawn},
+                      {'text': 'Child is inspecting.', 'tool': 'read_file',
+                       'arguments': {'path': 'example.txt'}},
+                      {'text': 'Child found SUBAGENT-FIXTURE-CONTENT.'},
+                      {'text': 'Parent received the child report.'}]
+            model = load.ScriptedModel(script, exhausted_text='unexpected extra model call')
         port = model.start(0)
         env = {'GRAFF_NO_NATIVE_FOLD': '1'}
         if preview:
@@ -72,6 +99,16 @@ def run(binary, preview, capability, json_mode=False, progress_on=True):
                     assert not progress, rows
                     return
                 assert progress, rows
+                if fail:
+                    meta = progress[-1][1]['_meta']['graff/subagent']
+                    assert meta['state'] == 'failed', meta
+                    assert 'Scripted child failure' in meta['reason'], meta
+                    assert meta['failureKind'] == 'invalid', meta
+                    assert all('reason' not in update['_meta']['graff/subagent']
+                               for _, update in progress[:-1]), progress
+                    return
+                assert all('reason' not in update['_meta']['graff/subagent']
+                           for _, update in progress), progress
                 actual_model = model.requests[1]['model']
                 assert actual_model != 'unavailable-fixture-model'
                 for _, update in progress:
@@ -92,6 +129,13 @@ def run(binary, preview, capability, json_mode=False, progress_on=True):
             assert len(child_updates) == 2, rows
             announced_at, announced = child_updates[0]
             finished_at, finished = child_updates[1]
+            if fail:
+                assert finished['state'] == 'failed', finished
+                why = finished['_meta']['graff/subagent']
+                assert 'Scripted child failure' in why['reason'], finished
+                assert why['failureKind'] == 'invalid', finished
+                return
+            assert 'graff/subagent' not in finished['_meta'], finished
             child_id = announced['subagentSessionId']
             assert child_id != sid
             assert announced['task'] == 'Read example.txt and report its content.'
@@ -125,4 +169,6 @@ if __name__ == '__main__':
     run(binary, True, True, json_mode=True)
     run(binary, False, False)
     run(binary, False, False, progress_on=False)
-    print('ACP subagents: standard progress on the parent tool call by default, opt-out, draft child sessions when negotiated, --json')
+    run(binary, False, False, fail=True)
+    run(binary, True, True, fail=True)
+    print('ACP subagents: standard progress on the parent tool call by default, opt-out, draft child sessions when negotiated, --json, failure reasons')
