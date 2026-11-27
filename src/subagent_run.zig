@@ -279,6 +279,9 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
     // enforces has nothing left to decide.
     const base_provider = childProvider(ctx.provider, ctx.subagent_provider, ctx.subagent_cross_provider);
     const child_provider = pin orelse base_provider;
+    const service_tier = @import("service_tier.zig");
+    const worker_tier: service_tier.Tier = if (std.mem.eql(u8, kind, "judge_task")) .standard else ctx.worker_service_tier;
+    if (!service_tier.supportsRoute(child_provider, worker_tier)) return error.WorkerServiceTierUnavailable;
 
     var agent: Agent = .{
         .gpa = gpa,
@@ -318,6 +321,7 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
         // read-only, not tool-less. #1813: a child isolated in a worktree is
         // seated there specifically to produce changes, never read-only.
         .read_only = isolation != .worktree and @import("task_intent.zig").classify(prompt) == .informational,
+        .service_tier = worker_tier,
         .reasoning = effort orelse .medium, // #292 follow-up: effort pin; unpinned workers keep the default depth, not the root's /effort
     };
     const sub_start = Io.Timestamp.now(ctx.io, .awake);
@@ -452,7 +456,10 @@ pub fn runSub(ctx: ToolCtx, kind: []const u8, label: []const u8, prompt: []const
             const r = agent.runTurn();
             const err = if (r) |_| break :ask r else |e| e;
             const fail_kind = classifyFailure(err, agent.last_api_error);
-            if (agent.tools_used.count() == 0 and subagent_retry.shouldFallbackPinnedSeat(err, fail_kind, attempts, pin != null, agent.provider.id, agent.provider.model, base_provider.id, base_provider.model, agent.last_api_error)) {
+            if (agent.tools_used.count() == 0 and
+                service_tier.supportsRoute(base_provider, service_tier.effective(&agent)) and
+                subagent_retry.shouldFallbackPinnedSeat(err, fail_kind, attempts, pin != null, agent.provider.id, agent.provider.model, base_provider.id, base_provider.model, agent.last_api_error))
+            {
                 subagent_retry.traceSeatFallback(ctx.tracer, sub_id, agent.provider.model, base_provider.model, fail_kind, agent.last_api_error);
                 agent.provider = base_provider;
                 if (activity) |*recorder| recorder.setModel(agent.provider.id, agent.provider.model);

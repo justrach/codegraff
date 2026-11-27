@@ -54,6 +54,10 @@ the brief alone, at the worker default effort, so an effort set with
 - A child without a spawn or persona effort pin runs at its parent's live
   effort, when the child's model accepts that level. On the codex route an
   unset effort already means the catalog default (ADR 0226).
+- A `subagent` call can request a `service_tier` for its child. A `workflow`
+  call can set it for every worker, including retries. Unspecified workers
+  and internal judges use standard service. The resolved worker route must
+  offer the requested tier. Retained workers keep their selection on resume.
 - A child can also ask Jev mid-run. While Jev serves the child's own seat,
   its catalog carries `jev_effort` (eager on Responses), and a selection
   lands in the child's own pending slot and applies at the child's next

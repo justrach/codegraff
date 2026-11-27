@@ -349,6 +349,16 @@ pub fn restoreResumedSession(arena: Allocator, out: *Io.Writer, root: *agent_mod
     }
 }
 
+/// Apply the launch override after resume has settled the model and before
+/// any turn or resume compaction can send a model request.
+pub fn applyStartupServiceTier(root: *agent_mod.Agent, requested: ?@import("service_tier.zig").Tier) void {
+    const tier = requested orelse return;
+    const service_tier = @import("service_tier.zig");
+    if (!service_tier.supportsRoute(root.provider, tier))
+        std.process.fatal("--service-tier {s} is unavailable for {s}/{s}", .{ tier.label(), root.provider.id, root.provider.model });
+    service_tier.apply(root, tier);
+}
+
 /// Summarize a large restored context only after behavioral lifecycle start.
 /// This preprocessing is outside a root-turn scope, so its operational API
 /// trace is explicitly attributed to turn 0 rather than to a stale user turn.

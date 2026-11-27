@@ -36,6 +36,7 @@ pub const ServeConfig = struct {
     token: ?[]const u8,
     yolo: bool,
     model: ?[]const u8,
+    service_tier: ?@import("service_tier.zig").Tier = null,
     subagent_provider: ?[]const u8,
     subagent_model: ?[]const u8,
     allow_cross_provider_subagents: bool,

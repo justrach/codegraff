@@ -7,9 +7,9 @@
 //! Wire values:
 //!   - `standard` (`default`): omit `service_tier`
 //!   - `fast`: `"priority"` (all `codex` and `chatgpt-new` models)
-//!   - `ultrafast`: `"ultrafast"` on `gpt-6.2-sol`, `gpt-6.2-astra`, and any
-//!     live catalog row advertising `"ultrafast"` in `service_tiers` /
-//!     `additional_speed_tiers`; degrades to `"priority"` on older ChatGPT models.
+//!   - `ultrafast`: `"ultrafast"` when the active catalog advertises it
+//!     (the offline catalog includes `gpt-6.2-sol`). A session preference
+//!     falls back to `"priority"` when switching to a Fast-only model.
 
 const std = @import("std");
 const Io = std.Io;
@@ -54,14 +54,39 @@ pub fn parse(raw: []const u8) ?Tier {
     return null;
 }
 
+pub fn parseExplicit(raw: []const u8) ?Tier {
+    for ([_]Tier{ .standard, .fast, .ultrafast }) |tier| {
+        if (std.mem.eql(u8, raw, tier.label())) return tier;
+    }
+    return null;
+}
+
+pub fn parseWorker(raw: ?Value) error{InvalidServiceTier}!Tier {
+    const value = raw orelse return .standard;
+    return if (value == .string) parseExplicit(value.string) orelse error.InvalidServiceTier else error.InvalidServiceTier;
+}
+
+pub fn supportsRoute(provider: @import("provider.zig").Provider, tier: Tier) bool {
+    if (tier == .standard) return true;
+    if (provider.kind != .responses) return false;
+    return switch (tier) {
+        .standard => unreachable,
+        .fast => supportsFast(provider.id),
+        .ultrafast => supportsUltrafast(provider.id, provider.model),
+    };
+}
+
 pub fn supportsFast(provider_id: []const u8) bool {
     return std.mem.eql(u8, provider_id, "codex") or std.mem.eql(u8, provider_id, "chatgpt-new");
 }
 
 pub fn supportsUltrafast(provider_id: []const u8, model: []const u8) bool {
     if (!supportsFast(provider_id)) return false;
-    if (pricing.modelInfoFor(provider_id, model)) |info| if (info.supports_ultrafast) return true;
-    return pricing.modelAliasEquals(model, "gpt-6.2-sol") or pricing.modelAliasEquals(model, "gpt-6.2-astra");
+    if (pricing.modelInfoFor(provider_id, model)) |info| return info.supports_ultrafast;
+    for (pricing.models()) |info| {
+        if (std.mem.eql(u8, info.provider, provider_id) and pricing.modelAliasEquals(info.name, model)) return info.supports_ultrafast;
+    }
+    return false;
 }
 
 pub fn effective(self: *const Agent) Tier {
@@ -202,7 +227,7 @@ pub fn tryHandleCommand(root: *Agent, line: []const u8, out: *Io.Writer) !bool {
     const note: []const u8 = if (!supportsFast(root.provider.id))
         " (codex/chatgpt-new only — current model ignores it)"
     else if (next == .ultrafast and !supportsUltrafast(root.provider.id, root.provider.model))
-        " (ultrafast applies on gpt-6.2-sol / gpt-6.2-astra; current model uses priority fast)"
+        " (current model uses Fast)"
     else
         "";
     if (next == .ultrafast) {
@@ -232,15 +257,29 @@ pub fn applyJson(root: *Agent, obj: std.json.ObjectMap) ?Tier {
 
 test "service_tier wire values cover codex and chatgpt-new fast/ultrafast without leaking off-route" {
     try std.testing.expectEqualStrings("ultrafast", wireValue("codex", "gpt-6.2-sol", .ultrafast).?);
-    try std.testing.expectEqualStrings("ultrafast", wireValue("codex", "gpt-6.2-astra", .ultrafast).?);
+    try std.testing.expectEqualStrings("priority", wireValue("codex", "gpt-6.2-astra", .ultrafast).?);
     try std.testing.expectEqualStrings("ultrafast", wireValue("chatgpt-new", "gpt-6.2-sol", .ultrafast).?);
-    try std.testing.expectEqualStrings("ultrafast", wireValue("chatgpt-new", "gpt-6.2-astra", .ultrafast).?);
+    try std.testing.expectEqualStrings("priority", wireValue("chatgpt-new", "gpt-6.2-astra", .ultrafast).?);
     try std.testing.expectEqualStrings("priority", wireValue("codex", "gpt-6.1-sol", .ultrafast).?);
     try std.testing.expectEqualStrings("priority", wireValue("chatgpt-new", "gpt-6.1-sol", .fast).?);
     try std.testing.expect(wireValue("codex", "gpt-6.2-sol", .standard) == null);
     try std.testing.expect(wireValue("openai", "gpt-6.2-sol", .ultrafast) == null);
     try std.testing.expect(wireValue("xai", "grok-4.7", .fast) == null);
     try std.testing.expect(wireValue("codegraff", "gpt-6.2-sol", .ultrafast) == null);
+}
+
+test "service_tier uses active catalog capability ahead of offline aliases" {
+    const original = pricing.active_model_table;
+    defer pricing.active_model_table = original;
+    pricing.active_model_table = &.{
+        .{ .provider = "codex", .name = "gpt-6.2-sol", .context = 500_000 },
+        .{ .provider = "codex", .name = "future-sol", .context = 500_000, .supports_ultrafast = true },
+        .{ .provider = "openai", .name = "future-sol", .context = 500_000, .supports_ultrafast = true },
+    };
+    try std.testing.expect(!supportsUltrafast("codex", "gpt-6.2-sol"));
+    try std.testing.expect(!supportsUltrafast("codex", "GPT 6.2 Sol"));
+    try std.testing.expect(supportsUltrafast("codex", "future-sol"));
+    try std.testing.expect(!supportsUltrafast("openai", "future-sol"));
 }
 
 test "jsonAdvertisesUltrafast detects Codex service_tiers and additional_speed_tiers" {
@@ -258,18 +297,16 @@ test "jsonAdvertisesUltrafast detects Codex service_tiers and additional_speed_t
     try std.testing.expect(!jsonAdvertisesUltrafast(fast_only.value.object));
 }
 
-test "Responses request body sends service_tier ultrafast on 6.2 sol/astra across codex and chatgpt-new" {
+test "Responses request body sends service_tier ultrafast on 6.2 Sol across codex and chatgpt-new" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
     for ([_][]const u8{ "codex", "chatgpt-new" }) |pid| {
-        for ([_][]const u8{ "gpt-6.2-sol", "gpt-6.2-astra" }) |mdl| {
-            var agent = try @import("agent_request_body_responses.zig").testAgentFor(a, pid, .responses, mdl);
-            apply(&agent, .ultrafast);
-            const body = try agent.buildBody(null, false, true, true);
-            defer std.testing.allocator.free(body);
-            try std.testing.expect(std.mem.indexOf(u8, body, "\"service_tier\":\"ultrafast\"") != null);
-        }
+        var agent = try @import("agent_request_body_responses.zig").testAgentFor(a, pid, .responses, "gpt-6.2-sol");
+        apply(&agent, .ultrafast);
+        const body = try agent.buildBody(null, false, true, true);
+        defer std.testing.allocator.free(body);
+        try std.testing.expect(std.mem.indexOf(u8, body, "\"service_tier\":\"ultrafast\"") != null);
     }
     var older = try @import("agent_request_body_responses.zig").testAgentFor(a, "chatgpt-new", .responses, "gpt-6.1-sol");
     apply(&older, .ultrafast);
@@ -292,7 +329,7 @@ test "service_tier slash commands, persistence, and graff/models metadata" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    var agent = try @import("agent_request_body_responses.zig").testAgentFor(a, "codex", .responses, "gpt-6.2-astra");
+    var agent = try @import("agent_request_body_responses.zig").testAgentFor(a, "codex", .responses, "gpt-6.2-sol");
     var out: Io.Writer.Allocating = .init(a);
 
     try std.testing.expect(try tryHandleCommand(&agent, "/ultrafast", &out.writer));
@@ -316,7 +353,7 @@ test "service_tier slash commands, persistence, and graff/models metadata" {
     loadFromObject(&agent, parsed.object);
     try std.testing.expectEqual(Tier.ultrafast, effective(&agent));
 
-    // Verify graff/models exposes serviceTiers + ultrafastSupported on 6.2 sol/astra.
+    // Verify graff/models exposes the speed choices for each model.
     var keys: @import("provider.zig").Keys = .{ .values = @splat(null) };
     var rpc_out: Io.Writer.Allocating = .init(a);
     var live: @import("acp_live_turn.zig").LiveTurn = .{ .root = &agent, .keys = &keys, .out = &rpc_out.writer };
@@ -343,8 +380,8 @@ test "service_tier slash commands, persistence, and graff/models metadata" {
         }
         if (std.mem.eql(u8, p, "chatgpt-new") and std.mem.eql(u8, n, "gpt-6.2-astra")) {
             saw_chatgpt_astra = true;
-            try std.testing.expect(obj.get("ultrafastSupported").?.bool);
-            try std.testing.expectEqual(@as(usize, 2), obj.get("serviceTiers").?.array.items.len);
+            try std.testing.expect(!obj.get("ultrafastSupported").?.bool);
+            try std.testing.expectEqual(@as(usize, 1), obj.get("serviceTiers").?.array.items.len);
         }
     }
     try std.testing.expect(saw_codex_sol and saw_chatgpt_astra);

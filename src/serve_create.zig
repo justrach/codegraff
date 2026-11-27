@@ -120,6 +120,7 @@ pub fn createFromBody(st: *ServeState, arena: Allocator, body: []const u8) !Crea
     try argv.appendSlice(arena, &.{ st.exe, "--json", "--resume", name });
     if (yolo) try argv.append(arena, "--yolo");
     if (model) |m| try argv.appendSlice(arena, &.{ "--model", m });
+    if (st.cfg.service_tier) |tier| try argv.appendSlice(arena, &.{ "--service-tier", tier.label() });
     if (subagent_provider) |p| try argv.appendSlice(arena, &.{ "--subagent-provider", p });
     if (subagent_model) |m| try argv.appendSlice(arena, &.{ "--subagent-model", m });
     if (allow_cross_provider_subagents) try argv.append(arena, "--allow-cross-provider-subagents");

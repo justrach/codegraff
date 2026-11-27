@@ -73,7 +73,7 @@ pub fn handle(root: *Agent, arena: std.mem.Allocator, line: []const u8, out: *st
         return true;
     }
     root.jev_effort_pending.pinUserEffort(root.io);
-    _ = @import("repl_glue.zig").saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+    _ = @import("repl_glue.zig").saveThinkingSettings(root.io, root.gpa, root.reasoning, null, root.ultracode_mode, root.show_thinking, root.ai_title);
     try out.print("reasoning effort: {s}{s}\n", .{
         display(root, root.reasoning),
         if (!root.effortApplies()) " (current model ignores it — applies to supported reasoning models)" else "",

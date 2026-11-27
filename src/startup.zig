@@ -207,7 +207,6 @@ const serve = @import("serve.zig");
 const remote_control = @import("remote_control.zig"); // #722: serve without a listener
 const remote_client = @import("remote_client.zig"); // #722: `graff remote …`
 const main_mod = @import("main.zig");
-
 /// The session-child settings `graff serve` and `graff remote-control` share:
 /// both spawn the same `<exe> --json` children from the same flags.
 fn serveConfig(flags: args.Flags, environ: anytype) serve.ServeConfig {
@@ -217,6 +216,7 @@ fn serveConfig(flags: args.Flags, environ: anytype) serve.ServeConfig {
         .token = flags.token_flag orelse environ.get("HARNESS_SERVE_TOKEN") orelse environ.get("GRAFF_SERVE_TOKEN"),
         .yolo = flags.yolo_flag,
         .model = flags.model_flag,
+        .service_tier = flags.service_tier_flag,
         .subagent_provider = flags.subagent_provider_flag,
         .subagent_model = flags.subagent_model_flag,
         .allow_cross_provider_subagents = flags.allow_cross_provider_subagents_flag,

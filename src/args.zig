@@ -60,6 +60,7 @@ pub const Flags = struct {
     update_check: bool = false, // graff update --check
     update_beta: bool = false, // graff update --beta
     model_flag: ?[]const u8 = null,
+    service_tier_flag: ?@import("service_tier.zig").Tier = null,
     subagent_provider_flag: ?[]const u8 = null,
     subagent_model_flag: ?[]const u8 = null,
     allow_cross_provider_subagents_flag: bool = false,
@@ -261,6 +262,10 @@ pub fn parse(init: std.process.Init) !Flags {
                 } else if (std.mem.eql(u8, arg, "--model")) {
                     const mv = it.next() orelse std.process.fatal("--model needs a value — graff --help", .{});
                     flags.model_flag = try arena.dupe(u8, mv);
+                } else if (std.mem.eql(u8, arg, "--service-tier")) {
+                    const value = it.next() orelse std.process.fatal("--service-tier needs default, fast, or ultrafast", .{});
+                    flags.service_tier_flag = @import("service_tier.zig").parseExplicit(value) orelse
+                        std.process.fatal("--service-tier needs default, fast, or ultrafast, got '{s}'", .{value});
                 } else if (std.mem.eql(u8, arg, "--subagent-provider")) {
                     const pv = it.next() orelse std.process.fatal("--subagent-provider needs a value — graff --help", .{});
                     flags.subagent_provider_flag = try arena.dupe(u8, pv);

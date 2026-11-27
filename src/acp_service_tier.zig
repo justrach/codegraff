@@ -45,7 +45,7 @@ pub fn set(ctx: *anyopaque, value: []const u8) anyerror!bool {
     return true;
 }
 
-test "acp_service_tier offers Ultra Fast on 6.2 sol/astra for codex and chatgpt-new" {
+test "acp_service_tier offers Ultra Fast on 6.2 Sol and rejects it on Astra" {
     const saved_persist = st.persist_settings;
     st.persist_settings = false;
     defer st.persist_settings = saved_persist;
@@ -64,7 +64,7 @@ test "acp_service_tier offers Ultra Fast on 6.2 sol/astra for codex and chatgpt-
     try std.testing.expectEqual(st.Tier.ultrafast, st.effective(&root));
     try std.testing.expectEqualStrings("ultrafast", (try option(&live, a)).?.currentValue);
 
-    root.provider.model = "gpt-6.1-sol";
+    root.provider.model = "gpt-6.2-astra";
     const older = (try option(&live, a)).?;
     try std.testing.expectEqual(@as(usize, 2), older.options.len);
     try std.testing.expectEqualStrings("fast", older.currentValue);

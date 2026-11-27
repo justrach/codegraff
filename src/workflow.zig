@@ -190,6 +190,8 @@ pub fn execWorkflow(parent: ToolCtx, input: Value) !ToolOutput {
     var arena = std.heap.ArenaAllocator.init(parent.gpa);
     defer arena.deinit();
     var ctx = parent;
+    ctx.worker_service_tier = @import("service_tier.zig").parseWorker(input.object.get("service_tier")) catch
+        return .{ .text = try ctx.gpa.dupe(u8, "workflow: service_tier must be default, fast, or ultrafast"), .is_error = true };
     ctx.fork_source = @import("subagent_history.zig").fromInput(ctx, input, arena.allocator()) catch |err| return tools.failure(ctx.gpa, err);
     ctx.retain_children = tools.json_args.flag(input, "retained");
     if (ctx.from_sub or tools.strField(input, "isolation") == null or !std.mem.eql(u8, tools.strField(input, "isolation").?, "worktree")) return execWorkflowShared(ctx, input);

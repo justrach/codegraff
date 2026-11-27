@@ -150,6 +150,7 @@ pub const ToolCtx = struct {
     parent_messages: []const std.json.Value = &.{}, // ADR 0232: the caller's history, read only while its tool batch runs
     parent_task: []const u8 = "", // ADR 0232: the user's prompts a spawned child sees as context
     fork_source: ?@import("subagent_history.zig").Snapshot = null,
+    worker_service_tier: @import("service_tier.zig").Tier = .standard,
     retain_children: bool = false, // explicit workflow retention, not inherited by judges
     synthesis: bool = false, // canonical workflow synthesis, not ordinary delegated work
     read_only_shell: bool = false, // ADR 0232: a read-only child's foreground shell runs under the seatbelt sandbox
@@ -325,6 +326,7 @@ pub fn failure(gpa: Allocator, err: anyerror) ToolOutput {
     // #122/#253: a bare error name is useless advice for an fd-limit hit — say
     // what it means and what helps. ulimit cannot fix SYSTEM-wide exhaustion.
     const text = (switch (err) {
+        error.WorkerServiceTierUnavailable => gpa.dupe(u8, "The resolved worker model and provider do not offer the requested service tier."),
         error.ProcessFdQuotaExceeded => gpa.dupe(u8, "error: ProcessFdQuotaExceeded — graff hit its open-file limit, usually from many parallel tools/subagents/MCP servers in one turn. Retry the failed calls sequentially (less parallel fan-out); if it recurs, raise the limit (`ulimit -n 4096`) before starting graff."),
         error.SystemFdQuotaExceeded => gpa.dupe(u8, "error: SystemFdQuotaExceeded — the SYSTEM-wide open-file table is full, so `ulimit` will not help. Wait for other processes to release files (or close some applications), then retry sequentially."),
         else => std.fmt.allocPrint(gpa, "error: {t}", .{err}),

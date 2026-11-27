@@ -62,6 +62,8 @@ pub fn exec(ctx: tools.ToolCtx, input: std.json.Value) !tools.ToolOutput {
         error.RetainedWorkerProviderUnavailable => "original provider is unavailable; no provider switch was authorized",
         error.RetainedWorkerProtocolChanged => "original provider protocol is unavailable; cannot reinterpret saved history",
     });
+    if (!@import("service_tier.zig").supportsRoute(provider, state.record.service_tier))
+        return refuse(ctx, "the saved model and provider no longer offer the worker’s service tier");
     var child = ctx;
     child.retained_worker = state;
     child.agent_cwd = state.record.cwd;

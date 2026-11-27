@@ -461,6 +461,7 @@ pub fn main(init: std.process.Init) !void {
     // Load restored configuration before run_started, but defer any model-backed
     // cold-cache compaction until after lifecycle start.
     try session_run.restoreResumedSession(arena, out, &root, &keys, flags, json_mode, g_cwd_display);
+    session_run.applyStartupServiceTier(&root, flags.service_tier_flag);
     const behavior_prompt_sha = scoring.promptFingerprint(root.systemPrompt());
     behavior_boot.behavior.startWithMetadata(harness_version, telem.start_unix_ms, .{
         .provider = root.provider.id,

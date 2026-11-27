@@ -236,7 +236,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
     if (try @import("service_tier.zig").tryHandleCommand(root, line, out)) return true;
     if (std.mem.eql(u8, line, "/thinking") or std.mem.eql(u8, line, "/thinking on") or std.mem.eql(u8, line, "/thinking off")) {
         root.show_thinking = if (std.mem.eql(u8, line, "/thinking on")) true else if (std.mem.eql(u8, line, "/thinking off")) false else !root.show_thinking;
-        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, null, root.ultracode_mode, root.show_thinking, root.ai_title);
         try out.print("thinking: {s} ({s}){s}\n", .{
             if (root.show_thinking) "shown" else "collapsed",
             if (root.show_thinking) "stream reasoning live" else "spinner only",
@@ -249,7 +249,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         const was_on = root.ai_title;
         root.ai_title = if (std.mem.eql(u8, line, "/title on")) true else if (std.mem.eql(u8, line, "/title off")) false else !root.ai_title;
         if (was_on and !root.ai_title) root.title_generation +%= 1;
-        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, null, root.ultracode_mode, root.show_thinking, root.ai_title);
         try out.print("AI session title: {s} ({s}){s}\n", .{
             if (root.ai_title) "on" else "off",
             if (root.ai_title) "name the tab from your first prompt" else "use the prompt text verbatim",
@@ -278,7 +278,7 @@ pub fn tryHandle(root: *Agent, keys: *Keys, arena: Allocator, line: []const u8, 
         };
         root.ultracode_mode = next;
         @import("prompt_cache_hud.zig").noteBust(.mode);
-        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, root.fast, root.ultracode_mode, root.show_thinking, root.ai_title);
+        const saved = saveThinkingSettings(root.io, root.gpa, root.reasoning, null, root.ultracode_mode, root.show_thinking, root.ai_title);
         try out.print("ultracode mode: {s}{s}\n", .{ if (root.ultracode_mode) "on" else "off", if (saved) "" else " (not persisted)" });
         try out.flush();
         return true;

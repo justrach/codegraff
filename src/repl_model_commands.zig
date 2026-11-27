@@ -71,7 +71,7 @@ pub fn runCommand(self: *Model, line: []const u8) void {
         self.fast = parseToggle(arg, self.fast);
         self.pushFmt(.info, "fast mode: {s}", .{onOff(self.fast)}) catch {};
     } else if (std.mem.eql(u8, cmd, "/ultrafast")) {
-        self.push(.info, "use `/ultrafast` or `/fast ultrafast` in the main `graff` session (codex/chatgpt-new gpt-6.2-sol / gpt-6.2-astra)") catch {};
+        self.push(.info, "use `/ultrafast` or `/fast ultrafast` in the main `graff` session (supported Codex/ChatGPT models)") catch {};
     } else if (std.mem.eql(u8, cmd, "/thinking")) {
         self.thinking_show = parseToggle(arg, self.thinking_show);
         self.pushFmt(.info, "show thinking: {s}", .{onOff(self.thinking_show)}) catch {};
