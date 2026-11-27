@@ -75,10 +75,12 @@ pub fn mayStop(result: Probe, pinned: bool, before: i64, after: i64, still_idle:
 }
 
 const preview = @import("preview_consumers.zig");
+const stop = @import("job_registry_stop.zig");
 
 /// Called with the pool locked, from every live job pump. Output cannot renew
 /// a browser observation. Confirm inventory and identity before requesting TERM.
 pub fn checkPreview(pool: anytype, job: anytype, gpa: std.mem.Allocator, io: std.Io, pid: i32, now: i64) void {
+    if (!stop.native_supported) return;
     const home = @import("job_registry.zig").home;
     if (home.len == 0 or preview.grace == 0 or job.pinned or job.stopped_idle or pid <= 1 or now < job.preview_probe_after_ms) return;
     job.preview_probe_after_ms = now + preview.poll_ms;
@@ -107,7 +109,6 @@ pub fn checkPreview(pool: anytype, job: anytype, gpa: std.mem.Allocator, io: std
         break :observation preview.Empty{ .timestamp = latest.modified_ms, .listeners = std.hash.Wyhash.hash(0, listeners) };
     } else null;
     if (!job.preview_grace.observe(empty, preview.grace)) return;
-    const stop = @import("job_registry_stop.zig");
     if (!stop.terminatePreview(pid, expected_start, stop.Native{ .io = io })) return;
     job.stopped_idle = true;
 }

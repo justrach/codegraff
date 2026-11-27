@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const identity = @import("proc_identity.zig");
 pub const Result = enum { stopped, gone, unverifiable, unsupported };
 pub const Signal = enum { term, kill };
+pub const native_supported = builtin.os.tag != .windows and builtin.os.tag != .wasi;
 
 /// A command string is not an executable identity (shells may exec arbitrary
 /// commands). Records do not store an executable fingerprint, so start identity
@@ -92,14 +93,16 @@ pub const Native = struct {
         return self.group(0);
     }
     pub fn group(_: Native, pid: i32) ?i32 {
-        if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return null;
+        if (!native_supported) return null;
         const pgid = getpgid(pid);
         return if (pgid > 0) pgid else null;
     }
     pub fn signal(_: Native, pid: i32, sig: Signal) !void {
+        if (!native_supported) return error.Unsupported;
         try std.posix.kill(-pid, if (sig == .term) .TERM else .KILL);
     }
     pub fn groupGone(self: Native, pid: i32) ?bool {
+        if (!native_supported) return null;
         std.posix.kill(-pid, @fromBackingInt(@intCast(0))) catch |err| switch (err) {
             error.ProcessNotFound => return true,
             // Darwin can report EPERM for a zombie-only group. This is not
