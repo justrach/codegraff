@@ -107,6 +107,16 @@ pub fn learnState(bytes: usize, reported_input: u64, request_estimate: u64) void
     calibrateState(bytes, @max(reported_input -| rest, bytes / 1024));
 }
 
+/// The context meter: a provider count `last` taken when the local estimate
+/// was `anchor`, carried to today's local estimate `local`. A count at or
+/// above its anchor keeps its surplus on top of `local`; one below it (the
+/// estimate over-counts, #1686) stays the meter, plus any growth since. No
+/// count (0) is the local estimate. Live meter and session restore share it.
+pub fn pairedMeter(last: u64, anchor: u64, local: u64) u64 {
+    if (last == 0 or last >= anchor) return local +| (last - @min(last, anchor));
+    return last +| (local -| anchor);
+}
+
 pub fn resetStateCountsForTest() void {
     for (&g_state_counts) |*slot| slot.store(0, .monotonic);
 }
@@ -472,6 +482,21 @@ test "#1686 a counted request recalibrates compaction state, and other sizes kee
     try blob.put(arena, "type", .{ .string = "compaction" });
     try blob.put(arena, "encrypted_content", .{ .string = state });
     try std.testing.expect(estimatedTokens(.{ .object = blob }) < 80_000);
+}
+
+test "#1686 pairedMeter keeps a provider count on either side of its estimate" {
+    // Above: the surplus rides on today's estimate, which may have moved.
+    try std.testing.expectEqual(@as(u64, 105_000), pairedMeter(105_000, 100_000, 100_000));
+    try std.testing.expectEqual(@as(u64, 125_000), pairedMeter(105_000, 100_000, 120_000));
+    // Equal: the count, then plain local growth.
+    try std.testing.expectEqual(@as(u64, 100_000), pairedMeter(100_000, 100_000, 100_000));
+    try std.testing.expectEqual(@as(u64, 110_000), pairedMeter(100_000, 100_000, 110_000));
+    // Below: the count stays the meter; growth adds, a smaller estimate does not lower it.
+    try std.testing.expectEqual(@as(u64, 331_000), pairedMeter(331_000, 608_000, 608_000));
+    try std.testing.expectEqual(@as(u64, 341_000), pairedMeter(331_000, 608_000, 618_000));
+    try std.testing.expectEqual(@as(u64, 331_000), pairedMeter(331_000, 608_000, 500_000));
+    // No count: the local estimate, whatever the stale anchor.
+    try std.testing.expectEqual(@as(u64, 90_000), pairedMeter(0, 608_000, 90_000));
 }
 
 test "single-pass SIMD stringLen matches std.json.Stringify for ASCII, multi-byte UTF-8, and invalid UTF-8" {

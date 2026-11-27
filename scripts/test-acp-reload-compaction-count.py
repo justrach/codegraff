@@ -15,6 +15,11 @@ prompt after reload needs no forced compaction (threshold 1000); and the wire
 follows OpenAI's compaction guide (store=false, the compaction item replayed
 as-is). Offline: fake credentials, no provider calls.
 
+A second variant replaces the compaction item with a 2.4 MB opaque reasoning
+item, which saves no state count: the provider's count sits BELOW the local
+estimate (bytes/4 alone exceeds the window), and the reload must keep that
+count rather than re-estimate the history.
+
 Usage: python3 scripts/test-acp-reload-compaction-count.py [path/to/graff]
 """
 import json, os, queue, signal, subprocess, sys, tempfile, threading, time
@@ -26,6 +31,7 @@ from codex_ws_mock import CodexMock  # noqa: E402
 
 GRAFF = Path(sys.argv[1] if len(sys.argv) > 1 else REPO / "zig-out/bin/graff").resolve()
 BLOB = "A" * 8_000_000
+REASONING = "R" * 2_400_000
 USAGE = {"input_tokens": 80_000, "input_tokens_details": {"cached_tokens": 0}, "output_tokens": 1, "total_tokens": 80_001}
 
 
@@ -39,19 +45,21 @@ def threshold(body):
 class Script:
     """The mock emits the state once (as an in-stream compaction would), then plain replies."""
 
-    def __init__(self):
+    def __init__(self, state):
         self.emitted = False
+        self.state = state
 
     def __call__(self, req):
         n = req.ordinal
         compaction = {"type": "compaction", "id": "cmp_1", "encrypted_content": BLOB}
+        reasoning = {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": REASONING}
         reply = {"type": "message", "id": f"msg_{n}", "status": "completed", "role": "assistant",
                  "content": [{"type": "output_text", "text": "ok", "annotations": []}]}
         if threshold(req.body) == 1000:
             out = [compaction]
         elif not self.emitted:
             self.emitted = True
-            out = [compaction, reply]
+            out = [compaction if self.state == "compaction" else reasoning, reply]
         else:
             out = [reply]
         events = [{"type": "response.output_item.done", "output_index": i, "item": it} for i, it in enumerate(out)]
@@ -116,12 +124,12 @@ class Acp:
         self.err.close()
 
 
-def run(route, tmp):
-    script = Script()
+def run(route, state, tmp):
+    script = Script(state)
     mock = CodexMock(events_for_request=script)
     port = mock.start()
     try:
-        home, cwd = tmp / route / "home", tmp / route / "work"
+        home, cwd = tmp / route / state / "home", tmp / route / state / "work"
         cwd.mkdir(parents=True)
         (home / ".harness").mkdir(parents=True)
         (home / ".harness" / "settings.json").write_text(json.dumps({"ai_title": False, "skills": {"codedbpro": False}}))
@@ -155,8 +163,13 @@ def run(route, tmp):
         a.close()
         saved = [json.loads(f.read_text()) for f in (cwd / ".graff" / "sessions").glob("*.session.json")]
         assert len(saved) == 1, saved
-        count = saved[0].get("opaque_state_count") or {}
-        assert count.get("state_bytes") == len(BLOB) and count.get("tokens", 0) > 0, count
+        if state == "compaction":
+            count = saved[0].get("opaque_state_count") or {}
+            assert count.get("state_bytes") == len(BLOB) and count.get("tokens", 0) > 0, count
+        else:
+            # No state record: only the saved meter pair carries the count, below its estimate.
+            assert "opaque_state_count" not in saved[0], saved[0].get("opaque_state_count")
+            assert saved[0]["context_tokens"] < saved[0]["context_local_tokens"], (saved[0]["context_tokens"], saved[0]["context_local_tokens"])
 
         b = Acp(cwd, env, model)
         b.request("initialize", {"protocolVersion": 1})
@@ -171,15 +184,15 @@ def run(route, tmp):
 
         used, size = restored[-1]
         warm_used = warm[-1][0]
-        assert used <= warm_used + 1_000, f"{route}: restored meter {used}/{size}, warm {warm_used} (bytes/16 would be ~508k)"
-        assert not any(threshold(q.body) == 1000 for q in after), f"{route}: reload forced a compaction"
-        assert len(after) == 1, f"{route}: {len(after)} requests after reload"
+        assert used <= warm_used + 1_000, f"{route}/{state}: restored meter {used}/{size}, warm {warm_used}"
+        assert not any(threshold(q.body) == 1000 for q in after), f"{route}/{state}: reload forced a compaction"
+        assert len(after) == 1, f"{route}/{state}: {len(after)} requests after reload"
         for q in mock.recorded_requests():
             assert q.body.get("store") is False, (route, q.ordinal, q.body.get("store"))
             for item in q.body.get("input") or []:
                 if isinstance(item, dict) and item.get("type") == "compaction":
                     assert item == {"type": "compaction", "id": "cmp_1", "encrypted_content": BLOB}, f"{route}: compaction item altered"
-        print(f"ok {route}: warm {warm_used}/{size}, restored {used}/{size}, {len(after)} request after reload, no forced compaction")
+        print(f"ok {route}/{state}: warm {warm_used}/{size}, restored {used}/{size}, {len(after)} request after reload, no forced compaction")
     finally:
         mock.stop()
 
@@ -187,7 +200,8 @@ def run(route, tmp):
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         for route in ("codex", "chatgpt-new"):
-            run(route, Path(tmp))
+            for state in ("compaction", "reasoning"):
+                run(route, state, Path(tmp))
 
 
 if __name__ == "__main__":

@@ -90,8 +90,8 @@ pub fn metadata(root: *Agent, gpa: Allocator, arena: Allocator, saved_msgs: std.
     // provider once reported an extreme unsigned count.
     try s.write(@min(context_estimate.effective, @as(u64, std.math.maxInt(i64))));
     // Pair the provider reading with the locally measurable request component.
-    // On resume we can preserve only their hidden-token delta while replacing
-    // this component with today's prompt/tool-schema estimate.
+    // Resume carries the pair onto today's estimate by the live meter's rule
+    // (context_tokens.pairedMeter), whichever side of it the reading sits.
     try s.objectField("context_local_tokens");
     try s.write(@min(context_estimate.local, @as(u64, std.math.maxInt(i64))));
     // #1686: the local component above uses this process's count of the
