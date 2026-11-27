@@ -26,6 +26,12 @@ remain yours to update. Service
 installation restarts the managed listener, so finish active tasks first.
 Run `graff mcp install` again to configure clients installed later.
 
+Settings and client entries change only after the new service answers. If it
+does not (its port is taken, say), setup puts back what was there: a first
+install unloads and removes the job it created, and a changed port or workspace
+restores the previous job file and restarts it if it was running. The error
+says what was put back, and also quotes any step of that rollback that failed.
+
 Set `GRAFF_NO_MCP=1` when running the CLI installer to skip automatic setup.
 This does not stop a previously installed service. Stop/disable it using:
 
