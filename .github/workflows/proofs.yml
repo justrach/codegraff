@@ -10,6 +10,7 @@ on:
       - 'scripts/eval-spec.sh'
       - 'evals/first_completion/**'
       - '.github/workflows/proofs.yml'
+      - '.gitattributes'
   push:
     branches: [main, 'release/**']
     paths:
@@ -20,6 +21,7 @@ on:
       - 'scripts/eval-spec.sh'
       - 'evals/first_completion/**'
       - '.github/workflows/proofs.yml'
+      - '.gitattributes'
 
 permissions:
   contents: read

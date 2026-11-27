@@ -1,0 +1,4 @@
+# Lean and Zig compare these generated fixture bytes directly.
+/src/remote_answer_lean.txt text eol=lf
+/src/test_fixtures/*.txt text eol=lf
+/src/test_fixtures/*.tsv text eol=lf
