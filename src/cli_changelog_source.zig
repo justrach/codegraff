@@ -5,6 +5,11 @@
 pub const changelog_text =
     \\What's new
     \\──────────
+    \\0.302.74.82
+    \\  • Select a service tier at launch or for delegated work.
+    \\  • Preserve context counts across reloads and report delegated worker failures.
+    \\  • Tie computer input to its approved turn and manage the installed MCP service.
+    \\
     \\0.302.74.81
     \\  • Reject corrupt PNG attachments without aborting the turn; skip them when loading saved sessions (#1926).
     \\

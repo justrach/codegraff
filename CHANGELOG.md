@@ -10,6 +10,15 @@ The release workflow uses a tag's section here as its release notes (a
 hand-written `docs/releases/<tag>.md` wins if present), so keeping this file
 current is part of cutting a release.
 
+## v0.302.74.82
+
+- Set a service tier at launch or for delegated work. Reject a requested tier when the selected route does not offer it.
+- Keep request resend controls separate from logical call budgets. End compaction promptly when its endpoint cannot be resolved.
+- Preserve context counts when restoring compacted sessions. Report why a delegated worker failed or why a requested worker selection was ignored.
+- Limit bundled computer input to the approved turn. Keep input for other clients bound to the connection that first uses it.
+- Inspect, start, stop, and uninstall the managed MCP service. Restore the previous configuration when an install fails.
+- Make remote replies, peer requests, and preview fallback more reliable.
+
 ## v0.302.74.81
 
 - Return a `read_file` error for corrupt PNG attachments instead of aborting the turn, and omit corrupt PNG attachments when restoring saved sessions (#1926).
