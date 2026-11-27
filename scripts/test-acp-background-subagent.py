@@ -82,6 +82,30 @@ def child_events(client):
     return [row['params'] for row in client.events if row.get('method') == 'graff/subagent_event']
 
 
+def child_start_detail(client, model):
+    # Collect frames sent after the parent response without waiting on ACP.
+    chunks = [client.pending]
+    while True:
+        try:
+            chunk = client.chunks.get_nowait()
+        except queue.Empty:
+            break
+        if chunk is None:
+            break
+        chunks.append(chunk)
+    events = list(client.events)
+    for line in b''.join(chunks).split(b'\n')[:-1]:
+        events.append(json.loads(line))
+    updates = [row['params']['update'] for row in events if row.get('method') == 'session/update']
+    tool_statuses = [update.get('status') for update in updates
+                     if update.get('sessionUpdate') in ('tool_call', 'tool_call_update')]
+    child_types = [row['params']['event']['type'] for row in events
+                   if row.get('method') == 'graff/subagent_event']
+    return (f'ACP exit={client.proc.poll()}, model requests={len(model.requests)}, '
+            f'root requests={model.root_calls}, tool statuses={tool_statuses}, '
+            f'child events={child_types}')
+
+
 def run(binary, capability=True, cancel=False, disconnect=False, switch_session=False, fail=False):
     with tempfile.TemporaryDirectory(prefix='graff-acp-background-') as temporary:
         work = Path(temporary)
@@ -117,7 +141,7 @@ def run(binary, capability=True, cancel=False, disconnect=False, switch_session=
             first = client.request('session/prompt', {'sessionId': sid,
                 'prompt': [{'type': 'text', 'text': 'Delegate in the background.'}]}, timeout=15)
             assert first['result']['stopReason'] == 'end_turn', first
-            assert model.child_started.wait(8), 'child did not start'
+            assert model.child_started.wait(8), f'child did not start ({child_start_detail(client, model)})'
             assert not model.release_child.is_set()
             second = client.request('session/prompt', {'sessionId': sid,
                 'prompt': [{'type': 'text', 'text': 'Continue while the child runs.'}]}, timeout=15)
